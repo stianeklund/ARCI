@@ -1,0 +1,35 @@
+# CMake files
+build/
+*.bin
+*.map
+*.elf
+*.o
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# CLion
+.idea/
+
+# Local config
+sdkconfig
+sdkconfig.old
+
+# Dependencies
+managed_components/
+_dependencies.lock
+dependencies.lock
+
+# Other
+.clangd/
+.claude/
+.ralph*
+CLAUDE.md
+*.un~
+*~
+.*.md
+.*.txt
+.DS_Store
+*gitignore.un~
+*gitignore~
