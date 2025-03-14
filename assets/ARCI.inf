@@ -1,0 +1,69 @@
+;
+; ARCI - Amateur Radio Control Interface
+; USB CDC Serial Driver for Windows
+;
+
+[Version]
+Signature="$Windows NT$"
+Class=Ports
+ClassGuid={4D36E978-E325-11CE-BFC1-08002BE10318}
+Provider=%MFGNAME%
+CatalogFile=ARCI.cat
+DriverVer=01/23/2026,1.0.0.0
+PnpLockdown=1
+
+[DestinationDirs]
+DefaultDestDir=12
+
+[Manufacturer]
+%MFGNAME%=DeviceList, NTamd64
+
+[DeviceList.NTamd64]
+; Single interface device
+%DEV_NAME%=DriverInstall, USB\VID_303A&PID_4001
+; Composite device - CDC interface 0 (CAT Control)
+%DEV_NAME_CDC0%=DriverInstall, USB\VID_303A&PID_4001&MI_00
+; Composite device - CDC interface 1 (CAT Secondary)
+%DEV_NAME_CDC1%=DriverInstall, USB\VID_303A&PID_4001&MI_02
+
+[DriverInstall]
+Include=mdmcpq.inf,usb.inf
+Needs=SerialEnumerator.NT
+AddReg=DriverInstall.AddReg
+CopyFiles=DriverCopyFiles
+
+[DriverCopyFiles]
+usbser.sys,,,0x20
+
+[DriverInstall.AddReg]
+HKR,,DevLoader,,*ntkern
+HKR,,NTMPDriver,,usbser.sys
+HKR,,EnumPropPages32,,"MsPorts.dll,SerialPortPropPageProvider"
+HKR,,PortSubClass,1,01
+HKR,,FriendlyName,,%FRIENDLY_NAME%
+
+[DriverInstall.Services]
+Include=mdmcpq.inf
+Needs=SerialEnumerator.NT.Services
+AddService=usbser, 0x00000002, DriverService
+
+[DriverService]
+DisplayName=%SERVICE_NAME%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%12%\usbser.sys
+
+[DriverInstall.HW]
+AddReg=DriverInstall.HW.AddReg
+
+[DriverInstall.HW.AddReg]
+HKR,,"SelectiveSuspendTimeout",0x00010001,10000
+
+[Strings]
+MFGNAME="Stian Eklund"
+DEV_NAME="ARCI - Amateur Radio Control Interface"
+DEV_NAME_CDC0="ARCI CAT Control"
+DEV_NAME_CDC1="ARCI CAT Secondary"
+FRIENDLY_NAME="ARCI"
+SERVICE_NAME="ARCI Serial Port"
