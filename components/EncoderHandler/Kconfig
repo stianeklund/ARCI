@@ -1,0 +1,95 @@
+menu "Encoder Handler Options"
+
+config ENCODER_USE_PCNT
+    bool "Use PCNT hardware for encoder"
+    default y
+    help
+        Enable ESP32 PCNT hardware for quadrature decoding with glitch filtering.
+        If disabled, fall back to GPIO ISR-based decoding.
+
+config ENCODER_PCNT_GLITCH_US
+    int "PCNT glitch filter (microseconds)"
+    range 0 100
+    default 6
+    depends on ENCODER_USE_PCNT
+    help
+        Minimum pulse width to count, in microseconds.
+        6 us is a good starting point for optical encoders.
+
+config ENCODER_ACCEL_ENABLE
+    bool "Enable discrete acceleration bands"
+    default y
+    help
+        Use simple 2–3 band acceleration based on revolutions per second.
+
+config ENCODER_BAND1_RPS_X100
+    int "Band1 threshold (rps x100)"
+    range 1 1000
+    default 100
+    depends on ENCODER_ACCEL_ENABLE
+    help
+        Threshold to enter medium band. 100 = 1.00 rps.
+
+config ENCODER_BAND2_RPS_X100
+    int "Band2 threshold (rps x100)"
+    range 1 2000
+    default 300
+    depends on ENCODER_ACCEL_ENABLE
+    help
+        Threshold to enter fast band. 300 = 3.00 rps.
+
+config ENCODER_BAND_HYSTERESIS_PERCENT
+    int "Band hysteresis (%)"
+    range 0 50
+    default 20
+    depends on ENCODER_ACCEL_ENABLE
+    help
+        Percentage hysteresis applied for downshifts to prevent flicker.
+
+config ENCODER_LIVE_UPDATE_INTERVAL_MS
+    int "Live update interval (ms)"
+    range 5 100
+    default 15
+    help
+        Cadence for live frequency updates while turning.
+
+config ENCODER_FINAL_UPDATE_DELAY_MS
+    int "Final update delay (ms)"
+    range 10 200
+    default 50
+    help
+        Delay after last movement before sending final update.
+
+config ENCODER_MIN_STEPS_THRESHOLD
+    int "Minimum logical pulses per update"
+    range 0 10
+    default 1
+    help
+        Minimum logical step count before an update is considered.
+
+config ENCODER_GPIO_SW_FILTER_US
+    int "GPIO software glitch filter (microseconds)"
+    range 0 100
+    default 20
+    depends on !ENCODER_USE_PCNT
+    help
+        Software glitch filter for GPIO ISR mode to improve noise immunity.
+        Applied in addition to GPIO pull-ups. 0 = disabled.
+
+config ENCODER_VERBOSE_LOGS
+    bool "Enable verbose encoder logging"
+    default n
+    help
+        Enable detailed logging for encoder debugging. Disable in production
+        to reduce ISR-to-task latency and improve performance.
+
+config ENCODER_RADIO_USE_RELATIVE_CMDS
+    bool "Send UP/DN increments to radio instead of FA/FB"
+    default n
+    help
+        When enabled, the encoder issues relative UP/DN CAT commands toward the
+        radio for tuning while still broadcasting absolute FA/FB updates to USB
+        and the display. Disable to use traditional absolute FA/FB commands for
+        radio tuning.
+
+endmenu
