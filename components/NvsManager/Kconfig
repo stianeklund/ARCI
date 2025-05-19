@@ -1,0 +1,22 @@
+menu "NVS Manager Configuration"
+
+config ENABLE_NVS_PERSISTENCE
+    bool "Enable NVS persistence"
+    default y
+    help
+        Enable saving radio state to Non-Volatile Storage (NVS).
+        When enabled, radio state will be automatically saved periodically
+        and restored on boot. When disabled, state is only kept in memory.
+
+config NVS_SAVE_INTERVAL_MS
+    int "NVS save interval (milliseconds)"
+    depends on ENABLE_NVS_PERSISTENCE
+    default 30000
+    range 1000 300000
+    help
+        Interval in milliseconds between automatic saves to NVS.
+        Minimum: 1000ms (1 second)
+        Maximum: 300000ms (5 minutes)
+        Default: 30000ms (30 seconds)
+
+endmenu
