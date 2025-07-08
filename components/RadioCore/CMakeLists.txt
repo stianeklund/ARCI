@@ -1,0 +1,23 @@
+idf_component_register(
+    SRCS 
+        "RadioManager.cpp" 
+        "CATHandler.cpp" 
+        "CommandDispatcher.cpp"
+        "ForwardingPolicy.cpp"
+    INCLUDE_DIRS 
+        "include"
+    REQUIRES
+        "CatParser"
+        "StateManager"
+        "ISerialChannel"
+        "esp_timer"
+        "CommonConstants"
+        "RadioMacroManager"
+        "AntennaSwitch"
+        "FrequencyFormatter"
+    PRIV_REQUIRES
+        "unit_test"
+        "CommandHandlers"
+        "NvsManager"
+        "TcpCatBridge"
+)
