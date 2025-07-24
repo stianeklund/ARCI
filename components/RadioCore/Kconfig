@@ -1,0 +1,90 @@
+menu "RadioCore Options"
+
+
+config RADIOCORE_ID_STRING
+    string "Default Radio ID (IDxxx;)"
+    default "023"
+    help
+        Default radio ID string returned by ID; queries when not overridden.
+        For TS-590SG this is typically 023. For TS-2000, use 020.
+
+config RADIOCORE_FV_STRING
+    string "Default Firmware Version (FVy.yy;)"
+    default "1.04"
+    help
+        Default firmware version string returned by FV; queries when not overridden.
+
+config TRANSVERTER_SUPPORT
+    bool "Enable transverter support"
+    default y
+    help
+        Enable transverter functionality including EX056 menu handling,
+        XO offset commands, and transverter macros. Required for use with
+        transverters and microwave equipment.
+        
+        When disabled, transverter-related features are compiled out to
+        save flash/RAM for systems that don't need transverter functionality.
+
+config TRANSVERTER_DISPLAY_OFFSET
+    bool "Compile transverter XO offset to FA/FB display support"
+    default y
+    depends on TRANSVERTER_SUPPORT
+    help
+        When enabled, compiles in support for applying XO transverter offset
+        to FA/FB frequencies reported to the USB host.
+
+        The feature is controlled at runtime via UIXD command:
+        - UIXD1; enables offset display (FA/FB include XO offset)
+        - UIXD0; disables offset display (strict TS-590SG compatibility)
+
+        This option is only available when transverter support is enabled.
+
+config RADIOCORE_EMULATE_TS2000
+    bool "Emulate Kenwood TS-2000 responses (ID019, FV1.20)"
+    default n
+    help
+        When enabled, ID; responds with ID020; and FV; responds with FV1.20; to
+        better align with TS-2000 behavior, useful for transverter workflows.
+
+## Polling functionality removed
+## The following options were intentionally deleted to eliminate internal polling:
+## - RADIOCORE_SMART_POLLING and related TTL presets
+## - RADIOCORE_METER_POLLING and burst polling controls
+## - RADIOCORE_INTERNAL_POLLING and SYNC interval/activity tuning
+
+# Auto-readback after SET (replaces polling for confirmation)
+config RADIOCORE_AUTO_QUERY_AFTER_SET
+    bool "Send READ after SET (auto-readback)"
+    default y
+    help
+        When enabled, the router automatically sends the corresponding READ
+        command to the radio after processing a local SET (from USB or Display).
+        This confirms that the radio applied the change and updates local state
+        from the authoritative source. These READs bypass cache TTL logic.
+
+config RADIOCORE_AUTO_QUERY_RESPECT_AI
+    bool "Skip auto-readback when AI2/AI4 is active"
+    default n
+    help
+        When enabled, auto-readback is suppressed if the radio is in AI2/AI4
+        mode (since the radio will broadcast updates itself). Leave disabled
+        to always confirm via a READ after SET.
+
+config RADIOCORE_MANUAL_KEEPALIVE
+    bool "Enable Manual KeepAlive (RRC-1258 compatibility)"
+    default n
+    help
+        When enabled, the interface will periodically send PS1; commands to
+        radioSerial to maintain the RRC-1258 connection. This prevents the
+        RRC unit from timing out when no external commands are being sent.
+
+config RADIOCORE_MANUAL_KEEPALIVE_TIME
+    int "Manual KeepAlive interval (milliseconds)"
+    default 1000
+    range 100 60000
+    depends on RADIOCORE_MANUAL_KEEPALIVE
+    help
+        Time interval in milliseconds between PS1; keepalive transmissions.
+        Default is 1000ms (1 second). Range: 100ms to 60s.
+
+endmenu
