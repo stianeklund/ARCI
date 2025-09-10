@@ -1,0 +1,134 @@
+menu "Antenna Switch Configuration"
+
+    config ANTENNA_SWITCH_ENABLED
+        bool "Enable external antenna switch"
+        default false
+        help
+            Enable integration with ESP32 Band Decoder antenna switch via HTTP API.
+            When enabled, the antenna button will use the external switch API
+            to select compatible antennas based on operating frequency.
+
+    config ANTENNA_SWITCH_HOST
+        string "Antenna switch hostname/IP"
+        depends on ANTENNA_SWITCH_ENABLED
+        default "antenna-switch.local"
+        help
+            Hostname or IP address of the ESP32 Band Decoder antenna switch.
+            Supports both IP addresses and DNS hostnames.
+            Examples: "192.168.1.100", "antenna-switch.local", "myantenna.example.com"
+            Do not include protocol (http://) or port number.
+
+    config ANTENNA_SWITCH_PORT
+        int "Antenna switch port"
+        depends on ANTENNA_SWITCH_ENABLED
+        range 1 65535
+        default 80
+        help
+            Port number for the ESP32 Band Decoder antenna switch API.
+            Default is 80 for HTTP.
+
+    config ANTENNA_SWITCH_TIMEOUT_MS
+        int "HTTP request timeout (ms)"
+        depends on ANTENNA_SWITCH_ENABLED
+        range 500 10000
+        default 2000
+        help
+            Timeout for HTTP requests to the antenna switch API in milliseconds.
+            Lower values provide faster button response but may cause timeouts
+            on slower networks.
+
+    config ANTENNA_SWITCH_MAX_RETRIES
+        int "Maximum retry attempts"
+        depends on ANTENNA_SWITCH_ENABLED
+        range 1 10
+        default 3
+        help
+            Maximum number of retry attempts for failed HTTP requests.
+
+    config ANTENNA_SWITCH_FALLBACK_TO_RADIO
+        bool "Fallback to radio antennas on API failure"
+        depends on ANTENNA_SWITCH_ENABLED
+        default true
+        help
+            When enabled, the system will fall back to the radio's built-in
+            antenna switching (ANT1/ANT2) if the external antenna switch API
+            is unavailable or fails.
+
+    config ANTENNA_SWITCH_STATUS_ENDPOINT
+        string "Antenna status endpoint"
+        depends on ANTENNA_SWITCH_ENABLED
+        default "/status"
+        help
+            HTTP endpoint for getting antenna status.
+            Common values: "/status", "/api/status", "/antenna/status"
+            
+    config ANTENNA_SWITCH_CONTROL_ENDPOINT  
+        string "Antenna control endpoint"
+        depends on ANTENNA_SWITCH_ENABLED
+        default "/api/antenna/switch"
+        help
+            HTTP endpoint for switching antennas.
+            Common values: "/api/antenna/switch", "/switch", "/antenna"
+
+    choice ANTENNA_SWITCH_TRANSPORT
+        prompt "Transport protocol"
+        depends on ANTENNA_SWITCH_ENABLED
+        default ANTENNA_SWITCH_TRANSPORT_AUTO
+        help
+            Select the communication protocol for antenna switch.
+            
+        config ANTENNA_SWITCH_TRANSPORT_HTTP
+            bool "HTTP only"
+            help
+                Use only HTTP API (original behavior).
+                Most compatible with existing setups.
+                
+        config ANTENNA_SWITCH_TRANSPORT_WEBSOCKET
+            bool "WebSocket only"
+            help
+                Use only WebSocket communication.
+                Best for applications requiring real-time updates.
+                Initialization fails if WebSocket unavailable.
+                
+        config ANTENNA_SWITCH_TRANSPORT_AUTO
+            bool "Auto (WebSocket with HTTP fallback)"
+            help
+                Try WebSocket connection first, fallback to HTTP if unavailable.
+                Best performance with maximum compatibility.
+                
+    endchoice
+
+    config ANTENNA_SWITCH_WS_URL
+        string "WebSocket URL"
+        depends on ANTENNA_SWITCH_ENABLED && !ANTENNA_SWITCH_TRANSPORT_HTTP
+        default "ws://antenna-switch.local/ws"
+        help
+            WebSocket endpoint URL for real-time communication.
+            Should match the antenna switch hostname/IP with /ws path.
+            Examples: "ws://192.168.1.100/ws", "ws://antenna-switch.local/ws"
+
+    config ANTENNA_SWITCH_WS_EVENTS
+        bool "Enable WebSocket real-time events"
+        depends on ANTENNA_SWITCH_ENABLED && !ANTENNA_SWITCH_TRANSPORT_HTTP
+        default true
+        help
+            Subscribe to real-time antenna status and frequency change events.
+            Provides instant cache updates but uses additional memory.
+
+    config ANTENNA_SWITCH_WS_RECONNECT_MS
+        int "WebSocket reconnection timeout (ms)"
+        depends on ANTENNA_SWITCH_ENABLED && !ANTENNA_SWITCH_TRANSPORT_HTTP
+        range 1000 60000
+        default 5000
+        help
+            Time to wait before attempting WebSocket reconnection after failure.
+
+    config ANTENNA_SWITCH_WS_KEEPALIVE_MS
+        int "WebSocket keep-alive interval (ms)"
+        depends on ANTENNA_SWITCH_ENABLED && !ANTENNA_SWITCH_TRANSPORT_HTTP
+        range 5000 120000
+        default 30000
+        help
+            Interval for sending keep-alive ping messages to maintain connection.
+
+endmenu
