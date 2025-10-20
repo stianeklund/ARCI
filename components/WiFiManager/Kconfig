@@ -1,0 +1,47 @@
+menu "WiFi Configuration"
+
+    config WIFI_SSID
+        string "WiFi SSID"
+        default "YourWiFiNetwork"
+        help
+            WiFi network name (SSID) to connect to.
+            Enter your wireless network name here.
+
+    config WIFI_PASSWORD
+        string "WiFi Password"
+        default "YourWiFiPassword"
+        help
+            WiFi network password.
+            Leave empty for open networks (not recommended).
+
+    config WIFI_HOSTNAME
+        string "WiFi Hostname"
+        default "arci"
+        help
+            Network hostname for the ESP32 device.
+            This hostname will be used for DHCP and mDNS resolution.
+            Valid characters: a-z, 0-9, hyphen (max 32 chars).
+            Default is "arci".
+            
+    config WIFI_MAXIMUM_RETRY
+        int "Maximum retry attempts"
+        default 5
+        help
+            Maximum number of connection retry attempts before giving up.
+            
+    config WIFI_CONNECTION_TIMEOUT_MS
+        int "Connection timeout (ms)"
+        range 5000 60000
+        default 15000
+        help
+            Timeout for WiFi connection attempts in milliseconds.
+            Increase for networks with slow DHCP or weak signal.
+
+    config WIFI_AUTO_RECONNECT
+        bool "Enable automatic reconnection"
+        default true
+        help
+            Automatically attempt to reconnect when WiFi connection is lost.
+            Recommended for reliable operation.
+
+endmenu
