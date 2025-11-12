@@ -1,0 +1,79 @@
+menu "TCP CAT Bridge Configuration"
+
+    config TCP_CAT_BRIDGE_ENABLE
+        bool "Enable TCP CAT Bridge"
+        default y
+        help
+            Enable TCP server that provides network access to CAT command interface.
+            Allows remote CAT control over TCP/IP connections.
+
+    config TCP_CAT_BRIDGE_PORT_0
+        int "TCP Server Port for Bridge 0"
+        default 7373
+        depends on TCP_CAT_BRIDGE_ENABLE
+        help
+            TCP port number for bridge 0 server to listen on.
+            Default: 7373
+
+    config TCP_CAT_BRIDGE_PORT_1
+        int "TCP Server Port for Bridge 1"
+        default 7374
+        depends on TCP_CAT_BRIDGE_ENABLE
+        help
+            TCP port number for bridge 1 server to listen on.
+            Default: 7374
+
+    config TCP_CAT_BRIDGE_ENABLE_DUAL
+        bool "Enable dual TCP bridges (Bridge 0 and Bridge 1)"
+        default y
+        depends on TCP_CAT_BRIDGE_ENABLE
+        help
+            Enable both TCP bridges for independent CAT access.
+            Disable to only use bridge 0 (saves ~22KB RAM).
+
+    config TCP_CAT_BRIDGE_MAX_CLIENTS
+        int "Maximum Concurrent Clients"
+        default 2
+        range 1 4
+        depends on TCP_CAT_BRIDGE_ENABLE
+        help
+            Maximum number of simultaneous TCP client connections.
+            Each client consumes ~7-9 KB of memory.
+
+    config TCP_CAT_BRIDGE_BUFFER_SIZE
+        int "Bridge Buffer Size (bytes)"
+        default 256
+        range 128 1024
+        depends on TCP_CAT_BRIDGE_ENABLE
+        help
+            Size of TX/RX buffers per client connection.
+            CAT frames are typically <64 bytes, so 256 is safe.
+
+    config TCP_CAT_BRIDGE_TASK_STACK_SIZE
+        int "Bridge Task Stack Size (bytes)"
+        default 4096
+        range 2048 8192
+        depends on TCP_CAT_BRIDGE_ENABLE
+        help
+            Stack size for the TCP bridge task.
+            4KB required to prevent stack overflow (observed usage ~3.8KB).
+
+    config TCP_CAT_BRIDGE_TASK_PRIORITY
+        int "Bridge Task Priority"
+        default 5
+        range 1 24
+        depends on TCP_CAT_BRIDGE_ENABLE
+        help
+            FreeRTOS task priority for the TCP bridge.
+            5 = medium priority (same as main tasks).
+
+    config TCP_CAT_BRIDGE_SELECT_TIMEOUT_MS
+        int "Select Timeout (milliseconds)"
+        default 100
+        range 10 1000
+        depends on TCP_CAT_BRIDGE_ENABLE
+        help
+            Timeout for select() call in the bridge task loop.
+            Lower values = more responsive, higher CPU usage.
+
+endmenu
