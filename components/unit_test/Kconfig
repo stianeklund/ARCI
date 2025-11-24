@@ -1,0 +1,9 @@
+menu "Unit Testing"
+
+config RUN_UNIT_TESTS
+    bool "Enable unit tests"
+    default n
+    help
+        Enable unit tests to run at startup.
+        
+endmenu
