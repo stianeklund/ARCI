@@ -2,144 +2,147 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
-#include <cstring>
 
-static const char* TAG = "MacroStorage";
+namespace storage {
 
-// Static NVS handle - persistent across calls
-static nvs_handle_t g_nvs_handle = 0;
-static bool initialized = false;
-static macro_storage_t in_memory_cache = {};
+MacroStorage& MacroStorage::instance() {
+    static MacroStorage instance;
+    return instance;
+}
 
-// Helper: compute macro count from storage
-static uint8_t compute_macro_count(const macro_storage_t *storage) {
-    uint8_t count = 0;
-    for (int i = 0; i < MACRO_COUNT_MAX; i++) {
-        if (storage->macros[i].enabled) {
-            count++;
-        }
+MacroStorage::~MacroStorage() {
+    if (nvsHandle_ != 0) {
+        nvs_close(nvsHandle_);
+        nvsHandle_ = 0;
     }
-    return count;
 }
 
-// Default macros for first boot
-static void populate_defaults(macro_storage_t *storage) {
-    std::memset(storage, 0, sizeof(macro_storage_t));
-
-    // Macro 01: "20M FT8" -> frequency 14.074 MHz, USB mode, DATA
-    // Commands separated by '|' (pipe), converted to ';' at execution
-    std::strncpy(storage->macros[0].name, "20M FT8", MACRO_NAME_MAX_LENGTH - 1);
-    std::strncpy(storage->macros[0].command, "FA00014074000|MD2|DA1", MACRO_COMMAND_MAX_LENGTH - 1);
-    storage->macros[0].enabled = true;
-
-    // Macro 02: "10M FT8"
-    std::strncpy(storage->macros[1].name, "10M FT8", MACRO_NAME_MAX_LENGTH - 1);
-    std::strncpy(storage->macros[1].command, "FA00028074000|MD2|DA1", MACRO_COMMAND_MAX_LENGTH - 1);
-    storage->macros[1].enabled = true;
-
-    // Macro 03: "30M CW"
-    std::strncpy(storage->macros[2].name, "30M CW", MACRO_NAME_MAX_LENGTH - 1);
-    std::strncpy(storage->macros[2].command, "FA00010105000|MD3", MACRO_COMMAND_MAX_LENGTH - 1);
-    storage->macros[2].enabled = true;
-
-    // Macro 04: "CQ Call" - single KY command (no separator needed)
-    std::strncpy(storage->macros[3].name, "CQ Call", MACRO_NAME_MAX_LENGTH - 1);
-    std::strncpy(storage->macros[3].command, "KY CQ CQ DE LB1TI LB1TI K  ", MACRO_COMMAND_MAX_LENGTH - 1);
-    storage->macros[3].enabled = true;
-
-    // Macro 05: "Send Call" - single KY command (no separator needed)
-    std::strncpy(storage->macros[4].name, "Send Call", MACRO_NAME_MAX_LENGTH - 1);
-    std::strncpy(storage->macros[4].command, "KY LB1TI                   ", MACRO_COMMAND_MAX_LENGTH - 1);
-    storage->macros[4].enabled = true;
-
-    // F1-F5 assigned to macros 01-05, F6 empty
-    storage->slot_assignments[0] = 1;  // F1 -> Macro 01
-    storage->slot_assignments[1] = 2;  // F2 -> Macro 02
-    storage->slot_assignments[2] = 3;  // F3 -> Macro 03
-    storage->slot_assignments[3] = 4;  // F4 -> Macro 04
-    storage->slot_assignments[4] = 5;  // F5 -> Macro 05
-    storage->slot_assignments[5] = 0;  // F6 -> Empty
-
-    storage->macro_count = compute_macro_count(storage);
-    ESP_LOGI(TAG, "Loaded defaults: %d macros, F1-F5 assigned", storage->macro_count);
-}
-
-// Check if NVS has existing macro data
-static bool nvs_has_macro_data(void) {
-    if (g_nvs_handle == 0) return false;
-
-    size_t required_size = 0;
-    esp_err_t err = nvs_get_blob(g_nvs_handle, "macro_data", nullptr, &required_size);
-
-    ESP_LOGI(TAG, "NVS macro_data check: err=%s, size=%zu (expected=%zu)",
-             esp_err_to_name(err), required_size, sizeof(macro_storage_t));
-
-    return (err == ESP_OK && required_size > 0);
-}
-
-esp_err_t macro_storage_init(void) {
-    if (initialized) {
+esp_err_t MacroStorage::init() {
+    if (initialized_) {
         return ESP_OK;
     }
 
     // Open persistent NVS handle
-    esp_err_t err = nvs_open(NVS_NAMESPACE_MACROS, NVS_READWRITE, &g_nvs_handle);
+    esp_err_t err = nvs_open(kNvsNamespace, NVS_READWRITE, &nvsHandle_);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to open NVS namespace '%s': %s", NVS_NAMESPACE_MACROS, esp_err_to_name(err));
+        ESP_LOGE(TAG, "Failed to open NVS namespace '%s': %s", kNvsNamespace, esp_err_to_name(err));
         return err;
     }
 
-    ESP_LOGD(TAG, "Opened NVS namespace '%s' (handle=%d)", NVS_NAMESPACE_MACROS, g_nvs_handle);
+    ESP_LOGD(TAG, "Opened NVS namespace '%s' (handle=%lu)", kNvsNamespace, nvsHandle_);
 
-    // Mark as initialized immediately so save/load can work during init
-    initialized = true;
+    // Mark as initialized so save/load can work during init
+    initialized_ = true;
 
     // Check if data exists, otherwise load defaults
-    if (!nvs_has_macro_data()) {
+    if (!nvsHasMacroData()) {
         ESP_LOGI(TAG, "No macro data found in NVS - loading defaults");
-        populate_defaults(&in_memory_cache);
-        err = macro_storage_save(&in_memory_cache);
+        populateDefaults();
+        err = persist();
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Failed to save defaults: %s", esp_err_to_name(err));
-            initialized = false;
+            initialized_ = false;
             return err;
         }
     } else {
         // Load existing data into cache
-        err = macro_storage_load(&in_memory_cache);
+        err = load(cache_);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "Failed to load existing macros: %s", esp_err_to_name(err));
-            populate_defaults(&in_memory_cache);
+            populateDefaults();
         } else {
-            ESP_LOGI(TAG, "Loaded %d existing macros from NVS", in_memory_cache.macro_count);
+            ESP_LOGI(TAG, "Loaded %d existing macros from NVS", cache_.macroCount);
         }
     }
 
     return ESP_OK;
 }
 
-esp_err_t macro_storage_load(macro_storage_t *storage) {
-    if (!initialized || g_nvs_handle == 0) {
+bool MacroStorage::nvsHasMacroData() const {
+    if (nvsHandle_ == 0) return false;
+
+    size_t requiredSize = 0;
+    esp_err_t err = nvs_get_blob(nvsHandle_, "macro_data", nullptr, &requiredSize);
+
+    ESP_LOGD(TAG, "NVS macro_data check: err=%s, size=%zu (expected=%zu)",
+             esp_err_to_name(err), requiredSize, sizeof(MacroStorageData));
+
+    return (err == ESP_OK && requiredSize > 0);
+}
+
+void MacroStorage::populateDefaults() {
+    cache_ = MacroStorageData{};
+
+    // Macro 01: "20M FT8" -> frequency 14.074 MHz, USB mode, DATA
+    std::strncpy(cache_.macros[0].name, "20M FT8", kMacroNameMaxLength - 1);
+    std::strncpy(cache_.macros[0].command, "FA00014074000|MD2|DA1", kMacroCommandMaxLength - 1);
+    cache_.macros[0].enabled = true;
+
+    // Macro 02: "10M FT8"
+    std::strncpy(cache_.macros[1].name, "10M FT8", kMacroNameMaxLength - 1);
+    std::strncpy(cache_.macros[1].command, "FA00028074000|MD2|DA1", kMacroCommandMaxLength - 1);
+    cache_.macros[1].enabled = true;
+
+    // Macro 03: "30M CW"
+    std::strncpy(cache_.macros[2].name, "30M CW", kMacroNameMaxLength - 1);
+    std::strncpy(cache_.macros[2].command, "FA00010105000|MD3", kMacroCommandMaxLength - 1);
+    cache_.macros[2].enabled = true;
+
+    // Macro 04: "CQ Call"
+    std::strncpy(cache_.macros[3].name, "CQ Call", kMacroNameMaxLength - 1);
+    std::strncpy(cache_.macros[3].command, "KY CQ CQ DE LB1TI LB1TI K  ", kMacroCommandMaxLength - 1);
+    cache_.macros[3].enabled = true;
+
+    // Macro 05: "Send Call"
+    std::strncpy(cache_.macros[4].name, "Send Call", kMacroNameMaxLength - 1);
+    std::strncpy(cache_.macros[4].command, "KY LB1TI                   ", kMacroCommandMaxLength - 1);
+    cache_.macros[4].enabled = true;
+
+    // F1-F5 assigned to macros 01-05, F6 empty
+    cache_.slotAssignments[0] = 1;
+    cache_.slotAssignments[1] = 2;
+    cache_.slotAssignments[2] = 3;
+    cache_.slotAssignments[3] = 4;
+    cache_.slotAssignments[4] = 5;
+    cache_.slotAssignments[5] = 0;
+
+    cache_.macroCount = computeMacroCount();
+    ESP_LOGI(TAG, "Loaded defaults: %d macros, F1-F5 assigned", cache_.macroCount);
+}
+
+uint8_t MacroStorage::computeMacroCount() const {
+    uint8_t count = 0;
+    for (const auto& macro : cache_.macros) {
+        if (macro.enabled) {
+            count++;
+        }
+    }
+    return count;
+}
+
+esp_err_t MacroStorage::load(MacroStorageData& data) {
+    if (!initialized_ || nvsHandle_ == 0) {
         ESP_LOGE(TAG, "MacroStorage not initialized");
         return ESP_ERR_INVALID_STATE;
     }
-    if (storage == nullptr) {
-        return ESP_ERR_INVALID_ARG;
-    }
 
     // Load entire structure as blob
-    size_t required_size = sizeof(macro_storage_t);
-    esp_err_t err = nvs_get_blob(g_nvs_handle, "macro_data", storage, &required_size);
+    size_t requiredSize = sizeof(MacroStorageData);
+    esp_err_t err = nvs_get_blob(nvsHandle_, "macro_data", &data, &requiredSize);
 
-    if (err == ESP_OK && required_size == sizeof(macro_storage_t)) {
-        storage->macro_count = compute_macro_count(storage);
-        ESP_LOGD(TAG, "Loaded %d macros from NVS", storage->macro_count);
+    if (err == ESP_OK && requiredSize == sizeof(MacroStorageData)) {
+        data.macroCount = 0;
+        for (const auto& macro : data.macros) {
+            if (macro.enabled) data.macroCount++;
+        }
+        ESP_LOGD(TAG, "Loaded %d macros from NVS", data.macroCount);
         return ESP_OK;
-    } else if (err == ESP_ERR_NOT_FOUND) {
+    } else if (err == ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGW(TAG, "No macro data in NVS");
         return ESP_ERR_NOT_FOUND;
-    } else if (err == ESP_OK && required_size != sizeof(macro_storage_t)) {
-        ESP_LOGE(TAG, "Macro data size mismatch: expected %zu, got %zu", sizeof(macro_storage_t), required_size);
+    } else if (err == ESP_OK && requiredSize != sizeof(MacroStorageData)) {
+        ESP_LOGE(TAG, "Macro data size mismatch: expected %zu, got %zu",
+                 sizeof(MacroStorageData), requiredSize);
         return ESP_FAIL;
     } else {
         ESP_LOGE(TAG, "NVS read error: %s", esp_err_to_name(err));
@@ -147,183 +150,165 @@ esp_err_t macro_storage_load(macro_storage_t *storage) {
     }
 }
 
-esp_err_t macro_storage_save(const macro_storage_t *storage) {
-    if (!initialized || g_nvs_handle == 0) {
+esp_err_t MacroStorage::save(const MacroStorageData& data) {
+    if (!initialized_ || nvsHandle_ == 0) {
         ESP_LOGE(TAG, "MacroStorage not initialized");
         return ESP_ERR_INVALID_STATE;
     }
-    if (storage == nullptr) {
-        return ESP_ERR_INVALID_ARG;
-    }
 
-    ESP_LOGI(TAG, "Saving macro data to NVS (size=%zu bytes)...", sizeof(macro_storage_t));
+    ESP_LOGI(TAG, "Saving macro data to NVS (size=%zu bytes)...", sizeof(MacroStorageData));
 
-    esp_err_t err = nvs_set_blob(g_nvs_handle, "macro_data", storage, sizeof(macro_storage_t));
+    esp_err_t err = nvs_set_blob(nvsHandle_, "macro_data", &data, sizeof(MacroStorageData));
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "❌ nvs_set_blob FAILED: %s (size=%zu)", esp_err_to_name(err), sizeof(macro_storage_t));
+        ESP_LOGE(TAG, "nvs_set_blob FAILED: %s", esp_err_to_name(err));
         return err;
     }
 
-    ESP_LOGI(TAG, "nvs_set_blob OK, committing...");
-
-    // Commit changes to flash
-    err = nvs_commit(g_nvs_handle);
+    err = nvs_commit(nvsHandle_);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "❌ nvs_commit FAILED: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "nvs_commit FAILED: %s", esp_err_to_name(err));
         return err;
     }
 
-    // Update in-memory cache
-    std::memcpy(&in_memory_cache, storage, sizeof(macro_storage_t));
-    in_memory_cache.macro_count = compute_macro_count(&in_memory_cache);
+    // Update cache
+    cache_ = data;
+    cache_.macroCount = computeMacroCount();
 
-    ESP_LOGI(TAG, "✅ Saved %d macros to NVS successfully", in_memory_cache.macro_count);
+    ESP_LOGI(TAG, "Saved %d macros to NVS successfully", cache_.macroCount);
     return ESP_OK;
 }
 
-esp_err_t macro_storage_get_macro(uint8_t macro_id, macro_definition_t *macro) {
-    if (!initialized) {
+esp_err_t MacroStorage::persist() {
+    return save(cache_);
+}
+
+esp_err_t MacroStorage::getMacro(uint8_t macroId, MacroDefinition& macro) const {
+    if (!initialized_) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (macro == nullptr || macro_id < 1 || macro_id > MACRO_COUNT_MAX) {
+    if (macroId < 1 || macroId > kMacroCountMax) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    // Convert 1-based ID to 0-based array index
-    uint8_t index = macro_id - 1;
-
-    if (in_memory_cache.macros[index].enabled) {
-        std::memcpy(macro, &in_memory_cache.macros[index], sizeof(macro_definition_t));
+    const uint8_t index = macroId - 1;
+    if (cache_.macros[index].enabled) {
+        macro = cache_.macros[index];
         return ESP_OK;
     }
 
     return ESP_ERR_NOT_FOUND;
 }
 
-esp_err_t macro_storage_set_macro(uint8_t macro_id, const macro_definition_t *macro) {
-    if (!initialized) {
-        ESP_LOGE(TAG, "set_macro: not initialized");
+esp_err_t MacroStorage::setMacro(uint8_t macroId, const MacroDefinition& macro) {
+    if (!initialized_) {
+        ESP_LOGE(TAG, "setMacro: not initialized");
         return ESP_ERR_INVALID_STATE;
     }
-    if (macro == nullptr || macro_id < 1 || macro_id > MACRO_COUNT_MAX) {
-        ESP_LOGE(TAG, "set_macro: invalid arg (macro=%p, id=%d)", macro, macro_id);
+    if (macroId < 1 || macroId > kMacroCountMax) {
+        ESP_LOGE(TAG, "setMacro: invalid ID %d", macroId);
         return ESP_ERR_INVALID_ARG;
     }
 
     ESP_LOGI(TAG, "Setting macro %d: name='%s', cmd='%.40s...'",
-             macro_id, macro->name, macro->command);
+             macroId, macro.name, macro.command);
 
-    uint8_t index = macro_id - 1;
-    std::memcpy(&in_memory_cache.macros[index], macro, sizeof(macro_definition_t));
-    in_memory_cache.macros[index].enabled = true;
+    const uint8_t index = macroId - 1;
+    cache_.macros[index] = macro;
+    cache_.macros[index].enabled = true;
+    cache_.macroCount = computeMacroCount();
 
-    // Recompute count and save
-    in_memory_cache.macro_count = compute_macro_count(&in_memory_cache);
-
-    esp_err_t err = macro_storage_save(&in_memory_cache);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "❌ Failed to persist macro %d: %s", macro_id, esp_err_to_name(err));
-    }
-    return err;
+    return persist();
 }
 
-esp_err_t macro_storage_delete_macro(uint8_t macro_id) {
-    if (!initialized) {
+esp_err_t MacroStorage::deleteMacro(uint8_t macroId) {
+    if (!initialized_) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (macro_id < 1 || macro_id > MACRO_COUNT_MAX) {
+    if (macroId < 1 || macroId > kMacroCountMax) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    uint8_t index = macro_id - 1;
-    in_memory_cache.macros[index].enabled = false;
-    std::memset(&in_memory_cache.macros[index].name, 0, MACRO_NAME_MAX_LENGTH);
-    std::memset(&in_memory_cache.macros[index].command, 0, MACRO_COMMAND_MAX_LENGTH);
+    const uint8_t index = macroId - 1;
+    cache_.macros[index].clear();
 
-    // Also remove from any slot assignments
-    for (int i = 0; i < MACRO_SLOT_COUNT; i++) {
-        if (in_memory_cache.slot_assignments[i] == macro_id) {
-            in_memory_cache.slot_assignments[i] = 0;
+    // Remove from any slot assignments
+    for (auto& slot : cache_.slotAssignments) {
+        if (slot == macroId) {
+            slot = 0;
         }
     }
 
-    in_memory_cache.macro_count = compute_macro_count(&in_memory_cache);
-    return macro_storage_save(&in_memory_cache);
+    cache_.macroCount = computeMacroCount();
+    return persist();
 }
 
-esp_err_t macro_storage_get_slot_assignments(uint8_t *assignments) {
-    if (!initialized) {
+esp_err_t MacroStorage::getSlotAssignments(std::array<uint8_t, kMacroSlotCount>& assignments) const {
+    if (!initialized_) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    assignments = cache_.slotAssignments;
+    return ESP_OK;
+}
+
+esp_err_t MacroStorage::getSlotAssignments(uint8_t* assignments) const {
+    if (!initialized_) {
         return ESP_ERR_INVALID_STATE;
     }
     if (assignments == nullptr) {
         return ESP_ERR_INVALID_ARG;
     }
-
-    std::memcpy(assignments, in_memory_cache.slot_assignments, MACRO_SLOT_COUNT);
+    std::memcpy(assignments, cache_.slotAssignments.data(), kMacroSlotCount);
     return ESP_OK;
 }
 
-esp_err_t macro_storage_set_slot_assignment(uint8_t slot, uint8_t macro_id) {
-    if (!initialized) {
+esp_err_t MacroStorage::setSlotAssignment(uint8_t slot, uint8_t macroId) {
+    if (!initialized_) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (slot >= MACRO_SLOT_COUNT || macro_id > MACRO_COUNT_MAX) {
+    if (slot >= kMacroSlotCount || macroId > kMacroCountMax) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    in_memory_cache.slot_assignments[slot] = macro_id;
-    return macro_storage_save(&in_memory_cache);
+    cache_.slotAssignments[slot] = macroId;
+    return persist();
 }
 
-esp_err_t macro_storage_load_defaults(macro_storage_t *storage) {
-    if (storage == nullptr) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    populate_defaults(storage);
-    return ESP_OK;
-}
-
-uint8_t macro_storage_get_count(void) {
-    if (!initialized) {
+uint8_t MacroStorage::getCount() const {
+    if (!initialized_) {
         return 0;
     }
-    return in_memory_cache.macro_count;
+    return cache_.macroCount;
 }
 
-uint8_t macro_storage_get_max_count(void) {
-    return MACRO_COUNT_MAX;
-}
-
-esp_err_t macro_storage_factory_reset(void) {
-    if (!initialized || g_nvs_handle == 0) {
+esp_err_t MacroStorage::factoryReset() {
+    if (!initialized_ || nvsHandle_ == 0) {
         ESP_LOGE(TAG, "MacroStorage not initialized");
         return ESP_ERR_INVALID_STATE;
     }
 
     // Erase all keys in the macro namespace
-    esp_err_t err = nvs_erase_all(g_nvs_handle);
+    esp_err_t err = nvs_erase_all(nvsHandle_);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to erase macro namespace: %s", esp_err_to_name(err));
         return err;
     }
 
-    err = nvs_commit(g_nvs_handle);
+    err = nvs_commit(nvsHandle_);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to commit erase: %s", esp_err_to_name(err));
         return err;
     }
 
     // Reload defaults and save
-    populate_defaults(&in_memory_cache);
-    err = macro_storage_save(&in_memory_cache);
+    populateDefaults();
+    err = persist();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to save defaults after reset: %s", esp_err_to_name(err));
         return err;
     }
 
-    // Log first macro to verify pipe separators
-    ESP_LOGI(TAG, "Factory reset complete - loaded %d default macros", in_memory_cache.macro_count);
-    ESP_LOGI(TAG, "Macro 1 command: '%s'", in_memory_cache.macros[0].command);
+    ESP_LOGI(TAG, "Factory reset complete - loaded %d default macros", cache_.macroCount);
     return ESP_OK;
 }
+
+}  // namespace storage

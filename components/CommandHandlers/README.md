@@ -62,6 +62,12 @@ Base class `BaseCommandHandler` provides common functionality for CAT response g
 **GainLevelCommandHandler**: AG, RG, MG, VG, SQ
 **UICommandHandler**: UI elements and display
 
+### User Macros
+**MXCommandHandler**: MXW, MXR, MXA, MXE, MXD
+- Write/read/delete macro definitions (MXW, MXR, MXD)
+- F-button slot assignments (MXA)
+- Execute macros via protocol (MXE)
+
 ## Usage
 
 ```cpp

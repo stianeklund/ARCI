@@ -99,9 +99,12 @@ private:
     bool m_displayBacklightOn = true;
 
     // TCA8418 Matrix button management
-    std::map<TCA8418Handler::MatrixKey, MatrixButton> m_matrixButtons;
+    std::map<TCA8418Handler::MatrixKey, MatrixButton> m_matrixButtons;      // TCA #1 (left/right PCB)
+    std::map<TCA8418Handler::MatrixKey, MatrixButton> m_matrixButtons2;     // TCA #2 (F-buttons)
     void initializeMatrixButtons();
+    void initializeMatrixButtons2();  // F1-F6 buttons with long press support
     void handleMatrixButtonEvent(TCA8418Handler::MatrixKey key, bool pressed);
+    void handleMatrixButton2Event(TCA8418Handler::MatrixKey key, bool pressed);  // F-button handler
 
     // TCA8418 Matrix button handlers
     void handleBandUpButton();

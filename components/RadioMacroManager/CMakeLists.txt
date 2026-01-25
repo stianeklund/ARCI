@@ -8,5 +8,5 @@ idf_component_register(
         "freertos"
         "log"
         "RadioCore"
-    PRIV_REQUIRES
+        "MacroStorage"
 )

@@ -164,6 +164,12 @@ void ButtonHandler::updateButtonStates()
     {
         button.update();
     }
+
+    // Update F-button matrix for long press timing
+    for (auto &button : m_matrixButtons2 | std::views::values)
+    {
+        button.update();
+    }
 }
 
 void ButtonHandler::togglePowerState()
@@ -941,65 +947,43 @@ void ButtonHandler::setupF1F6KeyMappings(TCA8418Handler *tca8418Handler2)
         return;
     }
 
+    // Initialize F-button matrix with long press support
+    initializeMatrixButtons2();
 
     // F1 - Actual key code 0x01 (Row 0, Col 0)
     tca8418Handler2->setKeyCallback(TCA8418Handler::MatrixKey::KEY_0x01,
         [this](TCA8418Handler::MatrixKey key, bool isPressed) {
-            if (!isPressed) { // Trigger on release
-                m_radioManager.signalUserActivity();
-                ESP_LOGI(TAG, "🎹 F1 pressed (TODO: assign macro action)");
-                // TODO: Call specific macro method, e.g. m_macroManager.executeTransverterMacro(true);
-            }
+            handleMatrixButton2Event(key, isPressed);  // Route through timing system
         });
 
     // F2 - Actual key code 0x0B (Row 0, Col 2)
     tca8418Handler2->setKeyCallback(TCA8418Handler::MatrixKey::KEY_0x0B,
         [this](TCA8418Handler::MatrixKey key, bool isPressed) {
-            if (!isPressed) {
-                m_radioManager.signalUserActivity();
-                ESP_LOGI(TAG, "🎹 F2 pressed (TODO: assign macro action)");
-                // TODO: Call specific macro method
-            }
+            handleMatrixButton2Event(key, isPressed);  // Route through timing system
         });
 
     // F3 - Confirmed code 0x02 via short test (PCB Row 2, Col 1 = TCA C1+R0)
     tca8418Handler2->setKeyCallback(TCA8418Handler::MatrixKey::KEY_0x02,
         [this](TCA8418Handler::MatrixKey key, bool isPressed) {
-            if (!isPressed) {
-                m_radioManager.signalUserActivity();
-                ESP_LOGI(TAG, "🎹 F3 pressed (TODO: assign macro action)");
-                // TODO: Call specific macro method
-            }
+            handleMatrixButton2Event(key, isPressed);  // Route through timing system
         });
 
     // F4 - Confirmed code 0x0C via short test (PCB Row 2, Col 2 = TCA C1+R1)
     tca8418Handler2->setKeyCallback(TCA8418Handler::MatrixKey::KEY_0x0C,
         [this](TCA8418Handler::MatrixKey key, bool isPressed) {
-            if (!isPressed) {
-                m_radioManager.signalUserActivity();
-                ESP_LOGI(TAG, "🎹 F4 pressed (TODO: assign macro action)");
-                // TODO: Call specific macro method
-            }
+            handleMatrixButton2Event(key, isPressed);  // Route through timing system
         });
 
     // F5 - Actual key code 0x03 (Row 2, Col 0)
     tca8418Handler2->setKeyCallback(TCA8418Handler::MatrixKey::KEY_0x03,
         [this](TCA8418Handler::MatrixKey key, bool isPressed) {
-            if (!isPressed) {
-                m_radioManager.signalUserActivity();
-                ESP_LOGI(TAG, "🎹 F5 pressed (TODO: assign macro action)");
-                // TODO: Call specific macro method
-            }
+            handleMatrixButton2Event(key, isPressed);  // Route through timing system
         });
 
     // F6 - Actual key code 0x0D (Row 2, Col 2)
     tca8418Handler2->setKeyCallback(TCA8418Handler::MatrixKey::KEY_0x0D,
         [this](TCA8418Handler::MatrixKey key, bool isPressed) {
-            if (!isPressed) {
-                m_radioManager.signalUserActivity();
-                ESP_LOGI(TAG, "🎹 F6 pressed (TODO: assign macro action)");
-                // TODO: Call specific macro method, e.g. m_macroManager.executeSplitMacro(true);
-            }
+            handleMatrixButton2Event(key, isPressed);  // Route through timing system
         });
 
     ESP_LOGD(TAG, "F1-F6 macro key mappings configured");
@@ -1061,6 +1045,153 @@ void ButtonHandler::initializeMatrixButtons()
                             std::forward_as_tuple(TCA8418Handler::MatrixKey::KEY_0x30, 50, 500)); // SPLIT
     m_matrixButtons.emplace(std::piecewise_construct, std::forward_as_tuple(TCA8418Handler::MatrixKey::KEY_0x31),
                             std::forward_as_tuple(TCA8418Handler::MatrixKey::KEY_0x31, 50, 500)); // ENT
+}
+
+void ButtonHandler::initializeMatrixButtons2()
+{
+    // F-buttons (TCA8418 #2) - support short/long press for 12 macro slots
+    // Short press: slots 0-5, Long press: slots 6-11
+    m_matrixButtons2.emplace(std::piecewise_construct, std::forward_as_tuple(TCA8418Handler::MatrixKey::KEY_0x01),
+                             std::forward_as_tuple(TCA8418Handler::MatrixKey::KEY_0x01, 50, 500)); // F1
+    m_matrixButtons2.emplace(std::piecewise_construct, std::forward_as_tuple(TCA8418Handler::MatrixKey::KEY_0x0B),
+                             std::forward_as_tuple(TCA8418Handler::MatrixKey::KEY_0x0B, 50, 500)); // F2
+    m_matrixButtons2.emplace(std::piecewise_construct, std::forward_as_tuple(TCA8418Handler::MatrixKey::KEY_0x02),
+                             std::forward_as_tuple(TCA8418Handler::MatrixKey::KEY_0x02, 50, 500)); // F3
+    m_matrixButtons2.emplace(std::piecewise_construct, std::forward_as_tuple(TCA8418Handler::MatrixKey::KEY_0x0C),
+                             std::forward_as_tuple(TCA8418Handler::MatrixKey::KEY_0x0C, 50, 500)); // F4
+    m_matrixButtons2.emplace(std::piecewise_construct, std::forward_as_tuple(TCA8418Handler::MatrixKey::KEY_0x03),
+                             std::forward_as_tuple(TCA8418Handler::MatrixKey::KEY_0x03, 50, 500)); // F5
+    m_matrixButtons2.emplace(std::piecewise_construct, std::forward_as_tuple(TCA8418Handler::MatrixKey::KEY_0x0D),
+                             std::forward_as_tuple(TCA8418Handler::MatrixKey::KEY_0x0D, 50, 500)); // F6
+
+    ESP_LOGD(TAG, "F1-F6 buttons initialized with long press support (12 macro slots)");
+}
+
+void ButtonHandler::handleMatrixButton2Event(const TCA8418Handler::MatrixKey key, const bool pressed)
+{
+    // F-buttons handler (TCA8418 #2) with short/long press detection
+    // Routes to macro slots 0-5 (short press) or 6-11 (long press)
+
+    auto it = m_matrixButtons2.find(key);
+    if (it == m_matrixButtons2.end())
+    {
+        ESP_LOGW(TAG, "Unknown F-button key: 0x%02X", static_cast<uint8_t>(key));
+        return;
+    }
+
+    MatrixButton &button = it->second;
+    bool previousTcaState = button.getLastTcaState();
+    button.updateState(pressed);
+
+    // Only process if state changed
+    if (pressed == previousTcaState)
+    {
+        return;
+    }
+
+    // Process short vs long press after timing logic runs
+    if (!button.hasStateChanged())
+    {
+        return;
+    }
+
+    // Handle short and long press events
+    switch (key)
+    {
+    case TCA8418Handler::MatrixKey::KEY_0x01: // F1
+        if (button.wasLongPressed())
+        {
+            m_radioManager.signalUserActivity();
+            ESP_LOGI(TAG, "F1 long press - executing macro slot 6");
+            m_macroManager.executeSlot(6);
+        }
+        else if (button.wasShortPressed())
+        {
+            m_radioManager.signalUserActivity();
+            ESP_LOGI(TAG, "F1 short press - executing macro slot 0");
+            m_macroManager.executeSlot(0);
+        }
+        break;
+
+    case TCA8418Handler::MatrixKey::KEY_0x0B: // F2
+        if (button.wasLongPressed())
+        {
+            m_radioManager.signalUserActivity();
+            ESP_LOGI(TAG, "F2 long press - executing macro slot 7");
+            m_macroManager.executeSlot(7);
+        }
+        else if (button.wasShortPressed())
+        {
+            m_radioManager.signalUserActivity();
+            ESP_LOGI(TAG, "F2 short press - executing macro slot 1");
+            m_macroManager.executeSlot(1);
+        }
+        break;
+
+    case TCA8418Handler::MatrixKey::KEY_0x02: // F3
+        if (button.wasLongPressed())
+        {
+            m_radioManager.signalUserActivity();
+            ESP_LOGI(TAG, "F3 long press - executing macro slot 8");
+            m_macroManager.executeSlot(8);
+        }
+        else if (button.wasShortPressed())
+        {
+            m_radioManager.signalUserActivity();
+            ESP_LOGI(TAG, "F3 short press - executing macro slot 2");
+            m_macroManager.executeSlot(2);
+        }
+        break;
+
+    case TCA8418Handler::MatrixKey::KEY_0x0C: // F4
+        if (button.wasLongPressed())
+        {
+            m_radioManager.signalUserActivity();
+            ESP_LOGI(TAG, "F4 long press - executing macro slot 9");
+            m_macroManager.executeSlot(9);
+        }
+        else if (button.wasShortPressed())
+        {
+            m_radioManager.signalUserActivity();
+            ESP_LOGI(TAG, "F4 short press - executing macro slot 3");
+            m_macroManager.executeSlot(3);
+        }
+        break;
+
+    case TCA8418Handler::MatrixKey::KEY_0x03: // F5
+        if (button.wasLongPressed())
+        {
+            m_radioManager.signalUserActivity();
+            ESP_LOGI(TAG, "F5 long press - executing macro slot 10");
+            m_macroManager.executeSlot(10);
+        }
+        else if (button.wasShortPressed())
+        {
+            m_radioManager.signalUserActivity();
+            ESP_LOGI(TAG, "F5 short press - executing macro slot 4");
+            m_macroManager.executeSlot(4);
+        }
+        break;
+
+    case TCA8418Handler::MatrixKey::KEY_0x0D: // F6
+        if (button.wasLongPressed())
+        {
+            m_radioManager.signalUserActivity();
+            ESP_LOGI(TAG, "F6 long press - executing macro slot 11");
+            m_macroManager.executeSlot(11);
+        }
+        else if (button.wasShortPressed())
+        {
+            m_radioManager.signalUserActivity();
+            ESP_LOGI(TAG, "F6 short press - executing macro slot 5");
+            m_macroManager.executeSlot(5);
+        }
+        break;
+
+    default:
+        ESP_LOGW(TAG, "Unhandled F-button key: 0x%02X", static_cast<uint8_t>(key));
+        break;
+    }
 }
 
 void ButtonHandler::handleMatrixButtonEvent(const TCA8418Handler::MatrixKey key, const bool pressed)

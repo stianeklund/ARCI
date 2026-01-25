@@ -1,139 +1,160 @@
 #pragma once
 
 #include "esp_err.h"
+#include <array>
 #include <cstdint>
 #include <cstring>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+namespace storage {
 
 // Storage configuration constants
-#define MACRO_NAME_MAX_LENGTH 32
-#define MACRO_COMMAND_MAX_LENGTH 64
-#define MACRO_COUNT_MAX 50
-#define MACRO_SLOT_COUNT 12  // F1-F6 buttons (short press: 0-5, long press: 6-11)
-#define NVS_NAMESPACE_MACROS "arci_macros"
+constexpr size_t kMacroNameMaxLength = 32;
+constexpr size_t kMacroCommandMaxLength = 64;
+constexpr size_t kMacroCountMax = 50;
+constexpr size_t kMacroSlotCount = 12;  // F1-F6 buttons (short: 0-5, long: 6-11)
+constexpr const char* kNvsNamespace = "arci_macros";
 
 /**
  * @brief Macro definition with name and CAT command sequence
  */
-typedef struct {
-    char name[MACRO_NAME_MAX_LENGTH];           // Human-readable macro name (e.g., "20M FT8")
-    char command[MACRO_COMMAND_MAX_LENGTH];     // CAT command sequence (semicolon-separated)
-    bool enabled;                               // Whether this macro slot is active
-} macro_definition_t;
+struct MacroDefinition {
+    char name[kMacroNameMaxLength]{};
+    char command[kMacroCommandMaxLength]{};
+    bool enabled = false;
+
+    void clear() {
+        std::memset(name, 0, sizeof(name));
+        std::memset(command, 0, sizeof(command));
+        enabled = false;
+    }
+};
 
 /**
- * @brief Complete macro storage structure
- * Contains all macros and slot-to-macro bindings for F1-F6 buttons
+ * @brief Complete macro storage data structure
  */
-typedef struct {
-    uint8_t slot_assignments[MACRO_SLOT_COUNT]; // F1-F6 macro IDs (0=empty, 1-50=macro index)
-    macro_definition_t macros[MACRO_COUNT_MAX]; // All 50 possible macro slots
-    uint8_t macro_count;                        // Count of defined (enabled) macros
-} macro_storage_t;
+struct MacroStorageData {
+    std::array<uint8_t, kMacroSlotCount> slotAssignments{};
+    std::array<MacroDefinition, kMacroCountMax> macros{};
+    uint8_t macroCount = 0;
+};
 
 /**
- * @brief Initialize macro storage - must be called once at startup
- * Opens persistent NVS handle for later operations.
- * If no stored data exists, loads defaults on first boot.
+ * @brief Persistent storage for user-defined CAT command macros
  *
- * @return ESP_OK on success, ESP_ERR_NVS_NOT_INITIALIZED if NVS not ready, ESP_FAIL on other errors
- */
-esp_err_t macro_storage_init(void);
-
-/**
- * @brief Load all macros from NVS into memory
+ * Singleton class managing macro definitions and F-button slot assignments.
+ * Uses ESP-IDF NVS for persistence with an in-memory cache for fast access.
  *
- * @param storage Pointer to macro_storage_t to populate
- * @return ESP_OK on success, ESP_ERR_NOT_FOUND if no data, ESP_FAIL on error
+ * Usage:
+ *   MacroStorage::instance().init();
+ *   MacroDefinition macro;
+ *   MacroStorage::instance().getMacro(1, macro);
  */
-esp_err_t macro_storage_load(macro_storage_t *storage);
+class MacroStorage {
+public:
+    /**
+     * @brief Get singleton instance
+     */
+    static MacroStorage& instance();
 
-/**
- * @brief Save all macros to NVS
- * Persists the entire macro storage structure to NVS.
- *
- * @param storage Pointer to macro_storage_t to save
- * @return ESP_OK on success, ESP_FAIL on error
- */
-esp_err_t macro_storage_save(const macro_storage_t *storage);
+    // Non-copyable
+    MacroStorage(const MacroStorage&) = delete;
+    MacroStorage& operator=(const MacroStorage&) = delete;
 
-/**
- * @brief Get a single macro by ID
- *
- * @param macro_id ID of macro (1-50)
- * @param macro Pointer to macro_definition_t to populate
- * @return ESP_OK if found and enabled, ESP_ERR_NOT_FOUND if not found or disabled
- */
-esp_err_t macro_storage_get_macro(uint8_t macro_id, macro_definition_t *macro);
+    /**
+     * @brief Initialize storage - must be called once at startup
+     * Opens NVS handle and loads existing data or populates defaults.
+     */
+    esp_err_t init();
 
-/**
- * @brief Set/update a macro definition by ID
- *
- * @param macro_id ID of macro (1-50)
- * @param macro Pointer to macro_definition_t to store
- * @return ESP_OK on success, ESP_ERR_INVALID_ARG if ID out of range
- */
-esp_err_t macro_storage_set_macro(uint8_t macro_id, const macro_definition_t *macro);
+    /**
+     * @brief Check if storage is initialized
+     */
+    bool isInitialized() const { return initialized_; }
 
-/**
- * @brief Delete a macro by ID (mark as disabled)
- *
- * @param macro_id ID of macro to delete (1-50)
- * @return ESP_OK on success, ESP_ERR_INVALID_ARG if ID out of range
- */
-esp_err_t macro_storage_delete_macro(uint8_t macro_id);
+    // === Macro Operations ===
 
-/**
- * @brief Get current F-button slot assignments
- *
- * @param assignments Pointer to uint8_t[MACRO_SLOT_COUNT] to populate
- * @return ESP_OK on success
- */
-esp_err_t macro_storage_get_slot_assignments(uint8_t *assignments);
+    /**
+     * @brief Get a macro by ID
+     * @param macroId ID of macro (1-50)
+     * @param macro Output parameter
+     * @return ESP_OK if found and enabled, ESP_ERR_NOT_FOUND otherwise
+     */
+    esp_err_t getMacro(uint8_t macroId, MacroDefinition& macro) const;
 
-/**
- * @brief Set slot assignment for an F-button
- *
- * @param slot F-button slot (0-5 for F1-F6)
- * @param macro_id Macro ID to assign (0=empty, 1-50=macro)
- * @return ESP_OK on success, ESP_ERR_INVALID_ARG if slot/ID out of range
- */
-esp_err_t macro_storage_set_slot_assignment(uint8_t slot, uint8_t macro_id);
+    /**
+     * @brief Set/update a macro
+     * @param macroId ID of macro (1-50)
+     * @param macro Macro definition to store
+     */
+    esp_err_t setMacro(uint8_t macroId, const MacroDefinition& macro);
 
-/**
- * @brief Load default macros (first boot initialization)
- * Populates storage with default macro set and button assignments.
- *
- * @param storage Pointer to macro_storage_t to populate with defaults
- * @return ESP_OK on success
- */
-esp_err_t macro_storage_load_defaults(macro_storage_t *storage);
+    /**
+     * @brief Delete a macro (marks as disabled, clears from slots)
+     * @param macroId ID of macro (1-50)
+     */
+    esp_err_t deleteMacro(uint8_t macroId);
 
-/**
- * @brief Query total macro count
- *
- * @return Number of enabled (active) macros
- */
-uint8_t macro_storage_get_count(void);
+    // === Slot Assignment Operations ===
 
-/**
- * @brief Query maximum macro capacity
- *
- * @return Maximum number of macros (always MACRO_COUNT_MAX = 50)
- */
-uint8_t macro_storage_get_max_count(void);
+    /**
+     * @brief Get all F-button slot assignments
+     * @param assignments Output array (size kMacroSlotCount)
+     */
+    esp_err_t getSlotAssignments(std::array<uint8_t, kMacroSlotCount>& assignments) const;
 
-/**
- * @brief Erase all macro data and reload defaults
- * Use this to migrate from old protocol format or reset to factory defaults.
- *
- * @return ESP_OK on success
- */
-esp_err_t macro_storage_factory_reset(void);
+    /**
+     * @brief Get slot assignments as raw pointer (for C compatibility)
+     */
+    esp_err_t getSlotAssignments(uint8_t* assignments) const;
 
-#ifdef __cplusplus
-}
-#endif
+    /**
+     * @brief Set slot assignment
+     * @param slot Slot index (0-11)
+     * @param macroId Macro ID (0=empty, 1-50=macro)
+     */
+    esp_err_t setSlotAssignment(uint8_t slot, uint8_t macroId);
+
+    // === Utility ===
+
+    /**
+     * @brief Get count of enabled macros
+     */
+    uint8_t getCount() const;
+
+    /**
+     * @brief Get maximum macro capacity (always 50)
+     */
+    static constexpr uint8_t getMaxCount() { return kMacroCountMax; }
+
+    /**
+     * @brief Reset to factory defaults
+     */
+    esp_err_t factoryReset();
+
+    /**
+     * @brief Load all data from NVS
+     */
+    esp_err_t load(MacroStorageData& data);
+
+    /**
+     * @brief Save all data to NVS
+     */
+    esp_err_t save(const MacroStorageData& data);
+
+private:
+    MacroStorage() = default;
+    ~MacroStorage();
+
+    void populateDefaults();
+    uint8_t computeMacroCount() const;
+    bool nvsHasMacroData() const;
+    esp_err_t persist();
+
+    uint32_t nvsHandle_ = 0;
+    bool initialized_ = false;
+    MacroStorageData cache_;
+
+    static constexpr const char* TAG = "MacroStorage";
+};
+
+}  // namespace storage

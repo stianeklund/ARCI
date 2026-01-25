@@ -8,6 +8,7 @@ set(srcs
     "cw/CwCommandHandler.cpp"
     "gain/GainLevelCommandHandler.cpp"
     "interface/InterfaceSystemCommandHandler.cpp"
+    "macro/MXCommandHandler.cpp"
     "memory/MemoryCommandHandler.cpp"
     "menu/MenuConfigCommandHandler.cpp"
     "menu/ExtendedCommandHandler.cpp"
@@ -23,6 +24,6 @@ set(srcs
 idf_component_register(
     SRCS ${srcs}
     INCLUDE_DIRS "include"
-    REQUIRES "CatParser" "StateManager" "ISerialChannel" "CommonConstants" "FrequencyFormatter"
+    REQUIRES "CatParser" "StateManager" "ISerialChannel" "CommonConstants" "FrequencyFormatter" "MacroStorage" "RadioMacroManager"
     PRIV_REQUIRES "esp_timer" "RadioCore"
 )

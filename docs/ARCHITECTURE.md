@@ -38,7 +38,7 @@ USB, TCP network, Display UART2, and Radio serial (routing based on source)
 - **CATHandler**: `components/RadioCore/CATHandler.{h,cpp}` — Source-aware message parser wrapper around CatParser, calls CommandDispatcher directly
 - **CommandDispatcher**: `components/RadioCore/CommandDispatcher.{h,cpp}` — O(1) registry, routes commands to handlers
 - **TcpCatBridge**: `components/TcpCatBridge/TcpCatBridge.{h,cpp}` — TCP server for network-based CAT control, routes to dedicated CATHandler instances
-- **RadioMacroManager**: `components/RadioMacroManager/RadioMacroManager.{h,cpp}` — Executes complex command sequences as semantic macros
+- **RadioMacroManager**: `components/RadioMacroManager/RadioMacroManager.{h,cpp}` — Unified macro execution (semantic + user-defined)
 - **CatParser**: `components/RadioCore/CatParser.{h,cpp}` — One parser for all sources
 - **BaseCommandHandler**: `components/RadioCore/BaseCommandHandler.{h,cpp}` — Common utilities, zero‑heap style
 - **Specialized Handlers (16)**: `components/RadioCore/*CommandHandler*.{h,cpp}` — Updates RadioState directly
@@ -70,22 +70,35 @@ Notes on Split (TS‑590SG):
 
 ## Radio Macro System
 
-**RadioMacroManager** provides semantic operations that execute as atomic command sequences:
+**RadioMacroManager** is the unified macro execution engine for all macro types:
 
+### Semantic Macros (hardcoded complex operations)
 - **Transverter Macro**: EX056 menu control + AN911 RX Ant + AN991 DRV Out
+- **Split Macro**: VFO copy + FR/FT configuration
 - **Band Change Macro**: Future implementation for complex band switching
 - **Contest Mode Macro**: Future implementation for contest-specific radio setup
 
+### User-Defined Macros (stored in MacroStorage)
+- Up to 50 macros stored in NVS
+- F-button slot assignments (F1-F6 short/long press = 12 slots)
+- Pipe-separated CAT command sequences (e.g., `FA00014074000|MD2|DA1`)
+- MX protocol for CRUD operations (MXW, MXR, MXA, MXE, MXD)
+
 **Architecture Pattern:**
-- Complex operations encapsulated as macros (not scattered in business logic)  
-- Command sequences with proper delays (vTaskDelay) for radio processing
+- Single execution engine for all macro types (no separate MacroExecutor)
+- Commands dispatched through CATHandler for proper state tracking
+- Inter-command delays (50ms user macros, 20ms semantic) for radio processing
 - Error handling without exceptions (ESP-IDF compatible)
-- Used by ButtonHandler for transverter control
+- Used by ButtonHandler (F-buttons), MXCommandHandler (MXE protocol)
 
 **Example Usage:**
 ```cpp
+// Semantic macros
 bool result = macroManager.executeTransverterMacro(true);
-// Executes: EX05600001; AN911; AN991; (with delays)
+
+// User-defined macros
+esp_err_t err = macroManager.executeUserMacro(5);   // By ID
+esp_err_t err = macroManager.executeSlot(0);        // F1 short press
 ```
 
 For small, common multi‑frame operations, prefer RadioManager helpers:

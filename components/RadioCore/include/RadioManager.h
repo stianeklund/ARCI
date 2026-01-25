@@ -25,6 +25,7 @@ namespace radio
 
     // Forward declarations
     class CommandDispatcher;
+    class RadioMacroManager;
 
     // Power state enum (moved from Cat)
     enum PowerState
@@ -278,6 +279,10 @@ namespace radio
         // Optional TCP CAT bridges for network clients
         void setTcp0Bridge(tcp_cat_bridge::TcpCatBridge *bridge);
         void setTcp1Bridge(tcp_cat_bridge::TcpCatBridge *bridge);
+
+        // Optional macro manager for user-defined macro execution
+        void setMacroManager(RadioMacroManager *macroManager) { macroManager_ = macroManager; }
+        RadioMacroManager *getMacroManager() const { return macroManager_; }
 
         // Send frames to a specific local interface (CDC0/CDC1/Display/Panel)
         void sendToSource(CommandSource src, std::string_view frames) const;
@@ -733,6 +738,7 @@ namespace radio
         ISerialChannel *usbCdc1Serial_ = nullptr; // Optional second CDC output (CDC1)
         tcp_cat_bridge::TcpCatBridge *tcp0Bridge_ = nullptr; // Optional TCP port 0 bridge
         tcp_cat_bridge::TcpCatBridge *tcp1Bridge_ = nullptr; // Optional TCP port 1 bridge
+        RadioMacroManager *macroManager_ = nullptr; // Optional macro manager for user macros
 
         // Command processing system (moved from Cat)
         std::unique_ptr<CommandDispatcher> commandDispatcher_;
@@ -796,7 +802,7 @@ namespace radio
         bool updateTx(bool newTx);
 
         // Command system initialization (moved from Cat)
-        void initializeCommandHandlers() const;
+        void initializeCommandHandlers();
 
         // Utility methods
         static uint64_t getCurrentTimestamp();

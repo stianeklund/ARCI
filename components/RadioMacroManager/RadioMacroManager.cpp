@@ -2,14 +2,19 @@
 #include "../RadioCore/include/CATHandler.h"
 #include "esp_log.h"
 #include "RadioManager.h"
+#include "MacroStorage.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <array>
+#include <cstdarg>
+#include <cstring>
 
 namespace radio {
-    RadioMacroManager::RadioMacroManager(RadioManager &radioManager)
-        : radioManager_(radioManager) {
-        ESP_LOGD(TAG, "RadioMacroManager initialized");
-    }
+
+RadioMacroManager::RadioMacroManager(RadioManager &radioManager)
+    : radioManager_(radioManager) {
+    ESP_LOGI(TAG, "RadioMacroManager initialized");
+}
 
     bool RadioMacroManager::executeTransverterMacro(const bool enable) {
         ESP_LOGI(TAG, "Executing transverter macro: %s", enable ? "ENABLE" : "DISABLE");
@@ -207,4 +212,169 @@ namespace radio {
 
         return commands;
     }
+
+// =============================================================================
+// User-Defined Macro Execution (merged from MacroExecutor)
+// =============================================================================
+
+esp_err_t RadioMacroManager::executeUserMacro(uint8_t macroId) {
+    ESP_LOGD(TAG, "executeUserMacro(%d): entry", macroId);
+
+    // Fetch macro from storage
+    storage::MacroDefinition macro{};
+    esp_err_t err = storage::MacroStorage::instance().getMacro(macroId, macro);
+    if (err != ESP_OK) {
+        setStatus("Macro %d not found", macroId);
+        ESP_LOGW(TAG, "executeUserMacro(%d): NOT FOUND in storage", macroId);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    ESP_LOGD(TAG, "executeUserMacro(%d): loaded macro '%s', command='%s'",
+             macroId, macro.name, macro.command);
+
+    // Parse command sequence
+    std::vector<std::string> commands = parseCommandSequence(macro.command);
+    if (commands.empty()) {
+        setStatus("Macro %d has no commands", macroId);
+        ESP_LOGW(TAG, "executeUserMacro(%d): empty command sequence", macroId);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ESP_LOGI(TAG, "Executing macro %d ('%s') with %zu command(s)",
+             macroId, macro.name, commands.size());
+
+    // Execute commands with inter-command delay
+    for (size_t i = 0; i < commands.size(); i++) {
+        const std::string& cmd = commands[i];
+
+        ESP_LOGD(TAG, "executeUserMacro(%d): cmd %zu/%zu = '%s'",
+                 macroId, i + 1, commands.size(), cmd.c_str());
+
+        err = executeSingleCommand(cmd);
+        if (err != ESP_OK) {
+            setStatus("Failed to execute command %zu of %zu", i + 1, commands.size());
+            ESP_LOGW(TAG, "executeUserMacro(%d): FAILED cmd %zu '%s': %s",
+                     macroId, i, cmd.c_str(), esp_err_to_name(err));
+            return err;
+        }
+
+        // Add inter-command delay (50ms) if not the last command
+        if (i < commands.size() - 1) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+    }
+
+    setStatus("Macro %d executed successfully (%zu commands)", macroId, commands.size());
+    ESP_LOGI(TAG, "Macro %d execution complete", macroId);
+    return ESP_OK;
+}
+
+esp_err_t RadioMacroManager::executeSlot(uint8_t slot) {
+    // Track execution entry for debugging
+    static uint32_t executionCounter = 0;
+    executionCounter++;
+    const uint32_t thisExecution = executionCounter;
+
+    ESP_LOGI(TAG, ">>> MACRO SLOT ENTRY #%lu: slot=%d (F%d)",
+             thisExecution, slot, (slot % 6) + 1);
+
+    if (slot >= storage::kMacroSlotCount) {
+        setStatus("Invalid slot: %d", slot);
+        ESP_LOGE(TAG, "<<< MACRO SLOT EXIT #%lu: Invalid slot %d (valid: 0-%zu)",
+                 thisExecution, slot, storage::kMacroSlotCount - 1);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // Get slot assignment
+    std::array<uint8_t, storage::kMacroSlotCount> assignments{};
+    esp_err_t err = storage::MacroStorage::instance().getSlotAssignments(assignments);
+    if (err != ESP_OK) {
+        setStatus("Failed to get slot assignments");
+        ESP_LOGE(TAG, "<<< MACRO SLOT EXIT #%lu: Failed to get slot assignments: %s",
+                 thisExecution, esp_err_to_name(err));
+        return err;
+    }
+
+    uint8_t macroId = assignments[slot];
+    ESP_LOGD(TAG, "Slot assignments: [%d,%d,%d,%d,%d,%d], slot %d -> macroId=%d",
+             assignments[0], assignments[1], assignments[2],
+             assignments[3], assignments[4], assignments[5],
+             slot, macroId);
+
+    if (macroId == 0) {
+        setStatus("No macro assigned to slot %d (F%d)", slot, (slot % 6) + 1);
+        ESP_LOGD(TAG, "<<< MACRO SLOT EXIT #%lu: No macro assigned to slot %d",
+                 thisExecution, slot);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    ESP_LOGI(TAG, "Executing macro from slot %d: macroId=%d", slot, macroId);
+
+    err = executeUserMacro(macroId);
+    ESP_LOGI(TAG, "<<< MACRO SLOT EXIT #%lu: result=%s", thisExecution, esp_err_to_name(err));
+    return err;
+}
+
+bool RadioMacroManager::isReady() const {
+    // Always ready since we use RadioManager reference (no separate init needed)
+    return true;
+}
+
+esp_err_t RadioMacroManager::executeSingleCommand(const std::string& cmd) {
+    if (cmd.empty()) {
+        return ESP_OK;
+    }
+
+    std::string command = cmd;
+
+    // Ensure command ends with semicolon
+    if (command.back() != ';') {
+        command += ';';
+    }
+
+    ESP_LOGI(TAG, "Macro dispatch START: '%s'", command.c_str());
+
+    // Dispatch via RadioManager using the panel CAT handler
+    const bool result = radioManager_.dispatchMessage(radioManager_.getPanelCATHandler(), command);
+    if (!result) {
+        ESP_LOGW(TAG, "Macro dispatch TIMEOUT or FAILED: '%s'", command.c_str());
+        return ESP_ERR_TIMEOUT;
+    }
+
+    ESP_LOGI(TAG, "Macro dispatch END: '%s' (success)", command.c_str());
+    return ESP_OK;
+}
+
+std::vector<std::string> RadioMacroManager::parseCommandSequence(const std::string& commands) {
+    std::vector<std::string> result;
+    std::string current;
+
+    for (char c : commands) {
+        if (c == '|') {
+            if (!current.empty()) {
+                result.push_back(current);
+                current.clear();
+            }
+        } else {
+            current += c;
+        }
+    }
+
+    // Add any remaining command
+    if (!current.empty()) {
+        result.push_back(current);
+    }
+
+    return result;
+}
+
+void RadioMacroManager::setStatus(const char* fmt, ...) {
+    char buffer[128];
+    va_list args;
+    va_start(args, fmt);
+    std::vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+    lastStatus_ = buffer;
+}
+
 } // namespace radio

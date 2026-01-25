@@ -78,6 +78,7 @@ namespace
     std::unique_ptr<radio::CATHandler> displayCatHandler;  // Display CAT (lazy init)
     std::unique_ptr<radio::CATHandler> usb2CatHandler;     // USB2 CAT (lazy init)
     radio::RadioMacroManager radioMacroManager(radioManager);
+    radioManager.setMacroManager(&radioMacroManager);
 
     // --- System Services (NvsManager created early for ButtonHandler dependency) ---
     NvsManager nvsManager(radioManager);

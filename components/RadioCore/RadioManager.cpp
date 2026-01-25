@@ -28,6 +28,7 @@
 #include "MemoryCommandHandler.h"
 #include "MenuConfigCommandHandler.h"
 #include "ModeCommandHandler.h"
+#include "MXCommandHandler.h"
 #include "ReceiverProcessingCommandHandler.h"
 #include "ScanCommandHandler.h"
 #include "StatusInfoCommandHandler.h"
@@ -37,6 +38,7 @@
 #include "VisualScanCommandHandler.h"
 #include "VoiceMessageCommandHandler.h"
 #include "include/CommandDispatcher.h"
+#include "MacroStorage.h"
 
 namespace radio
 {
@@ -1675,7 +1677,7 @@ namespace radio
         // State will be updated by radio's answer (via AI mode or explicit response)
     }
 
-    void RadioManager::initializeCommandHandlers() const
+    void RadioManager::initializeCommandHandlers()
     {
         ESP_LOGD(RadioManager::TAG, "Initializing command handlers");
 
@@ -1782,8 +1784,21 @@ namespace radio
             ESP_LOGE(RadioManager::TAG, "Failed to register UICommandHandler");
         }
 
+        if (auto mxHandler = std::make_unique<MXCommandHandler>();
+            !commandDispatcher_->registerHandler(std::move(mxHandler)))
+        {
+            ESP_LOGE(RadioManager::TAG, "Failed to register MXCommandHandler");
+        }
+
         ESP_LOGD(RadioManager::TAG, "Command dispatcher initialized with %zu handlers",
                  commandDispatcher_->getRegisteredHandlers().size());
+
+        // Initialize macro storage (user-defined macros)
+        ESP_LOGD(RadioManager::TAG, "Initializing macro storage");
+        if (esp_err_t err = storage::MacroStorage::instance().init(); err != ESP_OK) {
+            ESP_LOGE(RadioManager::TAG, "Failed to initialize MacroStorage: %s", esp_err_to_name(err));
+        }
+        // Note: RadioMacroManager is created separately and set via setMacroManager()
     }
 
     uint8_t RadioManager::internOriginPrefix(const std::string &prefix)
