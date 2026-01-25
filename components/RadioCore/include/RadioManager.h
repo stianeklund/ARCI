@@ -740,7 +740,7 @@ namespace radio
         std::unique_ptr<CATHandler> remoteHandler_; // For radio responses
         std::unique_ptr<CATHandler> panelHandler_; // For on-device panel/button commands (Panel source)
         std::unique_ptr<CATHandler> macroHandler_; // For internal macro commands (Macro source)
-        mutable std::mutex dispatchMutex_; // Serializes CAT command dispatch (non-recursive, faster than recursive_mutex)
+        mutable std::recursive_timed_mutex dispatchMutex_; // Serializes CAT command dispatch (recursive allows nested macro execution, timed prevents watchdog)
         mutable std::mutex radioTxMutex_; // Serializes direct UART writes
 
         // Antenna switching system

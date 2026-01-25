@@ -770,7 +770,14 @@ namespace radio
         // Performance instrumentation: separate mutex wait from command processing
         const uint64_t startUs = esp_timer_get_time();
 
-        std::lock_guard<std::mutex> lock(dispatchMutex_);
+        // Add timeout to prevent watchdog triggers during nested macro execution
+        if (!dispatchMutex_.try_lock_for(std::chrono::seconds(2))) {
+            ESP_LOGE(TAG, "dispatchMessage timeout - mutex held for >2s (cmd: %.*s)",
+                     static_cast<int>(std::min(message.size(), size_t(16))), message.data());
+            return false;
+        }
+        std::unique_lock<std::recursive_timed_mutex> lock(dispatchMutex_, std::adopt_lock);
+
         const uint64_t lockAcquiredUs = esp_timer_get_time();
         const uint64_t mutexWaitUs = lockAcquiredUs - startUs;
 
