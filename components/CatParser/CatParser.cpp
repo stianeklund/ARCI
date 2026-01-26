@@ -14,7 +14,7 @@ namespace radio {
         }
 
         stats_.totalMessagesParsed++;
-        if (source == CommandSource::UsbCdc0 || source == CommandSource::UsbCdc1 || source == CommandSource::Display || source == CommandSource::Panel) {
+        if (RadioCommand::isLocalSource(source)) {
             stats_.localCommandsParsed++;
         } else {
             stats_.remoteCommandsParsed++;
