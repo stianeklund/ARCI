@@ -2,8 +2,8 @@
 
 #include <array>
 #include <atomic>
-#include <mutex>
 #include <string>
+#include "rtos_mutex.h"
 
 // Forward declaration for CommandSource with matching underlying type
 namespace radio
@@ -342,11 +342,11 @@ namespace radio
         std::atomic<int32_t> ritXitOffset{0}; // RIT/XIT offset in Hz
         uint32_t _padding2{0}; // Padding
         std::atomic<uint64_t> txActivationTime{0}; // When TX was activated (microseconds)
-        mutable std::mutex txMutex; // Mutex for TX state changes (40 bytes on ESP32-S3)
+        mutable RtosMutex txMutex; // Mutex for TX state changes
         std::atomic<int> controlLeaseOwner{-1}; // Control lease owner (-1 = none)
         std::atomic<uint64_t> controlLeaseExpiry{0}; // Control lease expiry time
         std::atomic<int> controlLeasePriority{-1}; // Priority of current lease owner
-        mutable std::mutex controlLeaseMutex; // Mutex for lease arbitration
+        mutable RtosMutex controlLeaseMutex; // Mutex for lease arbitration
 
         // === SHARED STATE: Accessed from multiple tasks (Button/Encoder/Macro/Dispatch) ===
         // These fields MUST be atomic to prevent data races and torn reads

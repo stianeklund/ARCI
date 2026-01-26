@@ -253,7 +253,7 @@ namespace radio {
             uint64_t avgInterval;
             size_t bursts;
             {
-                std::lock_guard<std::mutex> lock(statsMutex_);
+                RtosLockGuard<RtosMutex> lock(statsMutex_);
                 lastCmdCopy = stats_.lastCommandBeforeError;
                 lastErrorTimeCopy = stats_.lastErrorTime;
                 lastCmdTimeCopy = stats_.lastCommandTime;
@@ -330,7 +330,7 @@ namespace radio {
                 if (command.isUsb()) {
                     stats_.recordCommandSent(esp_timer_get_time());
                     {
-                        std::lock_guard<std::mutex> lock(statsMutex_);
+                        RtosLockGuard<RtosMutex> lock(statsMutex_);
                         stats_.lastCommandBeforeError = command.originalMessage;
                     }
                     ESP_LOGD(CommandDispatcher::TAG, "LOCAL->RADIO: '%s' (via %s)",
@@ -378,7 +378,7 @@ namespace radio {
                 if (command.isUsb()) {
                     stats_.recordCommandSent(esp_timer_get_time());
                     {
-                        std::lock_guard<std::mutex> lock(statsMutex_);
+                        RtosLockGuard<RtosMutex> lock(statsMutex_);
                         stats_.lastCommandBeforeError = command.originalMessage;
                     }
                     ESP_LOGD(CommandDispatcher::TAG, "LOCAL->RADIO: '%s' (via fallback handler)",
@@ -437,12 +437,12 @@ namespace radio {
     }
 
     DispatcherStatistics CommandDispatcher::getStatistics() const {
-        std::lock_guard<std::mutex> lock(statsMutex_);
+        RtosLockGuard<RtosMutex> lock(statsMutex_);
         return stats_;  // Returns a copy, safe to access from any task
     }
 
     void CommandDispatcher::resetStatistics() {
-        std::lock_guard<std::mutex> lock(statsMutex_);
+        RtosLockGuard<RtosMutex> lock(statsMutex_);
         stats_.reset();
     }
 } // namespace radio

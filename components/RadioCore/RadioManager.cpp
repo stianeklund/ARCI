@@ -6,7 +6,6 @@
 #include <cstring>
 #include <iomanip>
 #include <memory>
-#include <mutex>
 #include <sstream>
 #include "RadioCommand.h"
 #include "esp_err.h"
@@ -779,12 +778,12 @@ namespace radio
         const uint64_t startUs = esp_timer_get_time();
 
         // Add timeout to prevent watchdog triggers during nested macro execution
-        if (!dispatchMutex_.try_lock_for(std::chrono::seconds(2))) {
+        if (!dispatchMutex_.try_lock_for(pdMS_TO_TICKS(2000))) {
             ESP_LOGE(TAG, "dispatchMessage timeout - mutex held for >2s (cmd: %.*s)",
                      static_cast<int>(std::min(message.size(), size_t(16))), message.data());
             return false;
         }
-        std::unique_lock<std::recursive_timed_mutex> lock(dispatchMutex_, std::adopt_lock);
+        RtosUniqueLock<RtosRecursiveMutex> lock(dispatchMutex_, std::adopt_lock);
 
         const uint64_t lockAcquiredUs = esp_timer_get_time();
         const uint64_t mutexWaitUs = lockAcquiredUs - startUs;
@@ -877,7 +876,7 @@ namespace radio
         // Track last command sent for error diagnostics
         // TODO: Add stats tracking when CommandDispatcher supports it
 
-        const std::lock_guard<std::mutex> txLock(radioTxMutex_);
+        const RtosLockGuard<RtosMutex> txLock(radioTxMutex_);
         radioSerial_.sendMessage(command);
         if (state_.isTx.load() && state_.getTxOwner() == static_cast<int>(CommandSource::Remote))
         {
@@ -911,7 +910,7 @@ namespace radio
             ESP_LOGE(RadioManager::TAG, "❌ BLOCKED 2-part command invalid char");
             return;
         }
-        const std::lock_guard<std::mutex> txLock(radioTxMutex_);
+        const RtosLockGuard<RtosMutex> txLock(radioTxMutex_);
         radioSerial_.sendMessage(part1, part2);
         if (state_.isTx.load() && state_.getTxOwner() == static_cast<int>(CommandSource::Remote))
         {

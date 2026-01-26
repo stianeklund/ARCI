@@ -6,7 +6,7 @@
 #include <string>
 #include <memory>
 #include <atomic>
-#include <mutex>
+#include "rtos_mutex.h"
 
 class ISerialChannel;
 
@@ -214,7 +214,7 @@ private:
     std::vector<CommandHandlerPtr> handlers_;
     std::array<ICommandHandler*, HASH_TABLE_SIZE> commandMap_{};  // Zero-initialized
     DispatcherStatistics stats_;
-    mutable std::mutex statsMutex_;  // Protects stats_ string fields for thread-safe access
+    mutable RtosMutex statsMutex_;  // Protects stats_ string fields for thread-safe access
 
     static constexpr const char* TAG = "CommandDispatcher";
 };

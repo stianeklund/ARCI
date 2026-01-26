@@ -8,8 +8,8 @@
 #include <array>
 #include <cstdint>
 #include <functional>
-#include <mutex>
 #include <string_view>
+#include "rtos_mutex.h"
 
 namespace tcp_cat_bridge {
 
@@ -197,7 +197,7 @@ private:
     std::atomic<uint64_t> bytesReceived_{0};
     std::atomic<uint64_t> bytesSent_{0};
     std::function<void(std::string_view)> incomingFrameCallback_;
-    mutable std::mutex callbackMutex_;
+    mutable RtosMutex callbackMutex_;
 };
 
 } // namespace tcp_cat_bridge

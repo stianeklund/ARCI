@@ -33,7 +33,7 @@ TcpCatBridge::~TcpCatBridge() {
 }
 
 void TcpCatBridge::setIncomingFrameCallback(std::function<void(std::string_view)> callback) {
-    std::lock_guard<std::mutex> lock(callbackMutex_);
+    RtosLockGuard<RtosMutex> lock(callbackMutex_);
     incomingFrameCallback_ = std::move(callback);
 }
 
@@ -226,7 +226,7 @@ void TcpCatBridge::processClientInput(int clientIdx, const uint8_t* data, size_t
 
     std::function<void(std::string_view)> frameCallback;
     {
-        std::lock_guard<std::mutex> lock(callbackMutex_);
+        RtosLockGuard<RtosMutex> lock(callbackMutex_);
         frameCallback = incomingFrameCallback_;
     }
 
@@ -343,7 +343,7 @@ void TcpCatBridge::cleanup() {
     }
 
     {
-        std::lock_guard<std::mutex> lock(callbackMutex_);
+        RtosLockGuard<RtosMutex> lock(callbackMutex_);
         incomingFrameCallback_ = nullptr;
     }
 }

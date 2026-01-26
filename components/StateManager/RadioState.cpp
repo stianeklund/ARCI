@@ -10,7 +10,7 @@ namespace radio
 
     bool RadioState::tryAcquireTx(CommandSource source, uint64_t currentTime)
     {
-        std::lock_guard<std::mutex> lock(txMutex);
+        RtosLockGuard<RtosMutex> lock(txMutex);
 
         // Check if TX is already owned by someone else
         int currentOwner = txOwner.load();
@@ -50,7 +50,7 @@ namespace radio
 
     bool RadioState::releaseTx(CommandSource source, uint64_t currentTime)
     {
-        std::lock_guard<std::mutex> lock(txMutex);
+        RtosLockGuard<RtosMutex> lock(txMutex);
 
         int currentOwner = txOwner.load();
 
@@ -73,7 +73,7 @@ namespace radio
 
     bool RadioState::forceReleaseTx(uint64_t currentTime)
     {
-        std::lock_guard<std::mutex> lock(txMutex);
+        RtosLockGuard<RtosMutex> lock(txMutex);
 
         if (!isTx.load())
         {
@@ -115,7 +115,7 @@ namespace radio
     bool RadioState::tryAcquireControlLease(CommandSource source, int priority, uint64_t currentTime,
                                             uint64_t leaseDurationUs)
     {
-        std::lock_guard<std::mutex> lock(controlLeaseMutex);
+        RtosLockGuard<RtosMutex> lock(controlLeaseMutex);
 
         const int currentOwner = controlLeaseOwner.load(std::memory_order_relaxed);
         const uint64_t currentExpiry = controlLeaseExpiry.load(std::memory_order_relaxed);
@@ -160,7 +160,7 @@ namespace radio
 
     bool RadioState::refreshControlLease(CommandSource source, uint64_t currentTime, uint64_t leaseDurationUs)
     {
-        std::lock_guard<std::mutex> lock(controlLeaseMutex);
+        RtosLockGuard<RtosMutex> lock(controlLeaseMutex);
         if (controlLeaseOwner.load(std::memory_order_relaxed) != static_cast<int>(source))
         {
             return false;
@@ -172,7 +172,7 @@ namespace radio
 
     void RadioState::releaseControlLease(CommandSource source)
     {
-        std::lock_guard<std::mutex> lock(controlLeaseMutex);
+        RtosLockGuard<RtosMutex> lock(controlLeaseMutex);
         if (controlLeaseOwner.load(std::memory_order_relaxed) == static_cast<int>(source))
         {
             controlLeaseOwner.store(-1, std::memory_order_relaxed);
@@ -183,7 +183,7 @@ namespace radio
 
     void RadioState::forceReleaseControlLease()
     {
-        std::lock_guard<std::mutex> lock(controlLeaseMutex);
+        RtosLockGuard<RtosMutex> lock(controlLeaseMutex);
         controlLeaseOwner.store(-1, std::memory_order_relaxed);
         controlLeasePriority.store(-1, std::memory_order_relaxed);
         controlLeaseExpiry.store(0, std::memory_order_relaxed);

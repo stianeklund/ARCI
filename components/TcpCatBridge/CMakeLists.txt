@@ -4,4 +4,5 @@ idf_component_register(
     REQUIRES
         lwip
         ISerialChannel
+        CommonConstants
 )

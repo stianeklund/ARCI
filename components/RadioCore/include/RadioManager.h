@@ -4,10 +4,10 @@
 #include <atomic>
 #include <initializer_list>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <string_view>
 #include <unordered_map>
+#include "rtos_mutex.h"
 #include "../../AntennaSwitch/include/AntennaSwitch.h"
 #include "../../CommonConstants/include/radio_constants.h"
 #include "CATHandler.h"
@@ -752,8 +752,8 @@ namespace radio
         std::unique_ptr<CATHandler> remoteHandler_; // For radio responses
         std::unique_ptr<CATHandler> panelHandler_; // For on-device panel/button commands (Panel source)
         std::unique_ptr<CATHandler> macroHandler_; // For internal macro commands (Macro source)
-        mutable std::recursive_timed_mutex dispatchMutex_; // Serializes CAT command dispatch (recursive allows nested macro execution, timed prevents watchdog)
-        mutable std::mutex radioTxMutex_; // Serializes direct UART writes
+        mutable RtosRecursiveMutex dispatchMutex_; // Serializes CAT command dispatch (recursive allows nested macro execution)
+        mutable RtosMutex radioTxMutex_; // Serializes direct UART writes
 
         // Antenna switching system
         std::unique_ptr<antenna::AntennaSwitch> antennaSwitch_;
