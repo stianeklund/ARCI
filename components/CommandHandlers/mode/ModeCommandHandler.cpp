@@ -316,7 +316,7 @@ namespace radio
             // AS query - forward to radio
             if (shouldSendToRadio(command))
             {
-                if (command.isUsb())
+                if (command.isCatClient())
                 {
                     radioManager.getState().queryTracker.recordQuery("AS", esp_timer_get_time());
                 }

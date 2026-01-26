@@ -64,7 +64,7 @@ static void cdc_line_state_callback(int itf, cdcacm_event_t *event) {
         UsbCdc::setDTR(dtr);
 
         // If DTR is set, the host is ready to communicate
-        // This is a good signal that programs like N1MM have opened the port
+        // This is a good signal that CAT clients have opened the port
         if (dtr) {
             ESP_LOGD("UsbCdc", "Host ready for communication (DTR asserted)");
             // Flush any buffered data when host opens the port

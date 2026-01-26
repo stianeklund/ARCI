@@ -68,7 +68,7 @@ bool VisualScanCommandHandler::handleVS(const RadioCommand& command,
         return true;
     }
     if (shouldSendToRadio(command)) {
-        if (command.isUsb()) {
+        if (command.isCatClient()) {
             radioManager.getState().queryTracker.recordQuery("VS", esp_timer_get_time());
         }
         sendToRadio(radioSerial, command.originalMessage);
@@ -84,7 +84,7 @@ bool VisualScanCommandHandler::handleVS0(const RadioCommand& command,
     // VS0 - Visual Scan start/stop/pause status
     if (isQuery(command)) {
         if (shouldSendToRadio(command)) {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 radioManager.getState().queryTracker.recordQuery("VS0", esp_timer_get_time());
             }
             sendToRadio(radioSerial, buildCommand("VS0"));
@@ -199,7 +199,7 @@ bool VisualScanCommandHandler::handleVS3(const RadioCommand& command,
     // VS3 - Read Visual Scan frequencies and span (read only)
     if (isQuery(command)) {
         if (shouldSendToRadio(command)) {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 radioManager.getState().queryTracker.recordQuery("VS3", esp_timer_get_time());
             }
             sendToRadio(radioSerial, buildCommand("VS3"));
@@ -228,7 +228,7 @@ bool VisualScanCommandHandler::handleVS4(const RadioCommand& command,
     // VS4 - Read Visual Scan sweep frequency and signal level (read only)
     if (isQuery(command)) {
         if (shouldSendToRadio(command)) {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 radioManager.getState().queryTracker.recordQuery("VS4", esp_timer_get_time());
             }
             sendToRadio(radioSerial, buildCommand("VS4"));

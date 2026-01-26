@@ -178,6 +178,15 @@ public:
     }
 
     /**
+     * @brief Check if a source is an external CAT client (USB or TCP) - static helper
+     * These are the interfaces that behave identically as remote control clients,
+     * distinct from Panel (physical controls), Display, and Macro (internal).
+     */
+    [[nodiscard]] static constexpr bool isCatClientSource(CommandSource src) {
+        return isUsbSource(src) || isTcpSource(src);
+    }
+
+    /**
      * @brief Check if a source is local (USB, TCP, Display, Panel, or Macro) - static helper
      * Use this when you have a CommandSource but not a full RadioCommand
      */
@@ -195,6 +204,13 @@ public:
      * @brief Check if this command is from a TCP interface (either Tcp0 or Tcp1)
      */
     [[nodiscard]] bool isTcp() const { return isTcpSource(source); }
+
+    /**
+     * @brief Check if this command is from an external CAT client (USB or TCP)
+     * Use this for behavior that should apply to all remote control interfaces
+     * but not to Panel, Display, or Macro sources.
+     */
+    [[nodiscard]] bool isCatClient() const { return isCatClientSource(source); }
 
     /**
      * @brief Check if this command is from a local interface (USB, TCP, Display, or Panel)

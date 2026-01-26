@@ -151,7 +151,7 @@ bool MemoryCommandHandler::handleMW(const RadioCommand& command,
             param.push_back('0' + memChannel.channel % 10);
             std::string response = buildCommand("MW", param);
             routeAnswerResponse(command, response, usbSerial, radioManager);
-            ESP_LOGV(MemoryCommandHandler::TAG, "Forwarded MW to USB: %s", response.c_str());
+            ESP_LOGV(MemoryCommandHandler::TAG, "Forwarded MW via routing: %s", response.c_str());
             return true;
         }
         

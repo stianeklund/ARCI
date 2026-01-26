@@ -36,7 +36,7 @@ bool MenuConfigCommandHandler::handleMF(const RadioCommand& command,
     auto& state = radioManager.getState();
     
     if (isQuery(command)) {
-        if (command.isUsb()) {
+        if (command.isCatClient()) {
             // For local queries, check if cached data is fresh
             if (isCacheFresh(radioManager, "MF", TTL_STATIC_CONFIG)) {
                 // Cache is fresh - respond with cached data immediately

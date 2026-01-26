@@ -53,7 +53,7 @@ bool GainLevelCommandHandler::handleAG(const RadioCommand& command,
                                       RadioManager& radioManager) const {
     auto& state = radioManager.getState();
     
-    // Debug N1MM AG command patterns - log all AG commands with values
+    // Debug AG command patterns - log all AG commands with values
     static uint32_t agCommandCount = 0;
     static uint64_t lastAgLogTime = 0;
     const uint64_t now = esp_timer_get_time();
@@ -67,10 +67,10 @@ bool GainLevelCommandHandler::handleAG(const RadioCommand& command,
     
     if (now - lastAgLogTime > 1000000) { // Log every second
         ESP_LOGV(TAG, "🔍 AG DEBUG: Received %u AG commands in last second, type=%s, source=%s",
-                 agCommandCount, 
-                 (command.type == CommandType::Set ? "SET" : 
+                 agCommandCount,
+                 (command.type == CommandType::Set ? "SET" :
                   command.type == CommandType::Read ? "READ" : "ANSWER"),
-                 command.isUsb() ? "USB" : "RADIO");
+                 command.isUsb() ? "USB" : (command.isTcp() ? "TCP" : "RADIO"));
         agCommandCount = 0;
         lastAgLogTime = now;
     }
@@ -79,15 +79,15 @@ bool GainLevelCommandHandler::handleAG(const RadioCommand& command,
     if (command.type == CommandType::Set || command.type == CommandType::Answer) {
         ESP_LOGV(TAG, "🎚️ AG %s: gain=%d, source=%s, originalMsg='%.*s'",
                  (command.type == CommandType::Set ? "SET" : "ANSWER"),
-                 gainValue, 
-                 command.isUsb() ? "USB/N1MM" : "RADIO",
+                 gainValue,
+                 command.isUsb() ? "USB" : (command.isTcp() ? "TCP" : "RADIO"),
                  static_cast<int>(command.originalMessage.length()), command.originalMessage.data());
     }
     
     // Also log READ commands to trace the flow
     if (command.type == CommandType::Read) {
         ESP_LOGV(TAG, "🎚️ AG READ: source=%s, originalMsg='%.*s'",
-                 command.isUsb() ? "USB/N1MM" : "RADIO",
+                 command.isUsb() ? "USB" : (command.isTcp() ? "TCP" : "RADIO"),
                  static_cast<int>(command.originalMessage.length()), command.originalMessage.data());
     }
     
@@ -320,13 +320,13 @@ bool GainLevelCommandHandler::handleCG(const RadioCommand& command,
                                       RadioManager& radioManager) {
     // CG: Carrier level (for AM/FM modes)
     if (isQuery(command)) {
-        if (command.isUsb()) {
-            // Return current or default carrier level directly to USB
+        if (command.isCatClient()) {
+            // Return current or default carrier level directly to USB/TCP
             const int level = radioManager.getState().carrierLevel;
             const auto response = formatResponse3D("CG", level);
             respondToSource(command, response, usbSerial, radioManager);
         } else {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 radioManager.getState().queryTracker.recordQuery("CG", esp_timer_get_time());
             }
             sendToRadio(radioSerial, buildCommand("CG"));
@@ -376,7 +376,7 @@ bool GainLevelCommandHandler::handleML(const RadioCommand& command,
                                       RadioManager& radioManager) {
     // ML: TX Monitor output level
     if (isQuery(command)) {
-        if (command.isUsb()) {
+        if (command.isCatClient()) {
             // For local queries, check if cached data is fresh
             if (isCacheFresh(radioManager, "ML", TTL_STATUS)) {
                 // Cache is fresh - respond with cached data immediately
@@ -460,7 +460,7 @@ bool GainLevelCommandHandler::handleML(const RadioCommand& command,
         // VG: VOX gain
         if (isQuery(command)) {
             if (shouldSendToRadio(command)) {
-                if (command.isUsb()) {
+                if (command.isCatClient()) {
                     radioManager.getState().queryTracker.recordQuery("VG", esp_timer_get_time());
                 }
                 sendToRadio(radioSerial, buildCommand("VG"));
@@ -526,7 +526,7 @@ bool GainLevelCommandHandler::handlePC(const RadioCommand& command,
 
     if (isQuery(command)) {
         if (shouldSendToRadio(command)) {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 radioManager.getState().queryTracker.recordQuery("PC", esp_timer_get_time());
             }
             sendToRadio(radioSerial, buildCommand("PC"));

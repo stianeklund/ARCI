@@ -43,7 +43,7 @@ bool CwCommandHandler::handleKS(const RadioCommand& command,
                                RadioManager& radioManager) {
     // KS: Keying speed
     if (isQuery(command)) {
-        if (command.isUsb()) {
+        if (command.isCatClient()) {
             // Return default CW speed
             const auto response = buildCommand("KS", "020");
             respondToSource(command, response, usbSerial, radioManager);
@@ -220,7 +220,7 @@ bool CwCommandHandler::handleKY(const RadioCommand& command,
     if (isQuery(command)) {
         // Read: KY; - forward to radio to get current keyer status
         if (shouldSendToRadio(command)) {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 radioManager.getState().queryTracker.recordQuery("KY", esp_timer_get_time());
             }
             sendToRadio(radioSerial, buildCommand("KY"));
@@ -246,12 +246,12 @@ bool CwCommandHandler::handleCA(const RadioCommand& command,
     auto& state = radioManager.getState();
     
     if (isQuery(command)) {
-        if (command.isUsb()) {
+        if (command.isCatClient()) {
             // Return current CW tune state directly
             bool cwTune = state.cwTune;
             respondToSource(command, buildCommand("CA", std::to_string(cwTune ? 1 : 0)), usbSerial, radioManager);
         } else {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 radioManager.getState().queryTracker.recordQuery("CA", esp_timer_get_time());
             }
             sendToRadio(radioSerial, buildCommand("CA"));
@@ -307,7 +307,7 @@ bool CwCommandHandler::handleCD0(const RadioCommand& command,
     // CD0: Morse code decoder (enable)
     if (isQuery(command)) {
         // For local queries, do not send to radio or USB (tests expect no forwarding)
-        if (!command.isUsb()) {
+        if (!command.isCatClient()) {
             sendToRadio(radioSerial, buildCommand("CD0"));
         }
         return true;
@@ -353,7 +353,7 @@ bool CwCommandHandler::handleCD1(const RadioCommand& command,
     // CD1: Morse code decoder threshold
     if (isQuery(command)) {
         // For local queries, do not send to radio or USB (tests expect no forwarding)
-        if (!command.isUsb()) {
+        if (!command.isCatClient()) {
             sendToRadio(radioSerial, buildCommand("CD1"));
         }
         return true;
@@ -400,7 +400,7 @@ bool CwCommandHandler::handleCD2(const RadioCommand& command,
     // This command only supports query and answer types (radio provides decoded text)
     if (isQuery(command)) {
         if (shouldSendToRadio(command)) {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 radioManager.getState().queryTracker.recordQuery("CD", esp_timer_get_time());
             }
             sendToRadio(radioSerial, buildCommand("CD2"));
@@ -469,14 +469,14 @@ bool CwCommandHandler::handleCD(const RadioCommand& command,
     
     // For queries without specific parameters, forward to radio (but not for local sources per test expectations)
     if (isQuery(command)) {
-        if (!command.isUsb() && shouldSendToRadio(command)) {
+        if (!command.isCatClient() && shouldSendToRadio(command)) {
             sendToRadio(radioSerial, buildCommand("CD"));
         }
         return true;
     }
-    
+
     // For other cases, forward to radio as-is (but not for local sources per test expectations)
-    if (!command.isUsb() && shouldSendToRadio(command)) {
+    if (!command.isCatClient() && shouldSendToRadio(command)) {
         std::string cmdStr = buildCommand("CD");
         sendToRadio(radioSerial, cmdStr);
     }

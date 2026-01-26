@@ -101,7 +101,7 @@ bool StatusInfoCommandHandler::handleCommand(const RadioCommand& command,
     if (command.command == "XI") {
         // XI: Transmit frequency/mode read
         if (isQuery(command)) {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 const auto& state = radioManager.getState();
 
                 const auto selectVfoFrequency = [&state](const int vfo) -> uint64_t {
@@ -728,9 +728,9 @@ bool StatusInfoCommandHandler::handleID(const RadioCommand& cmd,
                                        const RadioManager& rm) {
     // ID: Radio identification
     ESP_LOGI("StatusInfo", "=== ID COMMAND HANDLER ===");
-    ESP_LOGI("StatusInfo", "Type: %s, Source: %s",
-             cmd.type == CommandType::Read? "Read" : "Answer",
-             cmd.isUsb() ? "Usb" : "Remote");
+        ESP_LOGI("StatusInfo", "Type: %s, Source: %s",
+                 cmd.type == CommandType::Read? "Read" : "Answer",
+                 cmd.isLocal() ? "Local" : "Remote");
 
     const std::string idStr = CONFIG_RADIOCORE_ID_STRING;
 
@@ -892,7 +892,7 @@ bool StatusInfoCommandHandler::handleBY(const RadioCommand& cmd,
                                       RadioManager& rm) const {
     // BY: BUSY status (Sky Command)
     if (isQuery(cmd)) {
-        if (cmd.isUsb() || cmd.isTcp()) {
+        if (cmd.isCatClient()) {
             // Return busy status - typically 0 (not busy) for testing
             const auto response = buildCommand("BY", "00"); // P1=0 (not busy), P2=0 (reserved)
             respondToSource(cmd, response, usbSerial, rm);

@@ -82,7 +82,7 @@ bool ToneSquelchCommandHandler::handleTO(const RadioCommand& command,
                                         RadioManager& radioManager) {
     // TO - Tone on/off
     if (isQuery(command)) {
-        if (command.isUsb()) {
+        if (command.isCatClient()) {
             // For local queries, check if cached data is fresh
             if (isCacheFresh(radioManager, "TO", TTL_STATUS)) {
                 // Cache is fresh - respond with cached data immediately
@@ -216,7 +216,7 @@ bool ToneSquelchCommandHandler::handleCT(const RadioCommand& command,
     // CT - Tone control state (0/1/2), not frequency. Tests expect single-digit formatting.
     if (isQuery(command)) {
         // Do not send to radio or USB on local query (per tests)
-        if (!command.isUsb()) {
+        if (!command.isCatClient()) {
             sendToRadio(radioSerial, buildCommand("CT"));
         }
         return true;

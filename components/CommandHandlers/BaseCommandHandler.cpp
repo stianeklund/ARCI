@@ -438,7 +438,7 @@ namespace radio {
                 // Recording origin would cause radio response to be routed back as duplicate
             } else {
                 // Rate-limit "Cache empty" logs to prevent spam during cache stampedes
-                // (e.g., after TX/RX transitions that invalidate IF cache while N1MM+ polls aggressively)
+                // (e.g., after TX/RX transitions that invalidate IF cache while CAT clients poll aggressively)
                 // Use fixed-size array with hash for O(1) lookup, no heap allocation
                 static constexpr size_t LOG_THROTTLE_SLOTS = 64;  // Power of 2 for fast modulo
                 static std::array<uint64_t, LOG_THROTTLE_SLOTS> lastCacheEmptyLogTime{};

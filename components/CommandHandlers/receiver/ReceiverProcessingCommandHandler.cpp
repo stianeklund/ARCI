@@ -88,13 +88,13 @@ bool ReceiverProcessingCommandHandler::handlePA(const RadioCommand& command,
     }
     
     if (isQuery(command)) {
-        if (command.isUsb()) {
+        if (command.isCatClient()) {
             // Return cached preamp state in answer format PAP1P2 (P2 always 0)
             bool preampState = radioManager.getState().preAmplifier;
             std::string response = buildCommand("PA", std::to_string(preampState ? 1 : 0) + "0");
             respondToSource(command, response, usbSerial, radioManager);
         } else if (shouldSendToRadio(command)) {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 radioManager.getState().queryTracker.recordQuery("PA", esp_timer_get_time());
             }
             sendToRadio(radioSerial, buildCommand("PA"));
@@ -270,13 +270,13 @@ bool ReceiverProcessingCommandHandler::handleFL(const RadioCommand& command,
     auto& state = radioManager.getState();
 
     if (isQuery(command)) {
-        if (command.isUsb()) {
+        if (command.isCatClient()) {
             int current = state.ifFilter;
             if (current != 1 && current != 2) current = 1; // default to A
             std::string response = buildCommand("FL", std::to_string(current));
             respondToSource(command, response, usbSerial, radioManager);
         } else if (shouldSendToRadio(command)) {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 radioManager.getState().queryTracker.recordQuery("FL", esp_timer_get_time());
             }
             sendToRadio(radioSerial, buildCommand("FL"));
@@ -329,11 +329,11 @@ bool ReceiverProcessingCommandHandler::handleFW(const RadioCommand& command,
                                                RadioManager& radioManager) {
     // FW: DSP filter bandwidth (for CW/FSK)
     if (isQuery(command)) {
-        if (command.isUsb()) {
+        if (command.isCatClient()) {
             // Return default bandwidth
             respondToSource(command, buildCommand("FW", "500"), usbSerial, radioManager); // Default 500 Hz
         } else if (shouldSendToRadio(command)) {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 radioManager.getState().queryTracker.recordQuery("FW", esp_timer_get_time());
             }
             sendToRadio(radioSerial, buildCommand("FW"));
@@ -382,12 +382,12 @@ bool ReceiverProcessingCommandHandler::handleSH(const RadioCommand& command,
                                                RadioManager& radioManager) {
     // SH: Receive high-cut / DSP Shift
     if (isQuery(command)) {
-        if (command.isUsb()) {
+        if (command.isCatClient()) {
             // Return current state value
             int currentValue = radioManager.getState().receiveHighCut;
             respondToSource(command, formatResponse2D("SH", currentValue), usbSerial, radioManager);
         } else if (shouldSendToRadio(command)) {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 radioManager.getState().queryTracker.recordQuery("SH", esp_timer_get_time());
             }
             sendToRadio(radioSerial, buildCommand("SH"));
@@ -492,11 +492,11 @@ bool ReceiverProcessingCommandHandler::handleGC(const RadioCommand& command,
                                                RadioManager& radioManager) {
     // GC: AGC mode (Off, Slow, Fast)
     if (isQuery(command)) {
-        if (command.isUsb()) {
+        if (command.isCatClient()) {
             // Return default AGC mode (Fast)
             respondToSource(command, buildCommand("GC", "2"), usbSerial, radioManager);
         } else if (shouldSendToRadio(command)) {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 radioManager.getState().queryTracker.recordQuery("GC", esp_timer_get_time());
             }
             sendToRadio(radioSerial, buildCommand("GC"));
@@ -619,11 +619,11 @@ bool ReceiverProcessingCommandHandler::handleNB(const RadioCommand& command,
                                                RadioManager& radioManager) {
     // NB: Noise blanker (type)
     if (isQuery(command)) {
-        if (command.isUsb()) {
+        if (command.isCatClient()) {
             // Return default noise blanker (off)
             respondToSource(command, buildCommand("NB", "0"), usbSerial, radioManager);
         } else if (shouldSendToRadio(command)) {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 radioManager.getState().queryTracker.recordQuery("NB", esp_timer_get_time());
             }
             sendToRadio(radioSerial, buildCommand("NB"));
@@ -675,11 +675,11 @@ bool ReceiverProcessingCommandHandler::handleNL(const RadioCommand& command,
                                                RadioManager& radioManager) {
     // NL: Noise blanker level
     if (isQuery(command)) {
-        if (command.isUsb()) {
+        if (command.isCatClient()) {
             // Return default noise blanker level
             respondToSource(command, buildCommand("NL", "050"), usbSerial, radioManager);
         } else if (shouldSendToRadio(command)) {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 radioManager.getState().queryTracker.recordQuery("NL", esp_timer_get_time());
             }
             sendToRadio(radioSerial, buildCommand("NL"));
@@ -718,11 +718,11 @@ bool ReceiverProcessingCommandHandler::handleNR(const RadioCommand& command,
                                                RadioManager& radioManager) {
     // NR: Noise Reduction mode (NR1/NR2)
     if (isQuery(command)) {
-        if (command.isUsb()) {
+        if (command.isCatClient()) {
             // Return default noise reduction (off)
             respondToSource(command, buildCommand("NR", "0"), usbSerial, radioManager);
         } else if (shouldSendToRadio(command)) {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 radioManager.getState().queryTracker.recordQuery("NR", esp_timer_get_time());
             }
             sendToRadio(radioSerial, buildCommand("NR"));
@@ -767,7 +767,7 @@ bool ReceiverProcessingCommandHandler::handleRL(const RadioCommand& command,
     // RL command format: RLP1P1; where P1 is 2 digits (01-10 for NR1, 00-09 for NR2)
     if (isQuery(command)) {
         if (shouldSendToRadio(command)) {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 radioManager.getState().queryTracker.recordQuery("RL", esp_timer_get_time());
             }
             sendToRadio(radioSerial, buildCommand("RL"));
@@ -825,11 +825,11 @@ bool ReceiverProcessingCommandHandler::handleNT(const RadioCommand& command,
     // NT: Notch Filter (Auto/Manual)
     // Spec variant in tests: two digits where first = mode (0=off,1=auto,2=manual), second = bandwidth (0=narrow,1=wide)
     if (isQuery(command)) {
-        if (command.isUsb()) {
+        if (command.isCatClient()) {
             // Return default notch filter (off)
             respondToSource(command, buildCommand("NT", "0"), usbSerial, radioManager);
         } else if (shouldSendToRadio(command)) {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 radioManager.getState().queryTracker.recordQuery("NT", esp_timer_get_time());
             }
             sendToRadio(radioSerial, buildCommand("NT"));
@@ -887,12 +887,12 @@ bool ReceiverProcessingCommandHandler::handleBP(const RadioCommand& command,
     auto& state = radioManager.getState();
     
     if (isQuery(command)) {
-        if (command.isUsb()) {
-            // Return current manual notch frequency setting directly to USB
+        if (command.isCatClient()) {
+            // Return current manual notch frequency setting directly to USB/TCP
             int notchValue = state.manualNotchFrequency;
             respondToSource(command, formatResponse3D("BP", notchValue), usbSerial, radioManager);
         } else {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 radioManager.getState().queryTracker.recordQuery("BP", esp_timer_get_time());
             }
             sendToRadio(radioSerial, buildCommand("BP"));
@@ -943,12 +943,12 @@ bool ReceiverProcessingCommandHandler::handleBC(const RadioCommand& command,
     auto& state = radioManager.getState();
     
     if (isQuery(command)) {
-        if (command.isUsb()) {
-            // Return current beat cancel mode directly to USB
+        if (command.isCatClient()) {
+            // Return current beat cancel mode directly to USB/TCP
             int beatCancel = state.beatCancelMode;
             respondToSource(command, buildCommand("BC", std::to_string(beatCancel)), usbSerial, radioManager);
         } else {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 radioManager.getState().queryTracker.recordQuery("BC", esp_timer_get_time());
             }
             sendToRadio(radioSerial, buildCommand("BC"));

@@ -36,7 +36,7 @@ bool ScanCommandHandler::handleSC(const RadioCommand& command,
     // SC - Scan start/stop
     if (isQuery(command)) {
         if (shouldSendToRadio(command)) {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 radioManager.getState().queryTracker.recordQuery("SC", esp_timer_get_time());
             }
             sendToRadio(radioSerial, buildCommand("SC"));
@@ -95,7 +95,7 @@ bool ScanCommandHandler::handleSU(const RadioCommand& command,
     }
     if (isQuery(command)) {
         if (shouldSendToRadio(command)) {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 radioManager.getState().queryTracker.recordQuery("SU", esp_timer_get_time());
             }
             std::string params = getStringParam(command, 0, "");
@@ -119,7 +119,7 @@ bool ScanCommandHandler::handleSS(const RadioCommand& command,
     // SS - Program Slow Scan Frequency (forward parameters as-is)
     if (isQuery(command)) {
         if (shouldSendToRadio(command)) {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 radioManager.getState().queryTracker.recordQuery("SS", esp_timer_get_time());
             }
             sendToRadio(radioSerial, buildCommand("SS"));

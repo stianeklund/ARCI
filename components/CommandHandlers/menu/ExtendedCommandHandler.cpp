@@ -161,7 +161,7 @@ namespace radio {
         auto &menuState = getExtendedMenuState();
 
         if (isQuery(command)) {
-            if (command.isUsb()) {
+            if (command.isCatClient()) {
                 // cacheKey = "EX" + menuNumber (no temporary allocations besides the key itself)
                 std::string cacheKey;
                 cacheKey.reserve(2 + menuNumber.size());

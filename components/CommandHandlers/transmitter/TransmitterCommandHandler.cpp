@@ -481,14 +481,14 @@ namespace radio
         // PR: Speech Processor enable
         if (isQuery(command))
         {
-            if (command.isUsb())
+            if (command.isCatClient())
             {
                 // Return default speech processor state (off)
                 respondToSource(command, buildCommand("PR", "0"), usbSerial, radioManager);
             }
             else if (shouldSendToRadio(command))
             {
-                if (command.isUsb())
+                if (command.isCatClient())
                 {
                     radioManager.getState().queryTracker.recordQuery("PR", esp_timer_get_time());
                 }
@@ -539,7 +539,7 @@ namespace radio
 
         if (isQuery(command))
         {
-            if (command.isUsb())
+            if (command.isCatClient())
             {
                 // Return default levels
                 int inLevel = state.speechProcessorInLevel;
@@ -667,7 +667,7 @@ namespace radio
         {
             if (shouldSendToRadio(command))
             {
-                if (command.isUsb())
+                if (command.isCatClient())
                 {
                     radioManager.getState().queryTracker.recordQuery("VD", esp_timer_get_time());
                 }

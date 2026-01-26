@@ -124,7 +124,7 @@ namespace radio
             }
             */
 
-            if (cmd.isUsb() || cmd.isTcp())
+            if (cmd.isCatClient())
             {
                 const bool cacheFresh = isCacheFresh(rm, "FA", TTL_REALTIME);
                 const bool txActive = rm.getState().isTx.load();
@@ -412,7 +412,7 @@ namespace radio
                 return false;
             }*/
 
-            if (cmd.isUsb() || cmd.isTcp())
+            if (cmd.isCatClient())
             {
                 const bool cacheFresh = isCacheFresh(rm, "FB", TTL_REALTIME);
                 const bool txActive = rm.getState().isTx.load();
@@ -689,7 +689,7 @@ namespace radio
         if (isQuery(cmd))
         {
             // Local (USB/TCP/Display) queries should be answered from state (no round-trip)
-            if (cmd.isUsb() || cmd.isTcp() || cmd.source == CommandSource::Display)
+            if (cmd.isCatClient() || cmd.source == CommandSource::Display)
             {
                 const int rxVfo = rm.getRxVfo();
                 const std::string response = buildCommand("FR", std::to_string(rxVfo));
@@ -714,7 +714,7 @@ namespace radio
                 return false;
             }
 
-            ESP_LOGI(TAG, "🔧 FR SET: Setting RX VFO to %d (source: %s)", vfo, cmd.isUsb() ? "USB" : "Remote");
+            ESP_LOGI(TAG, "🔧 FR SET: Setting RX VFO to %d (source: %s)", vfo, cmd.isLocal() ? "Local" : "Remote");
 
             if (shouldSendToRadio(cmd))
             {
@@ -765,7 +765,7 @@ namespace radio
         if (isQuery(cmd))
         {
             // Local (USB/TCP/Display) queries should be answered from state (no round-trip)
-            if (cmd.isUsb() || cmd.isTcp() || cmd.source == CommandSource::Display)
+            if (cmd.isCatClient() || cmd.source == CommandSource::Display)
             {
                 const int txVfo = rm.getTxVfo();
                 const std::string response = buildCommand("FT", std::to_string(txVfo));
@@ -849,7 +849,7 @@ namespace radio
         if (isQuery(cmd))
         {
             // USB/TCP queries should be answered from cached state (no radio round-trip)
-            if (cmd.isUsb() || cmd.isTcp())
+            if (cmd.isCatClient())
             {
                 // Return current fine tune setting from state (default off if unknown)
                 const bool fine = rm.getState().fineTune;
@@ -906,7 +906,7 @@ namespace radio
         if (isQuery(cmd))
         {
             // USB/TCP queries should return current state immediately (no radio round-trip)
-            if (cmd.isUsb() || cmd.isTcp())
+            if (cmd.isCatClient())
             {
                 // Tests expect SP query to reflect splitSetting, not split enabled flag
                 const uint8_t setting = rm.getState().splitSetting.load();
@@ -1480,7 +1480,7 @@ namespace radio
 
         if (isQuery(cmd))
         {
-            if (cmd.isUsb() || cmd.isTcp())
+            if (cmd.isCatClient())
             {
                 // For local queries, check if cached data is fresh
                 if (isCacheFresh(rm, "TS", TTL_STATUS))
@@ -1622,7 +1622,7 @@ namespace radio
         {
             ESP_LOGI(TAG, "🔍 XO QUERY: source=%d, isUsb=%s, isTcp=%s", static_cast<int>(cmd.source),
                      cmd.isUsb() ? "true" : "false", cmd.isTcp() ? "true" : "false");
-            if (cmd.isUsb() || cmd.isTcp())
+            if (cmd.isCatClient())
             {
                 // Record query when it originates from USB/TCP source
                 const uint64_t timestamp = esp_timer_get_time();

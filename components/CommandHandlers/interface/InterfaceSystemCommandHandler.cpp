@@ -143,7 +143,7 @@ namespace radio
         // When any USB interface enables AI2/AI4, enable display forwarding too
         // NOTE: We only auto-enable, never auto-disable. Display maintains its own
         // preference (default AI2) to ensure the radio stays in AI2 mode for rapid
-        // display updates, even when USB clients like N1MM request AI0.
+        // display updates, even when USB clients request AI0.
         if (source == CommandSource::UsbCdc0 || source == CommandSource::UsbCdc1)
         {
             const int maxUsbAiMode = std::max(state.usbCdc0AiMode.load(), state.usbCdc1AiMode.load());
@@ -305,7 +305,7 @@ namespace radio
                     // Cache is stale, query the radio
                     ESP_LOGI(TAG, "PS cache stale/empty, forwarding query '%s' to radio", cmd.originalMessage.c_str());
                     // Record query when it originates from USB/TCP source
-                    if (cmd.isUsb() || cmd.isTcp())
+                    if (cmd.isCatClient())
                     {
                         const uint64_t timestamp = esp_timer_get_time();
                         state.queryTracker.recordQuery("PS", timestamp);
@@ -335,7 +335,7 @@ namespace radio
             else
             {
                 // Display or other local surfaces: no defaulting; let higher layers decide if needed
-                ESP_LOGI(TAG, "PS query from non-USB source %d ignored (no passthrough)", static_cast<int>(cmd.source));
+                ESP_LOGI(TAG, "PS query from non-USB/TCP source %d ignored (no passthrough)", static_cast<int>(cmd.source));
             }
             return true;
         }
@@ -354,7 +354,7 @@ namespace radio
             rm.getState().powerStateEstablished.store(true);
 
             // Update keepAlive state ONLY for LOCAL user actions (not radio responses)
-            if (cmd.isUsb() || cmd.isTcp() || cmd.source == CommandSource::Panel)
+            if (cmd.isCatClient() || cmd.source == CommandSource::Panel)
             {
                 if (powerState == PS_ON)
                 {
@@ -519,7 +519,7 @@ namespace radio
 
         if (isQuery(cmd))
         {
-            if (cmd.isUsb() || cmd.isTcp())
+            if (cmd.isCatClient())
             {
                 // Return current panel lock state (default to unlocked)
                 const std::string response = formatLKResponse(LK_OFF);
