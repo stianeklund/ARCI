@@ -145,7 +145,13 @@ namespace radio
         void updateBandFromVfoB();
 
         /**
-         * @brief Decode band from frequency string
+         * @brief Decode band from frequency in Hz
+         * @param frequencyHz Frequency in Hz
+         */
+        void decodeBandFromFreq(uint64_t frequencyHz);
+
+        /**
+         * @brief Decode band from frequency string (convenience overload)
          * @param frequency Frequency string to decode
          */
         void decodeBandFromFreq(std::string_view frequency);

@@ -1065,8 +1065,7 @@ namespace radio
     {
         if (const uint64_t freq = state_.vfoAFrequency.load(); freq > 0)
         {
-            const std::string freqStr = std::to_string(freq);
-            decodeBandFromFreq(freqStr);
+            decodeBandFromFreq(freq);
         }
     }
 
@@ -1074,21 +1073,69 @@ namespace radio
     {
         if (const uint64_t freq = state_.vfoBFrequency.load(); freq > 0)
         {
-            const std::string freqStr = std::to_string(freq);
-            decodeBandFromFreq(freqStr);
+            decodeBandFromFreq(freq);
         }
+    }
+
+    void RadioManager::decodeBandFromFreq(const uint64_t frequencyHz)
+    {
+        if (frequencyHz == 0)
+            return;
+
+        // Determine band number based on frequency and store in RadioManager state
+        int bandNumber = 10; // Default to general coverage (GENE)
+        if (frequencyHz >= 1800000 && frequencyHz <= 2000000)
+        {
+            bandNumber = 0;
+        }
+        else if (frequencyHz >= 3500000 && frequencyHz <= 4000000)
+        {
+            bandNumber = 1;
+        }
+        else if (frequencyHz >= 7000000 && frequencyHz <= 7300000)
+        {
+            bandNumber = 2;
+        }
+        else if (frequencyHz >= 10100000 && frequencyHz <= 10150000)
+        {
+            bandNumber = 3;
+        }
+        else if (frequencyHz >= 14000000 && frequencyHz <= 14350000)
+        {
+            bandNumber = 4;
+        }
+        else if (frequencyHz >= 18068000 && frequencyHz <= 18168000)
+        {
+            bandNumber = 5;
+        }
+        else if (frequencyHz >= 21000000 && frequencyHz <= 21450000)
+        {
+            bandNumber = 6;
+        }
+        else if (frequencyHz >= 24890000 && frequencyHz <= 24990000)
+        {
+            bandNumber = 7;
+        }
+        else if (frequencyHz >= 28000000 && frequencyHz <= 29700000)
+        {
+            bandNumber = 8;
+        }
+        else if (frequencyHz >= 50000000 && frequencyHz <= 54000000)
+        {
+            bandNumber = 9;
+        }
+
+        state_.bandNumber = bandNumber;
     }
 
     void RadioManager::decodeBandFromFreq(const std::string_view frequency)
     {
-        // Check if frequency is empty
         if (frequency.empty())
         {
             ESP_LOGD(RadioManager::TAG, "Empty frequency in decodeBandFromFreq");
             return;
         }
 
-        // Use uint64_t to handle larger frequency values
         uint64_t freq = 0;
 
         // Trim to max 9 digits (up to 999,999,999 Hz) to prevent integer overflow
@@ -1100,61 +1147,13 @@ namespace radio
 
         if (auto [ptr, ec] = std::from_chars(trimmed.data(), trimmed.data() + trimmed.size(), freq); ec != std::errc())
         {
-            // Use length-bounded logging to avoid reading past non NUL-terminated views
             ESP_LOGW(RadioManager::TAG, "Failed to convert frequency to integer: %.*s (trimmed: %.*s)",
                      static_cast<int>(frequency.length()), frequency.data(), static_cast<int>(trimmed.length()),
                      trimmed.data());
             return;
         }
 
-        if (freq == 0)
-            return;
-
-        // Determine band number based on frequency and store in RadioManager state
-        int bandNumber = 10; // Default to general coverage (GENE)
-        if (freq >= 1800000 && freq <= 2000000)
-        {
-            bandNumber = 0;
-        }
-        else if (freq >= 3500000 && freq <= 4000000)
-        {
-            bandNumber = 1;
-        }
-        else if (freq >= 7000000 && freq <= 7300000)
-        {
-            bandNumber = 2;
-        }
-        else if (freq >= 10100000 && freq <= 10150000)
-        {
-            bandNumber = 3;
-        }
-        else if (freq >= 14000000 && freq <= 14350000)
-        {
-            bandNumber = 4;
-        }
-        else if (freq >= 18068000 && freq <= 18168000)
-        {
-            bandNumber = 5;
-        }
-        else if (freq >= 21000000 && freq <= 21450000)
-        {
-            bandNumber = 6;
-        }
-        else if (freq >= 24890000 && freq <= 24990000)
-        {
-            bandNumber = 7;
-        }
-        else if (freq >= 28000000 && freq <= 29700000)
-        {
-            bandNumber = 8;
-        }
-        else if (freq >= 50000000 && freq <= 54000000)
-        {
-            bandNumber = 9;
-        }
-
-        // Update band number directly
-        state_.bandNumber = bandNumber;
+        decodeBandFromFreq(freq);
     }
 
     void RadioManager::changeBand()

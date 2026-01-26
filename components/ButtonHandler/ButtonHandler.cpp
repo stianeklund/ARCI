@@ -1357,11 +1357,9 @@ void ButtonHandler::handleBandDownButton()
     const uint8_t rxVfo = m_radioManager.getState().currentRxVfo.load();
     const uint64_t currentFreq = (rxVfo == 1) ? m_radioManager.getVfoBFrequency() : m_radioManager.getVfoAFrequency();
 
-    char freqStr[16];
-    std::snprintf(freqStr, sizeof(freqStr), "%llu", currentFreq);
     ESP_LOGI(TAG, "Matrix Band Down: Current RX VFO %s frequency: %llu Hz (cached)", rxVfo == 1 ? "B" : "A",
              currentFreq);
-    m_radioManager.decodeBandFromFreq(freqStr);
+    m_radioManager.decodeBandFromFreq(currentFreq);
 
     const int currentBandIndex = m_radioManager.getState().bandNumber;
     int nextBandIndex;
@@ -1418,10 +1416,8 @@ void ButtonHandler::handleBandUpButton()
     const uint64_t currentFreq = (rxVfo == 1) ? m_radioManager.getVfoBFrequency() : m_radioManager.getVfoAFrequency();
 
     // Update band number based on current cached frequency
-    char freqStr[16];
-    std::snprintf(freqStr, sizeof(freqStr), "%llu", currentFreq);
     ESP_LOGI(TAG, "Matrix Band Up: Current RX VFO %s frequency: %llu Hz (cached)", rxVfo == 1 ? "B" : "A", currentFreq);
-    m_radioManager.decodeBandFromFreq(freqStr);
+    m_radioManager.decodeBandFromFreq(currentFreq);
 
     // Get the frequency-based band number (0-10) and increment
     const int currentBandIndex = m_radioManager.getState().bandNumber;
