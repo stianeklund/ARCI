@@ -413,13 +413,13 @@ namespace radio {
         }
 
         if (num == 1 || num == 2) {
-            radioManager.getState().transverter = true;
+            radioManager.getState().transverter.store(true, std::memory_order_relaxed);
             if (isAnswer)
                 ESP_LOGI(TAG_EX, "Transverter enabled via EX056 answer (value: %.*s)", int(value.size()), value.data());
             else
                 ESP_LOGD(TAG_EX, "Transverter enabled via EX056 (value: %.*s)", int(value.size()), value.data());
         } else if (num == 0) {
-            radioManager.getState().transverter = false;
+            radioManager.getState().transverter.store(false, std::memory_order_relaxed);
             if (isAnswer)
                 ESP_LOGI(TAG_EX, "Transverter disabled via EX056 answer (value: %.*s)", int(value.size()),
                      value.data());
@@ -446,7 +446,7 @@ namespace radio {
         // (optional) clamp/validate range if the command has limits, e.g.:
         // num = std::clamp(num, 0, 255);
 
-        radioManager.getState().hfLinearAmpControl = num;
+        radioManager.getState().hfLinearAmpControl.store(num, std::memory_order_relaxed);
 
         if (isAnswer)
             ESP_LOGI(TAG_EX, "HF Linear Amp Control updated to %d from radio EX059", num);
@@ -467,7 +467,7 @@ namespace radio {
             return;
         }
 
-        radioManager.getState().vhfLinearAmpControl = num;
+        radioManager.getState().vhfLinearAmpControl.store(num, std::memory_order_relaxed);
         if (isAnswer)
             ESP_LOGI(TAG_EX, "VHF Linear Amp Control updated to %d from radio EX060", num);
         else

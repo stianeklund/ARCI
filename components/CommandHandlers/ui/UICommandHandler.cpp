@@ -743,7 +743,7 @@ namespace radio
 
         if (isQuery(cmd))
         {
-            const bool enabled = state.transverterOffsetEnabled;
+            const bool enabled = state.transverterOffsetEnabled.load(std::memory_order_relaxed);
             const std::string response = formatUIXD(enabled);
             sendToDisplayOnly(response, rm);
             ESP_LOGI(TAG, "UIXD query: transverter display offset is %s", enabled ? "enabled" : "disabled");
@@ -759,7 +759,7 @@ namespace radio
                 return false;
             }
 
-            state.transverterOffsetEnabled = (value == 1);
+            state.transverterOffsetEnabled.store(value == 1, std::memory_order_relaxed);
             ESP_LOGI(TAG, "UIXD set: transverter display offset %s", value ? "enabled" : "disabled");
 
             // Send confirmation to display
@@ -778,7 +778,7 @@ namespace radio
             const int value = getIntParam(cmd, 0, -1);
             if (value == 0 || value == 1)
             {
-                state.transverterOffsetEnabled = (value == 1);
+                state.transverterOffsetEnabled.store(value == 1, std::memory_order_relaxed);
                 ESP_LOGD(TAG, "UIXD answer from display: %d", value);
             }
             return true;

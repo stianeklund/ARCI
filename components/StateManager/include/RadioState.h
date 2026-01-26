@@ -348,27 +348,25 @@ namespace radio
         std::atomic<int> controlLeasePriority{-1}; // Priority of current lease owner
         mutable std::mutex controlLeaseMutex; // Mutex for lease arbitration
 
-        // === COLD PATH: Infrequently accessed state (doesn't need atomics or cache optimization) ===
-        // These fields are typically set once during initialization or changed rarely
+        // === SHARED STATE: Accessed from multiple tasks (Button/Encoder/Macro/Dispatch) ===
+        // These fields MUST be atomic to prevent data races and torn reads
 
-        // Band and antenna (rarely changed, don't need atomics)
-        int bandNumber{0}; // Current band number
+        // Band and antenna state (accessed by ButtonHandler, EncoderHandler, MacroManager)
+        std::atomic<int> bandNumber{0}; // Current band number
         int bandDownSlotIndex{0}; // Band down slot index for BD command
         int bandUpSlotIndex{0}; // Band up slot index for BU command
         uint8_t mainAntenna{0}; // Main antenna (0=ANT1, 1=ANT2)
-        bool transverter{false}; // Transverter mode
-        bool transverterOffsetEnabled{
-            false}; // Controls whether to translate FA/FB/IF for display/USB using XO offset
-        bool transverterOffsetPlus{true}; // Transverter offset direction (true=plus, false=minus)
-        uint8_t _padding3{0};
-        uint64_t transverterOffsetHz{0}; // Transverter offset frequency in Hz
+        std::atomic<bool> transverter{false}; // Transverter mode
+        std::atomic<bool> transverterOffsetEnabled{false}; // Controls whether to translate FA/FB/IF for display/USB using XO offset
+        std::atomic<bool> transverterOffsetPlus{true}; // Transverter offset direction (true=plus, false=minus)
+        std::atomic<uint64_t> transverterOffsetHz{0}; // Transverter offset frequency in Hz
 
-        // Transverter-related menu settings (configuration, rarely changed)
+        // Transverter-related menu settings (accessed by MacroManager for state comparison)
         int drvConnectorMode{0}; // EX085: DRV connector output function (0=DRO, 1=ANT)
-        int hfLinearAmpControl{0}; // EX059: HF linear amplifier control (should be 3 for transverter)
-        int vhfLinearAmpControl{0}; // EX060: 50 MHz linear amplifier control (should be 3 for transverter)
-        bool rxAnt{false}; // RX antenna setting
-        bool drvOut{false}; // Drive output setting
+        std::atomic<int> hfLinearAmpControl{0}; // EX059: HF linear amplifier control (should be 3 for transverter)
+        std::atomic<int> vhfLinearAmpControl{0}; // EX060: 50 MHz linear amplifier control (should be 3 for transverter)
+        std::atomic<bool> rxAnt{false}; // RX antenna setting
+        std::atomic<bool> drvOut{false}; // Drive output setting
         bool attenuator{false}; // Attenuator on/off
         bool rxAtIn{false}; // RX ATU in/thru
         bool txAtIn{false}; // TX ATU in/thru
@@ -403,13 +401,13 @@ namespace radio
         int manualNotchFrequency{0}; // Manual notch frequency
         int toneState{0}; // Tone state
 
-        // Flags (bool fields, no atomic needed for infrequent access)
+        // Flags (some need atomic for cross-task access)
         bool busy{false}; // Busy status
         bool cwTune{false}; // CW Tune status
         bool morseDecoder{false}; // Morse code decoder status
         bool fineTune{false}; // Fine Tune status
         bool filterCutSelectHighNotLow{true}; // Toggle for filter cut adjustment (true=high cut, false=low cut)
-        bool panelLock{false}; // Panel lock status
+        std::atomic<bool> panelLock{false}; // Panel lock status (accessed by ButtonHandler)
         bool preAmplifier{false}; // Pre-amplifier
         bool tfSet{false}; // TF-Set status
         bool voxEnabled{false}; // VOX enabled status

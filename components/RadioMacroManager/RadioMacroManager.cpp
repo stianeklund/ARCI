@@ -177,20 +177,20 @@ RadioMacroManager::RadioMacroManager(RadioManager &radioManager)
             [[maybe_unused]] constexpr bool targetTransverter = true; // EX056 should be enabled (any non-zero value)
             constexpr bool targetDrvOut = true; // AN P3: DRV OUT ON
 
-            if (!state.transverter) {
+            if (!state.transverter.load(std::memory_order_relaxed)) {
                 commands.emplace_back("EX05600001;"); // Enable transverter (menu 056, value 0001)
             }
             // Always set DRV connector to DRO mode explicitly when enabling transverter
             // Tests expect this command even if already configured
             commands.emplace_back("EX08500000;"); // DRV connector to DRO mode (menu 085, value 0000)
-            if (constexpr int targetHFLinear = 3; state.hfLinearAmpControl != targetHFLinear) {
+            if (constexpr int targetHFLinear = 3; state.hfLinearAmpControl.load(std::memory_order_relaxed) != targetHFLinear) {
                 commands.emplace_back("EX05900003;"); // HF linear amp control (menu 059, value 0003)
             }
-            if (constexpr int targetVhfLinear = 3; state.vhfLinearAmpControl != targetVhfLinear) {
+            if (constexpr int targetVhfLinear = 3; state.vhfLinearAmpControl.load(std::memory_order_relaxed) != targetVhfLinear) {
                 commands.emplace_back("EX06000003;"); // VHF linear amp control (menu 060, value 0003)
             }
             if (constexpr bool targetRxAnt = true;
-                state.rxAnt != targetRxAnt || state.drvOut != targetDrvOut) {
+                state.rxAnt.load(std::memory_order_relaxed) != targetRxAnt || state.drvOut.load(std::memory_order_relaxed) != targetDrvOut) {
                 commands.emplace_back("AN911;"); // P1=9(no change), P2=1(RX ANT ON), P3=1(DRV OUT ON)
             }
             // Enable transverter display offset on display

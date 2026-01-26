@@ -6,6 +6,7 @@
 #include <string>
 #include <memory>
 #include <atomic>
+#include <mutex>
 
 class ISerialChannel;
 
@@ -176,14 +177,15 @@ public:
                         RadioManager& radioManager) __attribute__((hot));
 
     /**
-     * @brief Get current dispatcher statistics
+     * @brief Get current dispatcher statistics (thread-safe snapshot)
+     * @return Copy of statistics, safe to access from any task
      */
-    const DispatcherStatistics& getStatistics() const { return stats_; }
+    DispatcherStatistics getStatistics() const;
 
     /**
-     * @brief Reset statistics
+     * @brief Reset statistics (thread-safe)
      */
-    void resetStatistics() { stats_.reset(); }
+    void resetStatistics();
 
     /**
      * @brief Get list of registered handlers (for debugging/diagnostics)
@@ -212,6 +214,7 @@ private:
     std::vector<CommandHandlerPtr> handlers_;
     std::array<ICommandHandler*, HASH_TABLE_SIZE> commandMap_{};  // Zero-initialized
     DispatcherStatistics stats_;
+    mutable std::mutex statsMutex_;  // Protects stats_ string fields for thread-safe access
 
     static constexpr const char* TAG = "CommandDispatcher";
 };

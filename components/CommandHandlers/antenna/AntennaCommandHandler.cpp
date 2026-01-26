@@ -119,10 +119,10 @@ bool AntennaCommandHandler::handleAN(const RadioCommand& command,
                 state.mainAntenna = mainAnt; // Store antenna number directly
             }
             if (rxAnt != 9) {
-                state.rxAnt = rxAnt == 1;
+                state.rxAnt.store(rxAnt == 1, std::memory_order_relaxed);
             }
             if (drvOut != 9) {
-                state.drvOut = drvOut == 1;
+                state.drvOut.store(drvOut == 1, std::memory_order_relaxed);
             }
             state.commandCache.update("AN", esp_timer_get_time());
             
@@ -151,10 +151,10 @@ bool AntennaCommandHandler::handleAN(const RadioCommand& command,
                     state.mainAntenna = mainAnt; // Store antenna number directly
                 }
                 if (rxAnt != 9) {
-                    state.rxAnt = rxAnt == 1;
+                    state.rxAnt.store(rxAnt == 1, std::memory_order_relaxed);
                 }
                 if (drvOut != 9) {
-                    state.drvOut = drvOut == 1;
+                    state.drvOut.store(drvOut == 1, std::memory_order_relaxed);
                 }
                 state.commandCache.update("AN", esp_timer_get_time());
                 ESP_LOGD(TAG, "Updated AN from radio");

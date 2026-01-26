@@ -78,7 +78,6 @@ namespace
     std::unique_ptr<radio::CATHandler> displayCatHandler;  // Display CAT (lazy init)
     std::unique_ptr<radio::CATHandler> usb2CatHandler;     // USB2 CAT (lazy init)
     radio::RadioMacroManager radioMacroManager(radioManager);
-    radioManager.setMacroManager(&radioMacroManager);
 
     // --- System Services (NvsManager created early for ButtonHandler dependency) ---
     NvsManager nvsManager(radioManager);
@@ -525,8 +524,9 @@ void initializeUsbCdc()
                 {
                     // Block bare query commands (3 chars like "FA;") except RX/TX status notifications
                     const bool isStatusNotification =
-                        (messageResult.second[0] == 'R' && messageResult.second[1] == 'X') ||
-                        (messageResult.second[0] == 'T' && messageResult.second[1] == 'X');
+                        messageResult.second.size() >= 2 &&
+                        ((messageResult.second[0] == 'R' && messageResult.second[1] == 'X') ||
+                         (messageResult.second[0] == 'T' && messageResult.second[1] == 'X'));
                     const bool isBareQuery = messageResult.second.length() == 3 &&
                                               messageResult.second[2] == ';' &&
                                               !isStatusNotification;
@@ -721,6 +721,9 @@ void initializeUsbCdc()
 void setup()
 {
     ESP_LOGI(TAG, "Starting setup");
+
+    // Connect RadioMacroManager to RadioManager (must be done at runtime, not at file scope)
+    radioManager.setMacroManager(&radioMacroManager);
 
     // Reduce TinyUSB CDC ACM flush warnings to VERBOSE level
     esp_log_level_set("tusb_cdc_acm", ESP_LOG_ERROR);

@@ -167,8 +167,8 @@ namespace radio
         void sendVfoUpdates() const;
 
         // Runtime toggle for transverter offset behavior (affects display and USB CDC)
-        bool isTransverterOffsetEnabled() const { return state_.transverterOffsetEnabled; }
-        void setTransverterOffsetEnabled(bool enabled) { state_.transverterOffsetEnabled = enabled; }
+        bool isTransverterOffsetEnabled() const { return state_.transverterOffsetEnabled.load(std::memory_order_relaxed); }
+        void setTransverterOffsetEnabled(bool enabled) { state_.transverterOffsetEnabled.store(enabled, std::memory_order_relaxed); }
 
         // === TRANSVERTER FREQUENCY CONVERSION (Centralized - THE authoritative implementation) ===
 

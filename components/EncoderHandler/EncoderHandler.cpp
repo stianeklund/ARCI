@@ -330,7 +330,7 @@ void EncoderHandler::task(const bool movementDetected)
         return;
 
     // Check panel lock state - block encoder input when locked
-    if (m_radioManager->getState().panelLock)
+    if (m_radioManager->getState().panelLock.load(std::memory_order_relaxed))
     {
         // Panel is locked - ignore all encoder input
         // Clear any pending movement to reset state properly
@@ -607,10 +607,12 @@ void EncoderHandler::task(const bool movementDetected)
                      frequencyChange, requestedFrequency, newFrequency);
 
         // If using transverter display, bound the display frequency so that the mapped base stays within limits
-        if (state.transverter && state.transverterOffsetHz > 0)
+        const bool transverterEnabled = state.transverter.load(std::memory_order_relaxed);
+        const uint64_t transverterOffset = state.transverterOffsetHz.load(std::memory_order_relaxed);
+        if (transverterEnabled && transverterOffset > 0)
         {
-            const uint64_t off = state.transverterOffsetHz;
-            const bool plus = state.transverterOffsetPlus;
+            const uint64_t off = transverterOffset;
+            const bool plus = state.transverterOffsetPlus.load(std::memory_order_relaxed);
             if (off > 0)
             {
                 uint64_t minDisp = 0;
@@ -656,7 +658,7 @@ void EncoderHandler::task(const bool movementDetected)
 
         // For non-transverter mode, validate base frequency range
         uint64_t frequencyToSend = newFrequency;
-        if (!(state.transverter && state.transverterOffsetHz > 0))
+        if (!(transverterEnabled && transverterOffset > 0))
         {
             // Only validate base frequency limits when not using transverter
             if (frequencyToSend < BASE_MIN_FREQUENCY_HZ || frequencyToSend > BASE_MAX_FREQUENCY_HZ)
@@ -825,10 +827,10 @@ bool EncoderHandler::isValidFrequency(const uint64_t frequency, uint64_t current
 #endif
 
     const auto &state = m_radioManager->getState();
-    if (state.transverter)
+    if (state.transverter.load(std::memory_order_relaxed))
     {
-        const uint64_t off = state.transverterOffsetHz;
-        const bool plus = state.transverterOffsetPlus;
+        const uint64_t off = state.transverterOffsetHz.load(std::memory_order_relaxed);
+        const bool plus = state.transverterOffsetPlus.load(std::memory_order_relaxed);
         if (off > 0)
         {
             // Auto-derive range from current display frequency using the active VFO
@@ -861,10 +863,10 @@ uint64_t EncoderHandler::clampToValidFrequency(const uint64_t frequency, uint64_
 #endif
 
     const auto &state = m_radioManager->getState();
-    if (state.transverter)
+    if (state.transverter.load(std::memory_order_relaxed))
     {
-        const uint64_t off = state.transverterOffsetHz;
-        const bool plus = state.transverterOffsetPlus;
+        const uint64_t off = state.transverterOffsetHz.load(std::memory_order_relaxed);
+        const bool plus = state.transverterOffsetPlus.load(std::memory_order_relaxed);
         if (off > 0)
         {
             // Auto-derive range from current display frequency using the active VFO

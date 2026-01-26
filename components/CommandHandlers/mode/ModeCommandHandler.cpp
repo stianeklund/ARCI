@@ -447,7 +447,7 @@ namespace radio
             }
 
             // Update band state
-            state.bandNumber = band;
+            state.bandNumber.store(band, std::memory_order_relaxed);
             return true;
         }
 
@@ -486,7 +486,7 @@ namespace radio
             }
 
             // Update band state
-            state.bandNumber = band;
+            state.bandNumber.store(band, std::memory_order_relaxed);
             return true;
         }
 

@@ -698,24 +698,33 @@ bool AntennaSwitch::initializeAsyncWorker() {
 void AntennaSwitch::shutdownAsyncWorker() {
     if (workerTask_) {
         stopWorker_.store(true);
-        
-        // Send shutdown signal
+
+        // Send shutdown signal (retry a few times if queue is full)
         if (requestQueue_) {
             void* shutdownSignal = nullptr;
-            xQueueSend(requestQueue_, &shutdownSignal, pdMS_TO_TICKS(100));
+            for (int i = 0; i < 3; ++i) {
+                if (xQueueSend(requestQueue_, &shutdownSignal, pdMS_TO_TICKS(50)) == pdTRUE) {
+                    break;
+                }
+            }
         }
-        
-        // Wait for task to finish
-        vTaskDelay(pdMS_TO_TICKS(100));
-        
-        // Clean up
+
+        // Wait for task to actually exit (up to 2s)
+        for (int i = 0; i < 20; ++i) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            if (eTaskGetState(workerTask_) == eDeleted) {
+                break;
+            }
+        }
+
+        // Clean up only after task has exited
         if (requestQueue_) {
             vQueueDelete(requestQueue_);
             requestQueue_ = nullptr;
         }
-        
+
         workerTask_ = nullptr;
-        stopWorker_.store(false);
+        // Note: Don't reset stopWorker_ flag - task has exited
         ESP_LOGD(TAG, "Async worker shutdown complete");
     }
 }

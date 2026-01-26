@@ -241,41 +241,62 @@ namespace radio {
         if (command.source == CommandSource::Remote &&
             command.type == CommandType::Answer &&
             (command.command == "?" || command.command == "E" || command.command == "O")) {
-            
+
             // Track error response for diagnostics
             const uint64_t currentTime = esp_timer_get_time();
-            stats_.recordError(command.command, stats_.lastCommandBeforeError, currentTime);
-            
-            // Calculate time since last command for rate analysis
-            const uint64_t timeSinceLastCmd = stats_.lastCommandTime > 0 ?
-                currentTime - stats_.lastCommandTime : 0;
 
-            // Enhanced error logging for debugging
+            // Thread-safe: capture stats under lock, then log outside lock
+            std::string lastCmdCopy;
+            uint64_t lastErrorTimeCopy;
+            uint64_t lastCmdTimeCopy;
+            size_t totalErrors, qErrors, eErrorsCnt, oErrorsCnt;
+            uint64_t avgInterval;
+            size_t bursts;
+            {
+                std::lock_guard<std::mutex> lock(statsMutex_);
+                lastCmdCopy = stats_.lastCommandBeforeError;
+                lastErrorTimeCopy = stats_.lastErrorTime;
+                lastCmdTimeCopy = stats_.lastCommandTime;
+                stats_.recordError(command.command, lastCmdCopy, currentTime);
+                // Capture post-recordError stats for logging
+                totalErrors = stats_.totalErrorResponses;
+                qErrors = stats_.questionMarkErrors;
+                eErrorsCnt = stats_.eErrors;
+                oErrorsCnt = stats_.oErrors;
+                avgInterval = stats_.averageErrorInterval;
+                bursts = stats_.errorBursts;
+            }
+
+            // Calculate time since last command for rate analysis
+            const uint64_t timeSinceLastCmd = lastCmdTimeCopy > 0 ?
+                currentTime - lastCmdTimeCopy : 0;
+
+            // Enhanced error logging for debugging (using local copies, no lock needed)
             ESP_LOGI(CommandDispatcher::TAG, "=== ERROR RESPONSE DETECTED ===");
             ESP_LOGI(CommandDispatcher::TAG, "Error Type: '%s;'", command.command.c_str());
-            ESP_LOGI(CommandDispatcher::TAG, "Last Command Sent: '%s'", stats_.lastCommandBeforeError.c_str());
+            ESP_LOGI(CommandDispatcher::TAG, "Last Command Sent: '%s'", lastCmdCopy.c_str());
             ESP_LOGI(CommandDispatcher::TAG, "Time Since Last Cmd: %.1fms", timeSinceLastCmd / 1000.0);
-            ESP_LOGI(CommandDispatcher::TAG, "Error Interval: %.1fms", 
-                     (stats_.lastErrorTime > 0) ? (currentTime - stats_.lastErrorTime) / 1000.0 : 0.0);
+            ESP_LOGI(CommandDispatcher::TAG, "Error Interval: %.1fms",
+                     (lastErrorTimeCopy > 0) ? (currentTime - lastErrorTimeCopy) / 1000.0 : 0.0);
             ESP_LOGI(CommandDispatcher::TAG, "Total Errors: %zu (?;=%zu E;=%zu O;=%zu)",
-                     stats_.totalErrorResponses, stats_.questionMarkErrors, stats_.eErrors, stats_.oErrors);
-            
+                     totalErrors, qErrors, eErrorsCnt, oErrorsCnt);
+
             // Special handling for RM-related errors
-            if (stats_.lastCommandBeforeError.find("RM") != std::string::npos) {
+            if (lastCmdCopy.find("RM") != std::string::npos) {
                 ESP_LOGW(CommandDispatcher::TAG, "RM command causing errors - may need to disable RM polling");
             }
-            
+
             // Detailed diagnostic if we have multiple errors
-            if (stats_.totalErrorResponses > 1) {
+            if (totalErrors > 1) {
                 ESP_LOGI(CommandDispatcher::TAG, "Error Pattern: Avg interval=%.1fms, Bursts=%zu",
-                         stats_.averageErrorInterval / 1000.0, stats_.errorBursts);
-                
+                         avgInterval / 1000.0, bursts);
+
                 // Check for RM-specific error patterns
-                if (stats_.totalErrorResponses > 10 && stats_.lastCommandBeforeError.find("RM") != std::string::npos) {
+                if (totalErrors > 10 && lastCmdCopy.find("RM") != std::string::npos) {
                     ESP_LOGE(CommandDispatcher::TAG, "HIGH ERROR COUNT with RM commands - consider disabling RM polling");
                 }
             }
-            
+
             // Warn about potential command rate issues
             if (timeSinceLastCmd > 0 && timeSinceLastCmd < 100000) { // < 100ms
                 ESP_LOGW(CommandDispatcher::TAG, "WARNING: Fast error (%.1fms after command)",
@@ -308,7 +329,10 @@ namespace radio {
                 // Record command timing if it's a local command (will be sent to radio)
                 if (command.isUsb()) {
                     stats_.recordCommandSent(esp_timer_get_time());
-                    stats_.lastCommandBeforeError = command.originalMessage;
+                    {
+                        std::lock_guard<std::mutex> lock(statsMutex_);
+                        stats_.lastCommandBeforeError = command.originalMessage;
+                    }
                     ESP_LOGD(CommandDispatcher::TAG, "LOCAL->RADIO: '%s' (via %s)",
                              command.originalMessage.c_str(), handler->getDescription().data());
                 }
@@ -353,7 +377,10 @@ namespace radio {
                 // Record command timing if it's a local command (will be sent to radio)
                 if (command.isUsb()) {
                     stats_.recordCommandSent(esp_timer_get_time());
-                    stats_.lastCommandBeforeError = command.originalMessage;
+                    {
+                        std::lock_guard<std::mutex> lock(statsMutex_);
+                        stats_.lastCommandBeforeError = command.originalMessage;
+                    }
                     ESP_LOGD(CommandDispatcher::TAG, "LOCAL->RADIO: '%s' (via fallback handler)",
                              command.originalMessage.c_str());
                 }
@@ -407,5 +434,15 @@ namespace radio {
         }
 
         return descriptions;
+    }
+
+    DispatcherStatistics CommandDispatcher::getStatistics() const {
+        std::lock_guard<std::mutex> lock(statsMutex_);
+        return stats_;  // Returns a copy, safe to access from any task
+    }
+
+    void CommandDispatcher::resetStatistics() {
+        std::lock_guard<std::mutex> lock(statsMutex_);
+        stats_.reset();
     }
 } // namespace radio

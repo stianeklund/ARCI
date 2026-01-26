@@ -553,9 +553,23 @@ bool AntennaWebSocketClient::startMessageProcessor() {
 void AntennaWebSocketClient::stopMessageProcessor() {
     if (messageProcessorTask_) {
         stopMessageProcessor_.store(true);
-        vTaskDelay(pdMS_TO_TICKS(100));
+
+        // Wake the task if blocked on queue by sending a nullptr
+        if (messageQueue_) {
+            WSMessage* nullMsg = nullptr;
+            xQueueSend(messageQueue_, &nullMsg, 0);
+        }
+
+        // Wait for task to actually exit (up to 1.5s)
+        for (int i = 0; i < 15; ++i) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            if (eTaskGetState(messageProcessorTask_) == eDeleted) {
+                break;
+            }
+        }
+
         messageProcessorTask_ = nullptr;
-        stopMessageProcessor_.store(false);
+        // Note: Don't reset stopMessageProcessor_ flag - task has exited
     }
 }
 
@@ -579,9 +593,17 @@ bool AntennaWebSocketClient::startReconnectTask() {
 void AntennaWebSocketClient::stopReconnectTask() {
     if (reconnectTask_) {
         stopReconnect_.store(true);
-        vTaskDelay(pdMS_TO_TICKS(100));
+
+        // Wait for task to actually exit (up to 1.5s)
+        for (int i = 0; i < 15; ++i) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            if (eTaskGetState(reconnectTask_) == eDeleted) {
+                break;
+            }
+        }
+
         reconnectTask_ = nullptr;
-        stopReconnect_.store(false);
+        // Note: Don't reset stopReconnect_ flag - task has exited
     }
 }
 

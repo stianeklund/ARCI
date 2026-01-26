@@ -234,7 +234,7 @@ namespace radio
 #endif
 
         // Transverter display offset starts disabled; enable via UIXD1; command
-        state_.transverterOffsetEnabled = false;
+        state_.transverterOffsetEnabled.store(false, std::memory_order_relaxed);
 
         ESP_LOGI(RadioManager::TAG, "RadioManager initialized with command system (tasks not started)");
     }
@@ -549,16 +549,18 @@ namespace radio
 
     bool RadioManager::isTransverterOffsetActive() const
     {
-        return state_.transverterOffsetEnabled && state_.transverter && state_.transverterOffsetHz > 0;
+        return state_.transverterOffsetEnabled.load(std::memory_order_relaxed) &&
+               state_.transverter.load(std::memory_order_relaxed) &&
+               state_.transverterOffsetHz.load(std::memory_order_relaxed) > 0;
     }
 
     uint64_t RadioManager::baseToDisplayFrequency(const uint64_t baseFreq) const
     {
         // Atomic snapshot of transverter state to prevent race conditions
-        const bool displayOffsetEnabled = state_.transverterOffsetEnabled;
-        const bool transverterEnabled = state_.transverter;
-        const uint64_t offset = state_.transverterOffsetHz;
-        const bool offsetPlus = state_.transverterOffsetPlus;
+        const bool displayOffsetEnabled = state_.transverterOffsetEnabled.load(std::memory_order_relaxed);
+        const bool transverterEnabled = state_.transverter.load(std::memory_order_relaxed);
+        const uint64_t offset = state_.transverterOffsetHz.load(std::memory_order_relaxed);
+        const bool offsetPlus = state_.transverterOffsetPlus.load(std::memory_order_relaxed);
 
         // Check all conditions using the snapshot
         if (!(displayOffsetEnabled && transverterEnabled && offset > 0))
@@ -577,10 +579,10 @@ namespace radio
     uint64_t RadioManager::displayToBaseFrequency(const uint64_t displayFreq) const
     {
         // Atomic snapshot of transverter state to prevent race conditions
-        const bool displayOffsetEnabled = state_.transverterOffsetEnabled;
-        const bool transverterEnabled = state_.transverter;
-        const uint64_t offset = state_.transverterOffsetHz;
-        const bool offsetPlus = state_.transverterOffsetPlus;
+        const bool displayOffsetEnabled = state_.transverterOffsetEnabled.load(std::memory_order_relaxed);
+        const bool transverterEnabled = state_.transverter.load(std::memory_order_relaxed);
+        const uint64_t offset = state_.transverterOffsetHz.load(std::memory_order_relaxed);
+        const bool offsetPlus = state_.transverterOffsetPlus.load(std::memory_order_relaxed);
 
         // Check all conditions using the snapshot
         if (!(displayOffsetEnabled && transverterEnabled && offset > 0))
@@ -1125,7 +1127,7 @@ namespace radio
             bandNumber = 9;
         }
 
-        state_.bandNumber = bandNumber;
+        state_.bandNumber.store(bandNumber, std::memory_order_relaxed);
     }
 
     void RadioManager::decodeBandFromFreq(const std::string_view frequency)
@@ -1168,11 +1170,11 @@ namespace radio
             return;
 
         updateBandFromVfoA();
-        const int idx = (state_.bandNumber + 1) % 10;
+        const int idx = (state_.bandNumber.load(std::memory_order_relaxed) + 1) % 10;
 
         const std::string bandCommand = "BD" + std::to_string(idx) + ";";
         sendRadioCommand(bandCommand);
-        state_.bandNumber = idx;
+        state_.bandNumber.store(idx, std::memory_order_relaxed);
 
         previousMicros_ = currentTime;
         sendRadioCommand("FA;"); // Request VFO A

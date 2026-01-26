@@ -309,7 +309,7 @@ void ButtonHandler::triggerSplitButton()
         return;
 
     // Check panel lock state - block button when locked
-    if (m_radioManager.getState().panelLock)
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
     {
         ESP_LOGD(TAG, "Split button blocked - panel is LOCKED");
         return;
@@ -328,7 +328,7 @@ void ButtonHandler::triggerSpeechProcessorButton()
         return;
 
     // Check panel lock state - block button when locked
-    if (m_radioManager.getState().panelLock)
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
     {
         ESP_LOGD(TAG, "Speech Processor button blocked - panel is LOCKED");
         return;
@@ -376,7 +376,7 @@ void ButtonHandler::triggerFunctionButton1()
         return;
 
     // Check panel lock state - block button when locked
-    if (m_radioManager.getState().panelLock)
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
     {
         ESP_LOGD(TAG, "Function Button 1 blocked - panel is LOCKED");
         return;
@@ -483,7 +483,7 @@ void ButtonHandler::triggerTransverterMacroButton()
     }
 
     // Check panel lock state - block button when locked
-    if (m_radioManager.getState().panelLock)
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
     {
         ESP_LOGD(TAG, "Transverter Macro button blocked - panel is LOCKED");
         return;
@@ -504,8 +504,10 @@ void ButtonHandler::triggerTransverterMacroButton()
         ESP_LOGE(TAG, "Failed to execute transverter macro: %s", m_macroManager.getLastError().c_str());
     }
 
-    ESP_LOGI(TAG, "Final states - Transverter: %d, DRV Out: %d, RX ANT: %d", m_radioManager.getState().transverter,
-             m_radioManager.getState().drvOut, m_radioManager.getState().rxAnt);
+    ESP_LOGI(TAG, "Final states - Transverter: %d, DRV Out: %d, RX ANT: %d",
+             m_radioManager.getState().transverter.load(std::memory_order_relaxed),
+             m_radioManager.getState().drvOut.load(std::memory_order_relaxed),
+             m_radioManager.getState().rxAnt.load(std::memory_order_relaxed));
 }
 
 void ButtonHandler::triggerBandUpButton()
@@ -514,7 +516,7 @@ void ButtonHandler::triggerBandUpButton()
         return;
 
     // Check panel lock state - block button when locked
-    if (m_radioManager.getState().panelLock)
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
     {
         ESP_LOGD(TAG, "Band Up button blocked - panel is LOCKED");
         return;
@@ -1225,7 +1227,7 @@ void ButtonHandler::handleMatrixButtonEvent(const TCA8418Handler::MatrixKey key,
     }
 
     // Check panel lock state - allow only LOCK and Power buttons when locked
-    if (m_radioManager.getState().panelLock)
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
     {
         // Allow MODE button (0x27, used as LOCK) and POWER button (0x0C) when panel is locked
         if (key != TCA8418Handler::MatrixKey::KEY_0x27 && key != TCA8418Handler::MatrixKey::KEY_0x0C)
@@ -1345,7 +1347,7 @@ void ButtonHandler::handleBandDownButton()
         return;
 
     // Check panel lock state - block button when locked
-    if (m_radioManager.getState().panelLock)
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
     {
         ESP_LOGD(TAG, "Band Down button blocked - panel is LOCKED");
         return;
@@ -1361,7 +1363,7 @@ void ButtonHandler::handleBandDownButton()
              currentFreq);
     m_radioManager.decodeBandFromFreq(currentFreq);
 
-    const int currentBandIndex = m_radioManager.getState().bandNumber;
+    const int currentBandIndex = m_radioManager.getState().bandNumber.load(std::memory_order_relaxed);
     int nextBandIndex;
     if (currentBandIndex <= 0 || currentBandIndex > 9)
     {
@@ -1403,7 +1405,7 @@ void ButtonHandler::handleBandUpButton()
         return;
 
     // Check panel lock state - block button when locked
-    if (m_radioManager.getState().panelLock)
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
     {
         ESP_LOGD(TAG, "Band Up button blocked - panel is LOCKED");
         return;
@@ -1420,7 +1422,7 @@ void ButtonHandler::handleBandUpButton()
     m_radioManager.decodeBandFromFreq(currentFreq);
 
     // Get the frequency-based band number (0-10) and increment
-    const int currentBandIndex = m_radioManager.getState().bandNumber;
+    const int currentBandIndex = m_radioManager.getState().bandNumber.load(std::memory_order_relaxed);
     // Skip band 10 (GENE) in progression - wrap from band 9 directly to band 0
     int nextBandIndex;
     if (currentBandIndex >= 9)
@@ -1461,7 +1463,7 @@ void ButtonHandler::handleNotchButton(MatrixButton &button)
         return;
 
     // Check panel lock state - block button when locked
-    if (m_radioManager.getState().panelLock)
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
     {
         ESP_LOGD(TAG, "Notch button blocked - panel is LOCKED");
         return;
@@ -1639,7 +1641,7 @@ void ButtonHandler::handleAEqualsBMatrixButton(MatrixButton &button)
         return;
 
     // Check panel lock state - block button when locked
-    if (m_radioManager.getState().panelLock)
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
     {
         ESP_LOGD(TAG, "A=B button blocked - panel is LOCKED");
         return;
@@ -1665,7 +1667,7 @@ void ButtonHandler::handleVfoToggleButton()
         return;
 
     // Check panel lock state - block button when locked
-    if (m_radioManager.getState().panelLock)
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
     {
         ESP_LOGD(TAG, "VFO Toggle button blocked - panel is LOCKED");
         return;
@@ -1719,7 +1721,7 @@ void ButtonHandler::handleNoiseReductionButton(MatrixButton &button)
         return;
 
     // Check panel lock state - block button when locked
-    if (m_radioManager.getState().panelLock)
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
     {
         ESP_LOGD(TAG, "Noise Reduction button blocked - panel is LOCKED");
         return;
@@ -1823,7 +1825,7 @@ void ButtonHandler::handleRitButton(MatrixButton &button)
         return;
 
     // Check panel lock state - block button when locked
-    if (m_radioManager.getState().panelLock)
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
     {
         ESP_LOGD(TAG, "RIT button blocked - panel is LOCKED");
         return;
@@ -1892,7 +1894,7 @@ void ButtonHandler::handleXitButton(MatrixButton &button)
         return;
 
     // Check panel lock state - block button when locked
-    if (m_radioManager.getState().panelLock)
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
     {
         ESP_LOGD(TAG, "XIT button blocked - panel is LOCKED");
         return;
@@ -1960,7 +1962,7 @@ void ButtonHandler::handleNoiseBlankerButton(MatrixButton &button)
         return;
 
     // Check panel lock state - block button when locked
-    if (m_radioManager.getState().panelLock)
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
     {
         ESP_LOGD(TAG, "Noise Blanker button blocked - panel is LOCKED");
         return;
@@ -2051,7 +2053,7 @@ void ButtonHandler::handleSpeechProcessorButton(MatrixButton &button)
         return;
 
     // Check panel lock state - block button when locked
-    if (m_radioManager.getState().panelLock)
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
     {
         ESP_LOGD(TAG, "Speech Processor button blocked - panel is LOCKED");
         return;
@@ -2159,7 +2161,7 @@ void ButtonHandler::handleRfAttenuatorButton()
         return;
 
     // Check panel lock state - block button when locked
-    if (m_radioManager.getState().panelLock)
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
     {
         ESP_LOGD(TAG, "RF Attenuator button blocked - panel is LOCKED");
         return;
@@ -2183,7 +2185,7 @@ void ButtonHandler::handlePreampButton()
         return;
 
     // Check panel lock state - block button when locked
-    if (m_radioManager.getState().panelLock)
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
     {
         ESP_LOGD(TAG, "Preamp button blocked - panel is LOCKED");
         return;
@@ -2335,14 +2337,14 @@ void ButtonHandler::handleModeMatrixButton(MatrixButton &button)
         return;
 
     // Check panel lock state - block button when locked
-    if (m_radioManager.getState().panelLock)
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
     {
         ESP_LOGD(TAG, "Mode button blocked - panel is LOCKED");
         return;
     }
 
     const int8_t currentMode = m_radioManager.getMode();
-    const int bandIndex = m_radioManager.getState().bandNumber;
+    const int bandIndex = m_radioManager.getState().bandNumber.load(std::memory_order_relaxed);
     const char *modeNames[] = {"Invalid", "LSB", "USB", "CW", "FM", "AM", "FSK", "CW-R", "Invalid", "FSK-R"};
 
     // Handle long press using Button class logic
@@ -2460,7 +2462,7 @@ void ButtonHandler::handleMoxButton(MatrixButton &button)
         return;
 
     // Check panel lock state - block button when locked
-    if (m_radioManager.getState().panelLock)
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
     {
         ESP_LOGD(TAG, "MOX button blocked - panel is LOCKED");
         return;
@@ -2514,7 +2516,7 @@ void ButtonHandler::handleVoxButton(MatrixButton &button)
         return;
 
     // Check panel lock state - block button when locked
-    if (m_radioManager.getState().panelLock)
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
     {
         ESP_LOGD(TAG, "VOX button blocked - panel is LOCKED");
         return;
@@ -2589,7 +2591,7 @@ void ButtonHandler::handleAntennaTunerButton(MatrixButton &button)
         return;
 
     // Check panel lock state - block button when locked
-    if (m_radioManager.getState().panelLock)
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
     {
         ESP_LOGD(TAG, "Antenna Tuner button blocked - panel is LOCKED");
         return;
@@ -2636,7 +2638,7 @@ void ButtonHandler::handleLeftPcbButton8(MatrixButton &button)
         return;
 
     // Check panel lock state - block button when locked
-    if (m_radioManager.getState().panelLock)
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
     {
         ESP_LOGD(TAG, "PWR button blocked - panel is LOCKED");
         return;

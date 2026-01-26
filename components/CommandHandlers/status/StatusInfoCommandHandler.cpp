@@ -130,9 +130,11 @@ bool StatusInfoCommandHandler::handleCommand(const RadioCommand& command,
                 }
 
                 // Apply transverter offset for display if enabled (controlled by UIXD1/UIXD0)
-                if (state.transverterOffsetEnabled && state.transverter) {
-                    const uint64_t offset = state.transverterOffsetHz;
-                    const bool plus = state.transverterOffsetPlus;
+                const bool offsetEnabled = state.transverterOffsetEnabled.load(std::memory_order_relaxed);
+                const bool transverterOn = state.transverter.load(std::memory_order_relaxed);
+                if (offsetEnabled && transverterOn) {
+                    const uint64_t offset = state.transverterOffsetHz.load(std::memory_order_relaxed);
+                    const bool plus = state.transverterOffsetPlus.load(std::memory_order_relaxed);
                     if (offset > 0) {
                         if (plus) {
                             txFrequency += offset;
@@ -807,13 +809,15 @@ std::string StatusInfoCommandHandler::formatIFResponse(const RadioState& state) 
 
     // Apply transverter offset for display if enabled (controlled by UIXD1/UIXD0)
     // NOTE: This mirrors RadioManager::baseToDisplayFrequency() logic - keep in sync
-    const bool offsetActive = state.transverterOffsetEnabled && state.transverter && state.transverterOffsetHz > 0;
+    const bool offsetEnabledIF = state.transverterOffsetEnabled.load(std::memory_order_relaxed);
+    const bool transverterOnIF = state.transverter.load(std::memory_order_relaxed);
+    const uint64_t offsetHzIF = state.transverterOffsetHz.load(std::memory_order_relaxed);
+    const bool offsetActive = offsetEnabledIF && transverterOnIF && offsetHzIF > 0;
     if (offsetActive) {
-        if (state.transverterOffsetPlus) {
-            activeFrequency += state.transverterOffsetHz;
+        if (state.transverterOffsetPlus.load(std::memory_order_relaxed)) {
+            activeFrequency += offsetHzIF;
         } else {
-            activeFrequency = (activeFrequency > state.transverterOffsetHz)
-                ? (activeFrequency - state.transverterOffsetHz) : 0ULL;
+            activeFrequency = (activeFrequency > offsetHzIF) ? (activeFrequency - offsetHzIF) : 0ULL;
         }
     }
 

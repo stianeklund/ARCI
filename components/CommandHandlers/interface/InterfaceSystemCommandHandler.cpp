@@ -560,7 +560,7 @@ namespace radio
 
             ESP_LOGD(TAG, "Panel lock: %s", lockState == LK_ON ? "LOCKED" : "UNLOCKED");
             // Update state
-            state.panelLock = lockState == LK_ON;
+            state.panelLock.store(lockState == LK_ON, std::memory_order_relaxed);
 
             if (shouldSendToRadio(cmd))
             {

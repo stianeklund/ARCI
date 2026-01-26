@@ -1649,7 +1649,7 @@ namespace radio
                 // Parse direction (P1: 0=plus, 1=minus)
                 if (const int direction = paramStr[0] - '0'; direction >= 0 && direction <= 1)
                 {
-                    rm.getState().transverterOffsetPlus = (direction == 0);
+                    rm.getState().transverterOffsetPlus.store(direction == 0, std::memory_order_relaxed);
 
                     // Parse frequency (P2: 11 digits in Hz)
                     const std::string freqStr = paramStr.substr(1, 11);
@@ -1658,7 +1658,7 @@ namespace radio
                             std::from_chars(freqStr.data(), freqStr.data() + freqStr.size(), frequency);
                         ec == std::errc{})
                     {
-                        rm.getState().transverterOffsetHz = frequency;
+                        rm.getState().transverterOffsetHz.store(frequency, std::memory_order_relaxed);
                         ESP_LOGD(TAG, "Updated transverter offset: %s%llu Hz", direction == 0 ? "+" : "-", frequency);
                     }
                 }
@@ -1716,16 +1716,16 @@ namespace radio
             }
 
             // Update state and build normalized response
-            int outDir = rm.getState().transverterOffsetPlus ? 0 : 1; // default to state
+            int outDir = rm.getState().transverterOffsetPlus.load(std::memory_order_relaxed) ? 0 : 1; // default to state
             if (haveParsed)
             {
                 // If we had an exact-width frame with a clear direction, trust it; otherwise keep state
                 if (exactWidth && (parsedDir == 0 || parsedDir == 1))
                 {
                     outDir = parsedDir;
-                    rm.getState().transverterOffsetPlus = outDir == 0;
+                    rm.getState().transverterOffsetPlus.store(outDir == 0, std::memory_order_relaxed);
                 }
-                rm.getState().transverterOffsetHz = frequency;
+                rm.getState().transverterOffsetHz.store(frequency, std::memory_order_relaxed);
                 ESP_LOGD(TAG, "XO normalized: dir=%d freq=%s (Hz=%llu)", outDir, normFreqStr.c_str(), frequency);
             }
 
@@ -1837,12 +1837,14 @@ namespace radio
                 // Send update to display immediately (like EncoderHandler does)
                 // Apply transverter offset for display if enabled (controlled by UIXD1/UIXD0)
                 uint64_t displayFreq = newFreq;
-                if (state.transverterOffsetEnabled && state.transverter && state.transverterOffsetHz > 0) {
-                    if (state.transverterOffsetPlus) {
-                        displayFreq = newFreq + state.transverterOffsetHz;
+                const bool offsetEnabled = state.transverterOffsetEnabled.load(std::memory_order_relaxed);
+                const bool transverterOn = state.transverter.load(std::memory_order_relaxed);
+                const uint64_t offsetHz = state.transverterOffsetHz.load(std::memory_order_relaxed);
+                if (offsetEnabled && transverterOn && offsetHz > 0) {
+                    if (state.transverterOffsetPlus.load(std::memory_order_relaxed)) {
+                        displayFreq = newFreq + offsetHz;
                     } else {
-                        displayFreq = (newFreq > state.transverterOffsetHz)
-                                      ? (newFreq - state.transverterOffsetHz) : 0ULL;
+                        displayFreq = (newFreq > offsetHz) ? (newFreq - offsetHz) : 0ULL;
                     }
                 }
                 char displayCmd[20];

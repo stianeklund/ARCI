@@ -108,23 +108,23 @@ esp_err_t NvsManager::saveRadioState() {
     if (err != ESP_OK) return err;
 
     // Save transverter configuration
-    err = nvs_set_u8(my_handle, "transverter", state.transverter ? 1 : 0);
+    err = nvs_set_u8(my_handle, "transverter", state.transverter.load(std::memory_order_relaxed) ? 1 : 0);
     if (err != ESP_OK) return err;
-    
-    err = nvs_set_u8(my_handle, "tvr_offset_plus", state.transverterOffsetPlus ? 1 : 0);
+
+    err = nvs_set_u8(my_handle, "tvr_offset_plus", state.transverterOffsetPlus.load(std::memory_order_relaxed) ? 1 : 0);
     if (err != ESP_OK) return err;
-    
-    err = nvs_set_u64(my_handle, "tvr_offset_hz", state.transverterOffsetHz);
+
+    err = nvs_set_u64(my_handle, "tvr_offset_hz", state.transverterOffsetHz.load(std::memory_order_relaxed));
     if (err != ESP_OK) return err;
-    
+
     // Save transverter-related menu settings
     err = nvs_set_i32(my_handle, "drv_connector", state.drvConnectorMode);
     if (err != ESP_OK) return err;
-    
-    err = nvs_set_i32(my_handle, "hf_linear_amp", state.hfLinearAmpControl);
+
+    err = nvs_set_i32(my_handle, "hf_linear_amp", state.hfLinearAmpControl.load(std::memory_order_relaxed));
     if (err != ESP_OK) return err;
-    
-    err = nvs_set_i32(my_handle, "vhf_linear_amp", state.vhfLinearAmpControl);
+
+    err = nvs_set_i32(my_handle, "vhf_linear_amp", state.vhfLinearAmpControl.load(std::memory_order_relaxed));
     if (err != ESP_OK) return err;
 
     err = nvs_commit(my_handle);
