@@ -21,9 +21,13 @@ namespace radio {
         }
 
         ESP_LOGV(CatParser::TAG, "Parsing %s message: '%.*s' (length=%zu)",
-                 (source == CommandSource::UsbCdc0 ? "Usb0" : (source == CommandSource::UsbCdc1 ? "Usb1" :
-                 source == CommandSource::Display ? "Display" :
-                 source == CommandSource::Panel ? "Panel" : "Remote")),
+                 (source == CommandSource::UsbCdc0 ? "Usb0" :
+                  source == CommandSource::UsbCdc1 ? "Usb1" :
+                  source == CommandSource::Tcp0 ? "Tcp0" :
+                  source == CommandSource::Tcp1 ? "Tcp1" :
+                  source == CommandSource::Display ? "Display" :
+                  source == CommandSource::Panel ? "Panel" :
+                  source == CommandSource::Macro ? "Macro" : "Remote"),
                  static_cast<int>(message.length()), message.data(), message.length());
 
         // Split message into individual CAT frames

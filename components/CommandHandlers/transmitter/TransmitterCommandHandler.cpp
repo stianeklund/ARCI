@@ -16,10 +16,16 @@ namespace radio
             return "USB0";
         case CommandSource::UsbCdc1:
             return "USB1";
+        case CommandSource::Tcp0:
+            return "TCP0";
+        case CommandSource::Tcp1:
+            return "TCP1";
         case CommandSource::Display:
             return "Display";
         case CommandSource::Panel:
             return "Panel";
+        case CommandSource::Macro:
+            return "Macro";
         case CommandSource::Remote:
             return "Remote";
         default:

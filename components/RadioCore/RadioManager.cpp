@@ -111,11 +111,15 @@ namespace radio
             case CommandSource::Panel:
                 return 4;
             case CommandSource::UsbCdc0:
+            case CommandSource::Tcp0:
                 return 3;
             case CommandSource::UsbCdc1:
+            case CommandSource::Tcp1:
                 return 2;
             case CommandSource::Display:
                 return 1;
+            case CommandSource::Macro:
+                return 0;
             default:
                 return 0;
             }
