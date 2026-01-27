@@ -1328,7 +1328,14 @@ namespace radio
 
     esp_err_t RadioManager::init()
     {
-        // No need to setup UARTs here, as they should be initialized in main.cpp
+        // Initialize macro storage (user-defined macros)
+        // This must be called after nvs_flash_init() - cannot be done in constructor
+        // since RadioManager is a file-scope static and NVS isn't ready at static init time
+        ESP_LOGD(RadioManager::TAG, "Initializing macro storage");
+        if (esp_err_t err = storage::MacroStorage::instance().init(); err != ESP_OK) {
+            ESP_LOGE(RadioManager::TAG, "Failed to initialize MacroStorage: %s", esp_err_to_name(err));
+            return err;
+        }
         return ESP_OK;
     }
 
@@ -1796,12 +1803,7 @@ namespace radio
 
         ESP_LOGD(RadioManager::TAG, "Command dispatcher initialized with %zu handlers",
                  commandDispatcher_->getRegisteredHandlers().size());
-
-        // Initialize macro storage (user-defined macros)
-        ESP_LOGD(RadioManager::TAG, "Initializing macro storage");
-        if (esp_err_t err = storage::MacroStorage::instance().init(); err != ESP_OK) {
-            ESP_LOGE(RadioManager::TAG, "Failed to initialize MacroStorage: %s", esp_err_to_name(err));
-        }
+        // Note: MacroStorage is initialized in RadioManager::init() after NVS is ready
         // Note: RadioMacroManager is created separately and set via setMacroManager()
     }
 
