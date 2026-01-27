@@ -100,7 +100,13 @@ bool MXCommandHandler::handleMXW(const RadioCommand &command,
     std::strncpy(macro.command, commands.c_str(), storage::kMacroCommandMaxLength - 1);
     macro.enabled = true;
 
-    esp_err_t err = storage::MacroStorage::instance().setMacro(macro_id, macro);
+    auto& macroStorage = storage::MacroStorage::instance();
+    if (!macroStorage.isInitialized()) {
+        ESP_LOGE(TAG, "MacroStorage not initialized - call MacroStorage::init() first");
+        return true;
+    }
+
+    esp_err_t err = macroStorage.setMacro(macro_id, macro);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to save macro %d: %s", macro_id, esp_err_to_name(err));
         return true;
@@ -199,7 +205,13 @@ bool MXCommandHandler::handleMXA(const RadioCommand &command,
         }
 
         // Set the slot assignment
-        esp_err_t err = storage::MacroStorage::instance().setSlotAssignment(slot, macro_id);
+        auto& macroStorage = storage::MacroStorage::instance();
+        if (!macroStorage.isInitialized()) {
+            ESP_LOGE(TAG, "MacroStorage not initialized - cannot set slot assignment");
+            return true;
+        }
+
+        esp_err_t err = macroStorage.setSlotAssignment(slot, macro_id);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Failed to set slot %d to macro %d: %s",
                      slot + 1, macro_id, esp_err_to_name(err));

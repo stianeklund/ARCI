@@ -33,3 +33,4 @@ CLAUDE.md
 .DS_Store
 *gitignore.un~
 *gitignore~
+build_s3
