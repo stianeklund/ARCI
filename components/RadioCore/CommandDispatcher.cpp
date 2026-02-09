@@ -1,5 +1,6 @@
 #include "CommandDispatcher.h"
 #include "ICommandHandler.h"  // Need full definition for implementation
+#include "esp_log.h"
 #include "esp_timer.h"
 #include <algorithm>
 #include <unordered_map>

@@ -173,7 +173,7 @@ private:
     static constexpr int BUFFER_SIZE = CONFIG_TCP_CAT_BRIDGE_BUFFER_SIZE;
     static constexpr int SELECT_TIMEOUT_MS = CONFIG_TCP_CAT_BRIDGE_SELECT_TIMEOUT_MS;
     static constexpr size_t COMMAND_BUFFER_SIZE = BUFFER_SIZE * 2;
-    static constexpr int MIN_STACK_DEPTH = 4096;
+    static constexpr int MIN_STACK_DEPTH = 6144;
 
     // Client connection state
     struct ClientState {

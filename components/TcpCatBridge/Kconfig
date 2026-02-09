@@ -51,12 +51,13 @@ menu "TCP CAT Bridge Configuration"
 
     config TCP_CAT_BRIDGE_TASK_STACK_SIZE
         int "Bridge Task Stack Size (bytes)"
-        default 4096
-        range 2048 8192
+        default 6144
+        range 2048 16384
         depends on TCP_CAT_BRIDGE_ENABLE
         help
             Stack size for the TCP bridge task.
-            4KB required to prevent stack overflow (observed usage ~3.8KB).
+            The frame callback dispatches through the full command handler chain,
+            which requires ~5-6KB of stack depth.
 
     config TCP_CAT_BRIDGE_TASK_PRIORITY
         int "Bridge Task Priority"
