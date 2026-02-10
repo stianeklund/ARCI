@@ -23,9 +23,9 @@ enum class CommandSource : uint8_t {
 
 // Defines the type of a CAT command
 enum class CommandType : uint8_t {
-    Set,     // Command to set a value (e.g., "FA14150000;")
+    Set,     // Command to set a value (e.g., "FA00014150000;")
     Read,    // Query command (e.g., "FA;")
-    Answer,  // Response with data (e.g., "FA14150000;" from radio)
+    Answer,  // Response with data (e.g., "FA00014150000;" from radio)
     Unknown  // Unknown/invalid command type (added last to preserve existing values)
 };
 
@@ -89,7 +89,7 @@ struct RadioCommand {
     std::string command;        // Command prefix (e.g., "FA", "FB", "MD") - uses SSO internally
     CommandType type;           // Set, Read, or Answer
     CommandSource source;       // Usb (from host) or Remote (from radio)
-    std::string originalMessage; // Original message as received (e.g., "FA;" or "FA14150000;")
+    std::string originalMessage; // Original message as received (e.g., "FA;" or "FA00014150000;")
     bool bypassCache = false;   // Flag to bypass TTL caching for button-initiated commands
 
     // Legacy params field for backward compatibility - publicly accessible

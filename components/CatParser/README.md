@@ -22,7 +22,7 @@ parser.setErrorCallback([](std::string_view err) {
     ESP_LOGE(TAG, "Parse error: %.*s", err.size(), err.data());
 });
 
-parser.parseMessage("FA14150000;MD2;", radio::CommandSource::Local,
+parser.parseMessage("FA00014150000;MD2;", radio::CommandSource::Local,
     [](const radio::RadioCommand& cmd) {
         // Process each parsed command
     });
@@ -34,9 +34,9 @@ ESP_LOGI(TAG, "Parsed: %zu, Errors: %zu", stats.totalMessagesParsed, stats.parse
 
 ## Command Format
 
-- `FAxxxxxxxxxx;` - SET frequency
+- `FAxxxxxxxxxx;` - SET frequency (11 digits)
 - `FA;` - READ frequency query
-- `FA14150000;` from radio - ANSWER
+- `FA00014150000;` from radio - ANSWER (11 digits, 14.15 MHz)
 
 ## Dependencies
 

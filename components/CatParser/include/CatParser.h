@@ -81,7 +81,7 @@ public:
 private:
     /**
      * @brief Parse a single CAT command/response
-     * @param frame Individual CAT frame (e.g., "FA14150000;")
+     * @param frame Individual CAT frame (e.g., "FA00014150000;")
      * @param source Source of the frame
      * @return Parsed RadioCommand if successful, nullopt otherwise
      */

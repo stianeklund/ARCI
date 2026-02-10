@@ -86,25 +86,25 @@ void test_parseBool_invalid_values() {
 }
 
 void test_isValidCAT_valid_commands() {
-    
+
     // Test valid CAT command formats
     TEST_ASSERT_TRUE(ParserUtils::isValidCAT("FA;"));
-    TEST_ASSERT_TRUE(ParserUtils::isValidCAT("FA14150000;"));
+    TEST_ASSERT_TRUE(ParserUtils::isValidCAT("FA00014150000;"));
     TEST_ASSERT_TRUE(ParserUtils::isValidCAT("MD1;"));
     TEST_ASSERT_TRUE(ParserUtils::isValidCAT("IF00014150000      000000003020010080;"));
-    
+
 }
 
 void test_isValidCAT_invalid_commands() {
-    
+
     // Test invalid CAT command formats
     TEST_ASSERT_FALSE(ParserUtils::isValidCAT(""));
     TEST_ASSERT_FALSE(ParserUtils::isValidCAT("F"));
     TEST_ASSERT_FALSE(ParserUtils::isValidCAT("FA"));
-    TEST_ASSERT_FALSE(ParserUtils::isValidCAT("FA14150000"));  // No semicolon
+    TEST_ASSERT_FALSE(ParserUtils::isValidCAT("FA00014150000"));  // No semicolon
     TEST_ASSERT_FALSE(ParserUtils::isValidCAT("1A;"));         // First char not letter
     TEST_ASSERT_FALSE(ParserUtils::isValidCAT("F1;"));         // Second char not letter
-    
+
 }
 
 void test_getPrefix_valid_commands() {
@@ -126,12 +126,12 @@ void test_getPrefix_invalid_commands() {
 }
 
 void test_getParameters_with_params() {
-    
+
     // Test commands with parameters
-    TEST_ASSERT_TRUE(ParserUtils::getParameters("FA14150000;") == "14150000");
+    TEST_ASSERT_TRUE(ParserUtils::getParameters("FA00014150000;") == "00014150000");
     TEST_ASSERT_TRUE(ParserUtils::getParameters("MD1;") == "1");
     TEST_ASSERT_TRUE(ParserUtils::getParameters("AG0255;") == "0255");
-    
+
 }
 
 void test_getParameters_without_params() {

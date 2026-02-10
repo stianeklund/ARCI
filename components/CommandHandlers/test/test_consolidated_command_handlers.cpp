@@ -62,17 +62,17 @@ void initializeTestObjects() {
 void test_frequency_vfo_handler_fa_command() {
     // Initialize test objects since Unity setUp is not called reliably
     initializeTestObjects();
-    
-    // Test FA (VFO A frequency) command
-    const std::string testCommand = "FA14150000;";
-    
+
+    // Test FA (VFO A frequency) command - FA requires 11 digits per TS-590SG spec
+    const std::string testCommand = "FA00014150000;";
+
     // First verify that the RadioManager is properly constructed
     TEST_ASSERT_NOT_NULL(testRadioManager.get());
-    
+
     // Process command through the local CAT handler
     testRadioManager->getLocalCATHandler().parseMessage(testCommand);
 
-    // Verify VFO A frequency was updated
+    // Verify VFO A frequency was updated (14.15 MHz = 14150000 Hz)
     TEST_ASSERT_EQUAL_UINT32(14150000, testRadioManager->getVfoAFrequency());
 }
 
@@ -714,8 +714,8 @@ void test_command_routing_priorities() {
     // This tests the dispatcher registration order and command routing
 
     const std::vector<std::string> testCommands = {
-        "FA14150000;", "RT1;", "CH01;", "MD2;", "U;", "AG050;",
-        "PA1;", "NR1;", "TX;", "MC010;", "SV;", "KS025;", 
+        "FA00014150000;", "RT1;", "CH01;", "MD2;", "U;", "AG050;",
+        "PA1;", "NR1;", "TX;", "MC010;", "SV;", "KS025;",
         "SC1;", "SQ050;", "EX0050001;"
     };
     
