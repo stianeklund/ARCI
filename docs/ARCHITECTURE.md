@@ -169,7 +169,7 @@ Key tests (names may vary by repo):
 - `test_consolidated_command_handlers.cpp` — Covers all 16 handlers in a more isolated way.
 - `test_unified_cat_system.cpp` — parser + dispatcher integration.
 - `test_cat_parser_utils.cpp` — parsing/validation utilities.
-- `test_cache_system.cpp` — Verifies the TTL-based query cache system.
+- `test_cache.cpp` — Verifies the TTL-based query cache system.
 
 Highlights:
 
@@ -300,7 +300,6 @@ Non‑goals: Generalizing everything prematurely. Avoid over‑abstracting trans
 - Cache efficiency: Improved due to better data locality
 
 **Measurement and Validation:**
-- Use `test_meter_polling_performance.cpp` to validate timing improvements
 - Monitor ESP_LOGD timing outputs in CommandDispatcher for dispatch latency
 - Profile memory usage patterns using ESP-IDF heap tracing
 

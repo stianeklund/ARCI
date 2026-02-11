@@ -125,11 +125,6 @@ namespace radio
         void performBootSequence() const;
 
         /**
-         * @brief Perform periodic synchronization with radio
-         */
-        void performPeriodicSync();
-
-        /**
          * @brief Synchronize transverter-related menu settings with the radio on startup
          */
         void syncTransverterMenuSettings() const;
@@ -217,18 +212,12 @@ namespace radio
         bool shouldForwardToDisplay(const std::string_view &response) const;
 
         /**
-         * @brief Check if there has been recent external CAT activity from USB
-         * @return true if external CAT commands detected within configured timeout
-         */
-        bool hasRecentExternalCatActivity() const;
-
-        /**
-         * @brief Record button activity for burst polling
+         * @brief Record button activity timestamp (used for tuning debounce)
          */
         void recordButtonActivity();
 
         /**
-         * @brief Record encoder activity for burst polling
+         * @brief Record encoder activity timestamp (used for tuning debounce)
          */
         void recordEncoderActivity();
 
@@ -250,18 +239,6 @@ namespace radio
          * @param minutes Screensaver timeout in minutes (0 = disabled)
          */
         void setDisplayScreensaverTimeout(uint8_t minutes);
-
-        /**
-         * @brief Check if there has been recent user activity (button or encoder)
-         * @return true if button or encoder activity detected within burst timeout
-         */
-        bool hasRecentUserActivity() const;
-
-        /**
-         * @brief Set callback function to signal immediate polling needs
-         * @param callback Function to call when immediate polling is needed
-         */
-        void setImmediatePollingCallback(void (*callback)());
 
         /**
          * @brief Set callback function to handle power state changes
@@ -761,9 +738,6 @@ namespace radio
         // Statistics and monitoring
         Statistics stats_;
         std::atomic<int64_t> previousMicros_{0};
-
-        // Immediate polling callback
-        void (*immediatePollingCallback_)() = nullptr;
 
         // Power state change callback
         void (*powerStateChangeCallback_)(bool powerOn, bool oldState) = nullptr;

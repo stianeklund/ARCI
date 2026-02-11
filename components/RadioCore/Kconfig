@@ -46,30 +46,6 @@ config RADIOCORE_EMULATE_TS2000
         When enabled, ID; responds with ID020; and FV; responds with FV1.20; to
         better align with TS-2000 behavior, useful for transverter workflows.
 
-## Polling functionality removed
-## The following options were intentionally deleted to eliminate internal polling:
-## - RADIOCORE_SMART_POLLING and related TTL presets
-## - RADIOCORE_METER_POLLING and burst polling controls
-## - RADIOCORE_INTERNAL_POLLING and SYNC interval/activity tuning
-
-# Auto-readback after SET (replaces polling for confirmation)
-config RADIOCORE_AUTO_QUERY_AFTER_SET
-    bool "Send READ after SET (auto-readback)"
-    default y
-    help
-        When enabled, the router automatically sends the corresponding READ
-        command to the radio after processing a local SET (from USB or Display).
-        This confirms that the radio applied the change and updates local state
-        from the authoritative source. These READs bypass cache TTL logic.
-
-config RADIOCORE_AUTO_QUERY_RESPECT_AI
-    bool "Skip auto-readback when AI2/AI4 is active"
-    default n
-    help
-        When enabled, auto-readback is suppressed if the radio is in AI2/AI4
-        mode (since the radio will broadcast updates itself). Leave disabled
-        to always confirm via a READ after SET.
-
 config RADIOCORE_MANUAL_KEEPALIVE
     bool "Enable Manual KeepAlive (RRC-1258 compatibility)"
     default n

@@ -49,7 +49,6 @@ extern "C" void run_encoder_handler_tests(void);
 extern "C" void run_radio_macro_manager_tests(void);
 extern "C" void run_cat_parser_tests(void);
 extern "C" void run_cache_tests(void); // Consolidated cache tests (replaces cache_behavior + cache_system)
-extern "C" void run_meter_polling_performance_tests(void);
 extern "C" void run_transverter_tests(void);
 extern "C" void run_consolidated_command_handlers_tests(void);
 // extern "C" void run_serial_handler_queue_tests(void); // Temporarily disabled
@@ -73,7 +72,6 @@ extern "C" void run_all_tests(void) {
     runTestSuiteWithFailureTracking("RadioManager CAT", run_radiomanager_cat_tests);
     runTestSuiteWithFailureTracking("CAT Parser", run_cat_parser_tests);
     runTestSuiteWithFailureTracking("Cache", run_cache_tests); // Consolidated cache tests
-    runTestSuiteWithFailureTracking("Meter Polling Performance", run_meter_polling_performance_tests);
     runTestSuiteWithFailureTracking("Transverter", run_transverter_tests);
     runTestSuiteWithFailureTracking("EncoderHandler", run_encoder_handler_tests);
     runTestSuiteWithFailureTracking("RadioMacroManager", run_radio_macro_manager_tests);

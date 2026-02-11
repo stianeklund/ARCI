@@ -901,8 +901,6 @@ void setup()
             }
         });
 #endif
-    radioManager.setImmediatePollingCallback([]() { xSemaphoreGive(g_radioMessageReadySem); });
-
     // Start RadioManager tasks (must be after peripheral setup, before using radio)
     ESP_LOGI(TAG, "Starting RadioManager tasks");
     ESP_ERROR_CHECK(radioManager.startTasks());

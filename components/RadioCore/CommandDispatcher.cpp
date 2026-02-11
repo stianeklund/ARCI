@@ -65,6 +65,12 @@ namespace radio {
 
     /**
      * @brief Check if automatic READ query should be sent after SET command
+     *
+     * Always-on behavior (not gated by Kconfig). After a local SET, sends the
+     * matching READ from setToReadMap to confirm the radio applied the change.
+     * Suppressed when AI2/AI4 is active (radio broadcasts updates itself) and
+     * during active encoder/button tuning to prevent race conditions.
+     *
      * @param command The command that was processed
      * @param radioManager Reference to radio manager for AI mode check
      * @return true if auto-query should be sent

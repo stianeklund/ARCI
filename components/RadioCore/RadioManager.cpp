@@ -1026,13 +1026,6 @@ namespace radio
 #endif
     }
 
-    void RadioManager::performPeriodicSync()
-    {
-        // Polling removed: do nothing. State synchronization now relies on
-        // direct command handling, radio AI updates, and explicit client queries.
-        ESP_LOGV(RadioManager::TAG, "performPeriodicSync() no-op (polling disabled)");
-    }
-
     void RadioManager::syncTransverterMenuSettings() const
     {
         // Only sync when powered on, keepAlive set, and radio connected
@@ -1219,12 +1212,6 @@ namespace radio
         return ForwardingPolicy::shouldForwardToDisplay(response, state_, currentTime);
     }
 
-    bool RadioManager::hasRecentExternalCatActivity() const
-    {
-        // Internal polling removed; always report no recent activity for polling logic.
-        return false;
-    }
-
     void RadioManager::recordButtonActivity()
     {
         state_.lastButtonActivityTime.store(esp_timer_get_time(), std::memory_order_relaxed);
@@ -1233,18 +1220,6 @@ namespace radio
     void RadioManager::recordEncoderActivity()
     {
         state_.lastEncoderActivityTime.store(esp_timer_get_time(), std::memory_order_relaxed);
-    }
-
-    bool RadioManager::hasRecentUserActivity() const
-    {
-        // Polling removed; activity no longer affects polling cadence.
-        return false;
-    }
-
-    void RadioManager::setImmediatePollingCallback(void (*callback)())
-    {
-        immediatePollingCallback_ = callback;
-        ESP_LOGD(RadioManager::TAG, "Immediate polling callback %s", callback ? "registered" : "cleared");
     }
 
     void RadioManager::setPowerStateChangeCallback(void (*callback)(bool powerOn, bool oldState))

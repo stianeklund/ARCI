@@ -36,8 +36,7 @@ It supports up to four concurrent interfaces for CAT control (2x USB CDC, 2x TPC
 - **Multiple Interface Support**: TS‑590SG CAT emulation over USB‑CDC, TCP/IP network, and UART (for external displays, see RemoteRadioDisplay project)
 - **Source‑aware routing**: USB/TCP/Display↔Radio
 - **Quad Interface**: Radio UART, USB‑CDC, TCP network, and Display UART2 with zero‑heap
-- **Cache System**: TTL-based query caching reduces radio traffic
-- **Smart Polling**: AI-mode aware polling with configurable TTL categories
+- **Cache System**: TTL-based query caching reduces radio traffic by serving fresh data from cache
 - **Independent AI Modes**: Each interface (USB CDC0/CDC1, Tcp0/Tcp1, Display) maintains separate AI mode settings
 - **Hardware Controls**: Rotary encoder, buttons, and ADC inputs
 - **Direct Architecture**: Improved performance and maintainability
@@ -63,15 +62,14 @@ USB/TCP/Display/Radio responses (source-aware routing)
 ## Hardware
 
 - ESP32‑S3: see my custom PCB design [ARCI-PCB](https://github.com/stianeklund/ARCI-PCB)
-- Kenwood TS‑590SG (could technically support other command sets..)
+- Kenwood TS‑590SG (could technically support other command sets)
 - Rotary encoder, buttons, potentiometers.
 
 ## Advanced Features
 
-- **Smart AI-Aware Polling**: Intelligent cache-driven polling that respects radio AI modes
+- **Event-Driven State Sync**: No internal polling; state updates come from radio AI modes, client queries, and auto-readback after SET commands
 - **External Display Support**: Complete TS-590SG emulation via UART2 for displays/controllers
-- **TTL-Based Cache System**: Reduces radio traffic by only querying stale data
-- **Configurable Performance**: Adjustable TTL values for different command categories
+- **TTL-Based Cache System**: Reduces radio traffic by serving cached responses when data is fresh
 - **Unified Command Processing**: Both USB and Display use identical CAT command pipeline
 
 ## Display Interface (UART2)
@@ -127,18 +125,13 @@ rigctld -m 2014 -r localhost:7373 -t 4532
 
 Use `idf.py menuconfig` to access RadioCore Options:
 
-### Smart Polling Options
-- **Smart Polling**: Enable intelligent cache-driven polling (recommended)
-- **Meter Polling**: Enable high-frequency meter updates for external displays
-- **TTL Categories**: Configure cache timeouts for different command types:
-  - Real-time (500 ms): Meters and frequencies for responsive displays
-  - Status (5 s): Status commands that change moderately  
-  - Static Config (30s): Configuration commands that rarely change
-
-### Example Configurations
-- **High-Performance Display**: Real-time TTL = 250 ms, Meter Polling = Yes
-- **Balanced**: Real-time TTL = 500 ms, Meter Polling = Yes (default)
-- **Minimal Traffic**: Real-time TTL = 2000 ms, Meter Polling = No
+### Cache & State Sync
+- **Auto-readback after SET**: After a local SET command (USB/Panel), the dispatcher sends the corresponding READ to the radio to confirm state. Suppressed automatically in AI2/AI4 modes where the radio broadcasts changes, and during active encoder tuning to prevent race conditions.
+- **TTL-based cache**: Query responses are served from cache when fresh, with per-command TTL categories:
+  - Real-time (500 ms): Meters and frequencies
+  - Status (5 s): Status commands that change moderately
+  - Static Config (30 s): Configuration commands that rarely change
+- **No internal polling**: State sync relies on radio AI mode updates, client queries, and auto-readback
 
 ## Getting Started
 

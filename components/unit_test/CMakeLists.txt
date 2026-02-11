@@ -9,7 +9,6 @@ idf_component_register(
          "../CatParser/test/test_cat_parser_utils.cpp"
          "../CommandHandlers/test/test_consolidated_command_handlers.cpp"
          "../RadioCore/test/test_cache.cpp"
-         "../RadioCore/test/test_meter_polling_performance.cpp"
          "../CommandHandlers/test/test_transverter_features.cpp"
          "../EncoderHandler/test/test_encoder_handler.cpp"
          "../RadioMacroManager/test/test_radio_macro_manager.cpp"
