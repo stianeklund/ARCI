@@ -7,6 +7,8 @@
 #include <iomanip>
 #include <memory>
 #include <sstream>
+#include "NvsManager.h"
+#include "ExtendedCommandHandler.h"
 #include "RadioCommand.h"
 #include "esp_err.h"
 #include "esp_log.h"
@@ -994,7 +996,8 @@ namespace radio
         // resulting in ?; errors when batched. Individual pacing ensures reliable sync.
         constexpr TickType_t INTER_COMMAND_DELAY_MS = 10;
 
-        ESP_LOGI(TAG, "🚀 Boot sequence task started (%d commands, paced)", BOOT_SEQUENCE_SIZE - 1);
+        // Phase 1: core state queries
+        ESP_LOGI(TAG, "Boot sequence phase 1: %zu core commands", BOOT_SEQUENCE_SIZE);
 
         for (const auto &command : bootSequence_)
         {
@@ -1004,7 +1007,38 @@ namespace radio
             vTaskDelay(pdMS_TO_TICKS(INTER_COMMAND_DELAY_MS));
         }
 
-        ESP_LOGI(TAG, "✅ Boot sequence completed");
+        ESP_LOGI(TAG, "Boot sequence phase 1 completed");
+
+        // Phase 2: common programmer commands + all 100 EX menu queries
+        ESP_LOGI(TAG, "Boot sequence phase 2: %zu common + %zu EX queries",
+                 BOOT_PHASE2_CMD_COUNT, EX_MENU_COUNT);
+
+        for (const auto &command : bootPhase2Commands_)
+        {
+            self->sendRadioCommand(command);
+            vTaskDelay(pdMS_TO_TICKS(INTER_COMMAND_DELAY_MS));
+        }
+
+        char exCmd[12]; // "EXnnn0000;" + null
+        for (size_t i = 0; i < EX_MENU_COUNT; i++)
+        {
+            snprintf(exCmd, sizeof(exCmd), "EX%03u0000;", static_cast<unsigned>(i));
+            self->sendRadioCommand(exCmd);
+            vTaskDelay(pdMS_TO_TICKS(INTER_COMMAND_DELAY_MS));
+        }
+
+        // Wait for final responses to be processed before saving
+        vTaskDelay(pdMS_TO_TICKS(500));
+
+        ESP_LOGI(TAG, "Boot sequence phase 2 completed - saving EX menu to NVS");
+
+        // Save verified EX menu state to NVS
+        if (self->nvsManager_)
+        {
+            auto *nvs = static_cast<NvsManager *>(self->nvsManager_);
+            nvs->saveExtendedMenu();
+        }
+
         vTaskDelete(nullptr); // Self-delete when done
     }
 
@@ -1017,7 +1051,7 @@ namespace radio
             xTaskCreate(
                 bootSequenceTask,
                 "boot_seq",
-                4096, // Needs stack for sendRadioCommand + logging
+                4096, // Needs stack for sendRadioCommand + logging + NVS save
                 const_cast<RadioManager *>(this),
                 5, // Lower priority - sync can happen in background
                 nullptr
@@ -2277,3 +2311,65 @@ namespace radio
     }
 
 } // namespace radio
+
+// ── EX menu NVS helpers (bridge between NvsManager and ExtendedMenuState) ──
+// These free functions are called by NvsManager via extern declarations.
+// They live here because RadioCore has both CommandHandlers and NvsManager as deps.
+
+esp_err_t packAndSaveExMenu(NvsManager& nvs) {
+    auto& menuState = radio::ExtendedCommandHandler::getExtendedMenuState();
+
+    NvsManager::ExNvsData data{};
+    data.version = 1;
+    memset(data.values, 0, sizeof(data.values));
+
+    size_t populated = 0;
+    for (size_t i = 0; i < 100; i++) {
+        char key[4];
+        snprintf(key, sizeof(key), "%03u", static_cast<unsigned>(i));
+        std::string_view val = menuState.getValue(key);
+        if (!val.empty() && val.size() < 8) {
+            memcpy(data.values[i], val.data(), val.size());
+            data.values[i][val.size()] = '\0';
+            populated++;
+        }
+    }
+
+    esp_err_t err = nvs.saveExMenuBlob(data);
+    if (err == ESP_OK) {
+        ESP_LOGI("NvsManager", "EX menu saved to NVS (%zu populated values)", populated);
+    }
+    return err;
+}
+
+esp_err_t loadAndUnpackExMenu(NvsManager& nvs) {
+    NvsManager::ExNvsData data{};
+    esp_err_t err = nvs.loadExMenuBlob(data);
+    if (err == ESP_ERR_NOT_FOUND) {
+        ESP_LOGI("NvsManager", "No EX menu in NVS (first boot) - using defaults");
+        return ESP_OK;
+    }
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    if (data.version != 1) {
+        ESP_LOGW("NvsManager", "Unknown EX menu NVS version %u - ignoring", data.version);
+        return ESP_OK;
+    }
+
+    auto& menuState = radio::ExtendedCommandHandler::getExtendedMenuState();
+    size_t loaded = 0;
+    for (size_t i = 0; i < 100; i++) {
+        data.values[i][7] = '\0'; // ensure null-termination
+        if (data.values[i][0] != '\0') {
+            char key[4];
+            snprintf(key, sizeof(key), "%03u", static_cast<unsigned>(i));
+            menuState.setValue(key, data.values[i]);
+            loaded++;
+        }
+    }
+
+    ESP_LOGI("NvsManager", "Loaded %zu EX menu values from NVS", loaded);
+    return ESP_OK;
+}

@@ -125,6 +125,11 @@ namespace radio
         void performBootSequence() const;
 
         /**
+         * @brief Set NvsManager pointer for boot-time EX menu save
+         */
+        void setNvsManager(void *nvsManager) { nvsManager_ = nvsManager; }
+
+        /**
          * @brief Synchronize transverter-related menu settings with the radio on startup
          */
         void syncTransverterMenuSettings() const;
@@ -742,6 +747,9 @@ namespace radio
         // Power state change callback
         void (*powerStateChangeCallback_)(bool powerOn, bool oldState) = nullptr;
 
+        // NvsManager pointer for boot-time EX menu save (void* to avoid circular include)
+        void *nvsManager_ = nullptr;
+
 
         // TX timeout monitoring task
         TaskHandle_t txTimeoutTaskHandle_ = nullptr;
@@ -769,6 +777,14 @@ namespace radio
             "PA;", "RA;", "NB;", "NR;", "NT;", "VX;",
             // Optional (may fail in some modes)
             "GC;", "TO;", "SP;"};
+
+        // Phase 2: additional common commands that TS-590G Programmer queries
+        static constexpr size_t BOOT_PHASE2_CMD_COUNT = 13;
+        static constexpr std::array<const char *, BOOT_PHASE2_CMD_COUNT> bootPhase2Commands_{
+            "FS;", "GT;", "KS;", "LK;", "MG;", "ML;",
+            "NL;", "PL;", "PR;", "RL;", "SD;", "VD;", "VG;"};
+
+        static constexpr size_t EX_MENU_COUNT = 100;
 
         // Allocation-free radio send helpers
         void sendRadioCommand(std::string_view command) const;

@@ -713,6 +713,24 @@ void initializeUsbCdc()
             }
         }
 
+        // Lazy EX menu refresh: one query every 15 minutes, cycling through all 100 items (~25h full cycle)
+        if (currentOnOffState == 1 && keepAliveState)
+        {
+            static uint8_t exRefreshIndex = 0;
+            static uint64_t lastExRefreshUs = 0;
+            const uint64_t nowUs = esp_timer_get_time();
+            constexpr uint64_t EX_REFRESH_INTERVAL_US = 15ULL * 60 * 1000000; // 15 minutes
+
+            if (nowUs - lastExRefreshUs > EX_REFRESH_INTERVAL_US)
+            {
+                char exCmd[12];
+                snprintf(exCmd, sizeof(exCmd), "EX%03u0000;", static_cast<unsigned>(exRefreshIndex));
+                radioSerial.sendMessage(exCmd);
+                exRefreshIndex = (exRefreshIndex + 1) % 100;
+                lastExRefreshUs = nowUs;
+            }
+        }
+
         // Other periodic, non-critical actions can go here
         vTaskDelay(pdMS_TO_TICKS(100)); // Main loop delay - reduced from 10ms to reduce CPU overhead
     }
@@ -724,6 +742,9 @@ void setup()
 
     // Connect RadioMacroManager to RadioManager (must be done at runtime, not at file scope)
     radioManager.setMacroManager(&radioMacroManager);
+
+    // Register NvsManager with RadioManager for boot-time EX menu save
+    radioManager.setNvsManager(&nvsManager);
 
     // Reduce TinyUSB CDC ACM flush warnings to VERBOSE level
     esp_log_level_set("tusb_cdc_acm", ESP_LOG_ERROR);
@@ -918,6 +939,9 @@ void setup()
     initializeMultiEncoderHandler();
 
     ESP_ERROR_CHECK(nvsManager.loadAndSyncOnStartup());
+
+    // Load EX menu cache from NVS - populates ExtendedMenuState before any client connects
+    nvsManager.loadExtendedMenu();
 
 #if (defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32S3) && !defined(CONFIG_RUN_UNIT_TESTS))
     ESP_LOGI(TAG, "Waiting for CDC connection...");

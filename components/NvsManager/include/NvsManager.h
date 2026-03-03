@@ -18,6 +18,41 @@ public:
     esp_err_t loadAndSyncOnStartup();
 
     /**
+     * @brief Compact NVS blob for EX menu values (801 bytes)
+     */
+    struct ExNvsData {
+        uint8_t version = 1;
+        char values[100][8]; // null-terminated string per menu item
+    };
+    static_assert(sizeof(ExNvsData) == 801, "ExNvsData must be 801 bytes");
+
+    /**
+     * @brief Save EX menu blob to NVS
+     * @param data Packed EX menu data
+     * @return ESP_OK on success
+     */
+    esp_err_t saveExMenuBlob(const ExNvsData& data);
+
+    /**
+     * @brief Load EX menu blob from NVS
+     * @param data Output: populated from NVS
+     * @return ESP_OK on success, ESP_ERR_NOT_FOUND on first boot
+     */
+    esp_err_t loadExMenuBlob(ExNvsData& data);
+
+    /**
+     * @brief High-level: save ExtendedMenuState to NVS
+     * Packs the singleton ExtendedMenuState into a blob and writes it.
+     */
+    esp_err_t saveExtendedMenu();
+
+    /**
+     * @brief High-level: load ExtendedMenuState from NVS
+     * Reads the blob and populates the singleton ExtendedMenuState.
+     */
+    esp_err_t loadExtendedMenu();
+
+    /**
      * @brief Load button mode memory from NVS
      * @param modeMemory Array to populate with mode data (size must be 11)
      * @return ESP_OK if loaded successfully, ESP_ERR_NOT_FOUND if no data, ESP_FAIL on error
@@ -40,4 +75,7 @@ private:
     static constexpr const char* TAG = "NvsManager";
     static constexpr const char* STORAGE_NAMESPACE = "radio_state";
     static constexpr const char* BUTTON_MODE_MEMORY_KEY = "band_modes";
+    static constexpr const char* EX_MENU_NAMESPACE = "ex_menu";
+    static constexpr const char* EX_MENU_KEY = "values";
+    static constexpr size_t EX_MENU_COUNT = 100;
 };

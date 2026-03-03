@@ -2,6 +2,7 @@
 #include "nvs_flash.h"
 #include "esp_log.h"
 #include "sdkconfig.h"
+#include <cstring>
 
 // Static instance for callback access
 NvsManager* NvsManager::s_instance = nullptr;
@@ -80,6 +81,13 @@ void NvsManager::onPowerStateChange(bool powerOn, bool oldState) {
             ESP_LOGI(s_instance->TAG, "Radio state saved successfully on power-off");
         } else {
             ESP_LOGE(s_instance->TAG, "Failed to save radio state on power-off: %s", esp_err_to_name(ret));
+        }
+        // Save EX menu if dirty
+        ret = s_instance->saveExtendedMenu();
+        if (ret == ESP_OK) {
+            ESP_LOGI(s_instance->TAG, "EX menu saved on power-off");
+        } else {
+            ESP_LOGW(s_instance->TAG, "Failed to save EX menu on power-off: %s", esp_err_to_name(ret));
         }
     } else if (powerOn && !oldState) {
         // Power turning ON - will be handled by separate sync mechanism
@@ -284,4 +292,78 @@ esp_err_t NvsManager::saveButtonModeMemory(const uint8_t* modeMemory, size_t siz
     ESP_LOGD(TAG, "NVS persistence disabled, button mode memory not saved");
     return ESP_OK;
 #endif
+}
+
+esp_err_t NvsManager::saveExMenuBlob(const ExNvsData& data) {
+#ifdef CONFIG_ENABLE_NVS_PERSISTENCE
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(EX_MENU_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open NVS namespace '%s': %s", EX_MENU_NAMESPACE, esp_err_to_name(err));
+        return err;
+    }
+
+    err = nvs_set_blob(handle, EX_MENU_KEY, &data, sizeof(data));
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to write EX menu blob: %s", esp_err_to_name(err));
+        nvs_close(handle);
+        return err;
+    }
+
+    err = nvs_commit(handle);
+    nvs_close(handle);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to commit EX menu: %s", esp_err_to_name(err));
+    }
+    return err;
+#else
+    ESP_LOGD(TAG, "NVS persistence disabled, EX menu not saved");
+    return ESP_OK;
+#endif
+}
+
+esp_err_t NvsManager::loadExMenuBlob(ExNvsData& data) {
+#ifdef CONFIG_ENABLE_NVS_PERSISTENCE
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(EX_MENU_NAMESPACE, NVS_READONLY, &handle);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGI(TAG, "No EX menu data in NVS (first boot)");
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open NVS namespace '%s': %s", EX_MENU_NAMESPACE, esp_err_to_name(err));
+        return err;
+    }
+
+    size_t blobSize = sizeof(data);
+    err = nvs_get_blob(handle, EX_MENU_KEY, &data, &blobSize);
+    nvs_close(handle);
+
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGI(TAG, "No EX menu blob found in NVS");
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read EX menu blob: %s", esp_err_to_name(err));
+    }
+    return err;
+#else
+    ESP_LOGD(TAG, "NVS persistence disabled, EX menu not loaded");
+    return ESP_ERR_NOT_FOUND;
+#endif
+}
+
+esp_err_t NvsManager::saveExtendedMenu() {
+    // Delegate to packAndSaveExMenu() implemented in RadioCore
+    // (avoids NvsManager depending on CommandHandlers component)
+    extern esp_err_t packAndSaveExMenu(NvsManager& nvs);
+    return packAndSaveExMenu(*this);
+}
+
+esp_err_t NvsManager::loadExtendedMenu() {
+    // Delegate to loadAndUnpackExMenu() implemented in RadioCore
+    // (avoids NvsManager depending on CommandHandlers component)
+    extern esp_err_t loadAndUnpackExMenu(NvsManager& nvs);
+    return loadAndUnpackExMenu(*this);
 }
