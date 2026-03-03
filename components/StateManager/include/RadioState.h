@@ -527,6 +527,10 @@ namespace radio
                         && e.timestamp.load(std::memory_order_relaxed) > 0
                         && (now - e.timestamp.load(std::memory_order_relaxed)) < TTL_US;
                 }
+                void invalidate(std::string_view cmd) {
+                    const uint16_t h = cmdHash(cmd);
+                    entries[h % SLOTS].timestamp.store(0, std::memory_order_relaxed);
+                }
             };
             mutable LightQueryTracker localQueryTracker;
         };

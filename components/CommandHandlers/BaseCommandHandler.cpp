@@ -430,6 +430,13 @@ namespace radio {
             if (hasCachedValue) {
                 const std::string response = buildResponse(state);
                 respondToSource(command, response, usbSerial, radioManager);
+                // Invalidate per-interface query tracker so the background refresh
+                // response from the radio is NOT also forwarded by ForwardingPolicy
+                // (avoids duplicate response to the client that already got cached data).
+                if (command.isCatClient()) {
+                    radioManager.getState().accessForwardState(command.source)
+                        .localQueryTracker.invalidate(key);
+                }
                 ESP_LOGD(BaseCommandHandler::TAG,
                          "Cache stale for %.*s (last=%llu us) - served cached data and refreshing",
                          static_cast<int>(key.size()), key.data(),
