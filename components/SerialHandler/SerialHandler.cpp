@@ -246,10 +246,23 @@ esp_err_t SerialHandler::sendMessage(const std::string_view message) {
     }
 
     if (!message.empty()) {
-        ESP_LOGV(TAG, "UART%d TX: '%.*s%s' (%zu bytes)", m_uart_num,
-                 static_cast<int>(message.length()), message.data(),
-                 needs_terminator ? ";" : "",
-                 total_len);
+        // Log radio UART TX at INFO, skip periodic SM/PS polling noise
+        if (m_uart_num == UART_NUM_1) {
+            const bool periodic = (message.length() >= 2 &&
+                ((message[0] == 'S' && message[1] == 'M') ||
+                 (message[0] == 'P' && message[1] == 'S')));
+            if (!periodic) {
+                ESP_LOGI(TAG, "UART1 TX: '%.*s%s' (%zu bytes)",
+                         static_cast<int>(message.length()), message.data(),
+                         needs_terminator ? ";" : "",
+                         total_len);
+            }
+        } else {
+            ESP_LOGV(TAG, "UART%d TX: '%.*s%s' (%zu bytes)", m_uart_num,
+                     static_cast<int>(message.length()), message.data(),
+                     needs_terminator ? ";" : "",
+                     total_len);
+        }
 
         if (m_uart_num == UART_NUM_1) {
             const unsigned char first = static_cast<unsigned char>(message.front());
@@ -632,10 +645,15 @@ void SerialHandler::processReceivedData(const uint8_t *data, const size_t len) {
             if (droppedOldest) {
                 ESP_LOGV(TAG, "UART %d: Message queue full, dropping oldest", m_uart_num);
             }
-            // Log radio UART (UART1) messages at INFO for diagnostics; others at DEBUG
+            // Log radio UART (UART1) non-periodic messages at INFO; skip SM/PS noise
             if (m_uart_num == UART_NUM_1) {
-                ESP_LOGI(TAG, "UART1 RX queued: '%.*s' (len=%zu, q=%zu)",
-                         static_cast<int>(copyLen), slot.data, copyLen, queueCount);
+                const bool periodic = (copyLen >= 2 &&
+                    ((slot.data[0] == 'S' && slot.data[1] == 'M') ||
+                     (slot.data[0] == 'P' && slot.data[1] == 'S')));
+                if (!periodic) {
+                    ESP_LOGI(TAG, "UART1 RX queued: '%.*s' (len=%zu)",
+                             static_cast<int>(copyLen), slot.data, copyLen);
+                }
             } else {
                 ESP_LOGD(TAG, "UART %d: Queued valid message: '%.*s' (len=%zu, q=%zu)",
                          m_uart_num, static_cast<int>(copyLen), slot.data, copyLen, queueCount);

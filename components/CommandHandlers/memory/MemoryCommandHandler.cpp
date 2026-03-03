@@ -192,7 +192,7 @@ bool MemoryCommandHandler::handleMR(const RadioCommand& command,
             // If we can parse the channel, update state; otherwise just forward as-is.
             auto memChannel = parseMemoryChannel(command);
             if (memChannel.valid && memChannel.channel >= MIN_MEMORY_CHANNEL && memChannel.channel <= MAX_MEMORY_CHANNEL) {
-                ESP_LOGD(MemoryCommandHandler::TAG, "Memory read from channel %d", memChannel.channel);
+                ESP_LOGI(MemoryCommandHandler::TAG, "MR Set: channel %d (valid)", memChannel.channel);
                 radioManager.getState().memoryChannel.store(static_cast<uint16_t>(memChannel.channel));
                 if (shouldSendToRadio(command)) {
                     // MR "set" from a local source is really a query — record it so
@@ -208,15 +208,16 @@ bool MemoryCommandHandler::handleMR(const RadioCommand& command,
                     cmdStr.push_back('0' + (memChannel.channel / 10) % 10);
                     cmdStr.push_back('0' + memChannel.channel % 10);
                     cmdStr.push_back(';');
+                    ESP_LOGI(MemoryCommandHandler::TAG, "MR sending to radio: '%s'", cmdStr.c_str());
                     sendToRadio(radioSerial, cmdStr);
-                    ESP_LOGV(MemoryCommandHandler::TAG, "Sent to radio: %s", cmdStr.c_str());
                 }
                 return true;
             }
+            ESP_LOGW(MemoryCommandHandler::TAG, "MR Set: parseMemoryChannel failed (valid=%d, ch=%d), forwarding original",
+                     memChannel.valid, memChannel.channel);
             // Fallback: forward original (selector-style) MR command to radio
             if (shouldSendToRadio(command)) {
                 sendToRadio(radioSerial, command.originalMessage);
-                ESP_LOGV(MemoryCommandHandler::TAG, "Forwarded original MR to radio: %s", command.originalMessage.c_str());
                 return true;
             }
             // If we can't send to radio, synthesize a basic response for channel 0
