@@ -2,6 +2,7 @@
 #include <cstring>
 #include "esp_mac.h"
 #include "esp_netif_ip_addr.h"
+#include "esp_sntp.h"
 #include "nvs_flash.h"
 
 namespace wifi {
@@ -369,6 +370,15 @@ void WiFiManager::handleWifiEvent(esp_event_base_t eventBase, int32_t eventId, v
         retryCount_ = 0;  // Reset retry counter on successful connection
         status_.store(WiFiStatus::CONNECTED);
         xEventGroupSetBits(wifiEventGroup_, WIFI_CONNECTED_BIT);
+
+        // Initialize SNTP for UTC time sync (only once)
+        if (!sntpInitialized_) {
+            ESP_LOGI(TAG, "Initializing SNTP time sync");
+            esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+            esp_sntp_setservername(0, "pool.ntp.org");
+            esp_sntp_init();
+            sntpInitialized_ = true;
+        }
     }
 }
 

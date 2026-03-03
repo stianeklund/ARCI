@@ -99,6 +99,7 @@ private:
     esp_netif_t* netifSta_;
     std::atomic<WiFiStatus> status_;
     bool initialized_;
+    bool sntpInitialized_ = false;
     int retryCount_;
     
     static void wifiEventHandler(void* arg, esp_event_base_t eventBase, 
