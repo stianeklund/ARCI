@@ -493,6 +493,11 @@ namespace radio
             std::atomic<int> lastRM1Value{-1}; // SWR
             std::atomic<int> lastRM2Value{-1}; // COMP/PWR
             std::atomic<int> lastRM3Value{-1}; // ALC
+
+            // Per-interface query tracking for AI0 isolation.
+            // Only queries from THIS interface are recorded here, so AI0 mode
+            // can distinguish "I queried IF" from "the display queried IF".
+            mutable CommandTimestampTracker localQueryTracker;
         };
 
         mutable InterfaceForwardState usb0ForwardState;

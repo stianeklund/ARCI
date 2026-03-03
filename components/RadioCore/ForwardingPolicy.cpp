@@ -146,7 +146,7 @@ namespace radio
         }
         else
         {
-            result = shouldForwardInNonAIMode(response, state, currentTime, ai);
+            result = shouldForwardInNonAIMode(response, state, sinkState, currentTime, ai);
         }
 
         // DEBUG: Add result logging for IF responses
@@ -181,7 +181,7 @@ namespace radio
         }
         else
         {
-            result = shouldForwardInNonAIMode(response, state, currentTime, ai);
+            result = shouldForwardInNonAIMode(response, state, sinkState, currentTime, ai);
         }
 
         // DEBUG: Add result logging for IF responses
@@ -209,7 +209,7 @@ namespace radio
         }
         else
         {
-            return shouldForwardInNonAIMode(response, state, currentTime, ai);
+            return shouldForwardInNonAIMode(response, state, sinkState, currentTime, ai);
         }
     }
 
@@ -229,7 +229,7 @@ namespace radio
         }
         else
         {
-            return shouldForwardInNonAIMode(response, state, currentTime, ai);
+            return shouldForwardInNonAIMode(response, state, sinkState, currentTime, ai);
         }
     }
 
@@ -278,7 +278,7 @@ namespace radio
         }
 
         // For non-AI modes, use query tracking logic
-        return shouldForwardInNonAIMode(response, state, currentTime, displayAiMode);
+        return shouldForwardInNonAIMode(response, state, sinkState, currentTime, displayAiMode);
     }
 
     bool ForwardingPolicy::shouldForwardInAIMode(std::string_view response, uint8_t aiMode, const RadioState &state,
@@ -332,18 +332,19 @@ namespace radio
     }
 
     bool ForwardingPolicy::shouldForwardInNonAIMode(std::string_view response, const RadioState &state,
+                                                    RadioState::InterfaceForwardState &sinkState,
                                                     uint64_t currentTime, uint8_t aiMode)
     {
         const std::string_view prefix = getCommandPrefix(response);
 
-        // Check if interface recently queried this command type (5 second TTL)
-        const bool recentlyQueried = state.queryTracker.wasRecentlyQueried(std::string(prefix), currentTime);
-
         if (aiMode == 0)
         {
             // AI0 = no unsolicited updates, but query responses MUST still be forwarded.
-            // A real TS-590SG in AI0 mode still responds to explicit queries.
-            if (recentlyQueried)
+            // Use per-interface tracker so queries from OTHER interfaces (e.g. display
+            // polling IF) don't cause responses to leak to this AI0 interface.
+            const bool locallyQueried = sinkState.localQueryTracker.wasRecentlyQueried(
+                std::string(prefix), currentTime);
+            if (locallyQueried)
             {
                 ESP_LOGI(TAG, "AI0 forwarding query response: %.*s", (int)prefix.length(), prefix.data());
                 return true;
@@ -351,6 +352,9 @@ namespace radio
             ESP_LOGD(TAG, "AI0 suppressing unsolicited: %.*s", (int)prefix.length(), prefix.data());
             return false;
         }
+
+        // For non-AI0 modes, use the global query tracker
+        const bool recentlyQueried = state.queryTracker.wasRecentlyQueried(std::string(prefix), currentTime);
 
         // DEBUG: Add special logging for IF responses
         if (prefix == "IF")

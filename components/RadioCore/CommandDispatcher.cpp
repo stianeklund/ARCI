@@ -214,6 +214,13 @@ namespace radio {
                       command.source == CommandSource::UsbCdc1 ? "CDC1" :
                       command.source == CommandSource::Tcp0 ? "TCP0" : "TCP1"),
                      command.originalMessage.c_str());
+
+            // Record per-interface query so ForwardingPolicy can distinguish
+            // "this interface queried IF" from "the display queried IF" in AI0 mode.
+            if (command.type == CommandType::Read || command.type == CommandType::Set) {
+                radioManager.getState().accessForwardState(command.source)
+                    .localQueryTracker.recordQuery(command.command, esp_timer_get_time());
+            }
         }
 
         ESP_LOGD(CommandDispatcher::TAG, "Dispatching command: '%s' (type: %s, source: %s, depth: %lu)",

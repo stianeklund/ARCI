@@ -99,8 +99,6 @@ namespace radio
         const int tcp0 = state.tcp0AiMode.load();
         const int tcp1 = state.tcp1AiMode.load();
         const int display = state.displayAiMode.load();
-
-        // If ALL clients want AI off, radio is off. Otherwise, use highest requested mode.
         return (cdc0 == 0 && cdc1 == 0 && tcp0 == 0 && tcp1 == 0 && display == 0) ? 0 : std::max({cdc0, cdc1, tcp0, tcp1, display});
     }
 

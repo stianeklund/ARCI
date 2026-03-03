@@ -75,7 +75,7 @@ private:
     
     MemoryChannel parseMemoryChannel(const RadioCommand& command) const;
     std::string formatMCResponse(int channel) const;
-    std::string formatMRResponse(const RadioState& state, int channel) const;
+    std::string formatMRResponse(const RadioState& state, int channel, char splitSelector = '0') const;
     
     // Memory channel limits
     static constexpr int MIN_MEMORY_CHANNEL = 0;

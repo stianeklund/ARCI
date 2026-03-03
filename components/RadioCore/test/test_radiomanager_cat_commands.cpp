@@ -1386,7 +1386,7 @@ namespace {
         tearDownTestRadioManager();
     }
 
-    // Test: MR0000; (parameterized read classified as Set) gets query-tracked in AI0 mode
+    // Test: MR0000; is synthesized locally (not forwarded to radio)
     void test_MR_AI0_forwards_query_response() {
         setUpTestRadioManager();
 
@@ -1395,10 +1395,10 @@ namespace {
         mockRadioSerial.sentMessages.clear();
         mockUsbSerial.sentMessages.clear();
 
-        // Programmer sends MR0000; (memory read channel 0) — parser classifies as Set
+        // Programmer sends MR0000; (memory read channel 0)
         testRadioManager->getLocalCATHandler().parseMessage("MR0000;");
 
-        // Should have been forwarded to radio
+        // MR should NOT be forwarded to radio (synthesized locally)
         bool sentToRadio = false;
         for (const auto& msg : mockRadioSerial.sentMessages) {
             if (msg.find("MR0") != std::string::npos) {
@@ -1406,22 +1406,26 @@ namespace {
                 break;
             }
         }
-        TEST_ASSERT_TRUE_MESSAGE(sentToRadio, "MR0000; should be forwarded to radio");
+        TEST_ASSERT_FALSE_MESSAGE(sentToRadio, "MR0000; should be synthesized locally, not sent to radio");
 
-        // Simulate radio response
-        mockUsbSerial.sentMessages.clear();
-        testRadioManager->getRemoteCATHandler().parseMessage("MR000014074000100000000000;");
-
-        // Response MUST be forwarded to USB even in AI0 mode
+        // Synthesized response MUST be sent to CDC0 immediately
         bool foundMRResponse = false;
         for (const auto& msg : mockUsbSerial.sentMessages) {
             if (msg.find("MR0000") != std::string::npos) {
                 foundMRResponse = true;
+                // Verify response has correct spec format (42 chars for empty channel)
+                TEST_ASSERT_TRUE_MESSAGE(msg.length() >= 42,
+                    "MR response must have full spec format (>= 42 chars)");
+                // Verify P1=0 (simplex), P2P3=000 (channel 0)
+                TEST_ASSERT_EQUAL_MESSAGE('0', msg[2], "P1 should be '0' (simplex)");
+                TEST_ASSERT_EQUAL_MESSAGE('0', msg[3], "P2 should be '0' (hundreds)");
+                TEST_ASSERT_EQUAL_MESSAGE('0', msg[4], "P3[0] should be '0' (tens)");
+                TEST_ASSERT_EQUAL_MESSAGE('0', msg[5], "P3[1] should be '0' (ones)");
                 break;
             }
         }
         TEST_ASSERT_TRUE_MESSAGE(foundMRResponse,
-            "MR response must be forwarded to CDC0 in AI0 mode when recently queried");
+            "Synthesized MR response must be sent to CDC0 immediately");
         tearDownTestRadioManager();
     }
 
@@ -1578,7 +1582,7 @@ namespace {
         tearDownTestRadioManager();
     }
 
-    // Test: Radio ?; response to MR query is forwarded to CDC0 (empty memory channel)
+    // Test: Radio ?; response to SC query is forwarded to CDC0
     void test_MR_error_response_forwarded_to_CDC0() {
         setUpTestRadioManager();
 
@@ -1587,24 +1591,24 @@ namespace {
         mockRadioSerial.sentMessages.clear();
         mockUsbSerial.sentMessages.clear();
 
-        // Programmer sends MR0000; (memory read channel 0)
-        testRadioManager->getLocalCATHandler().parseMessage("MR0000;");
+        // Programmer sends SC; (scan query — forwarded to radio)
+        testRadioManager->getLocalCATHandler().parseMessage("SC;");
 
         // Verify it was forwarded to radio
         bool sentToRadio = false;
         for (const auto& msg : mockRadioSerial.sentMessages) {
-            if (msg.find("MR0") != std::string::npos) {
+            if (msg.find("SC") != std::string::npos) {
                 sentToRadio = true;
                 break;
             }
         }
-        TEST_ASSERT_TRUE_MESSAGE(sentToRadio, "MR0000; should be forwarded to radio");
+        TEST_ASSERT_TRUE_MESSAGE(sentToRadio, "SC; should be forwarded to radio");
 
-        // Radio responds with ?; (empty/invalid channel)
+        // Radio responds with ?; (e.g., unsupported in current state)
         mockUsbSerial.sentMessages.clear();
         testRadioManager->getRemoteCATHandler().parseMessage("?;");
 
-        // ?; MUST be forwarded to CDC0 because MR was recently queried
+        // ?; MUST be forwarded to CDC0 because SC was recently queried
         bool foundError = false;
         for (const auto& msg : mockUsbSerial.sentMessages) {
             if (msg == "?;") {
@@ -1613,7 +1617,7 @@ namespace {
             }
         }
         TEST_ASSERT_TRUE_MESSAGE(foundError,
-            "Radio ?; response must be forwarded to CDC0 when there is a pending query (MR)");
+            "Radio ?; response must be forwarded to CDC0 when there is a pending query (SC)");
         tearDownTestRadioManager();
     }
 

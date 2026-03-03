@@ -53,7 +53,8 @@ namespace radio
                                           RadioState::InterfaceForwardState &sinkState, uint64_t currentTime,
                                           CommandSource sink = CommandSource::UsbCdc0);
 
-        static bool shouldForwardInNonAIMode(std::string_view response, const RadioState &state, uint64_t currentTime,
+        static bool shouldForwardInNonAIMode(std::string_view response, const RadioState &state,
+                                             RadioState::InterfaceForwardState &sinkState, uint64_t currentTime,
                                              uint8_t aiMode = 0);
 
         static bool handleDeduplication(std::string_view response, RadioState::InterfaceForwardState &sinkState,

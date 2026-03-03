@@ -188,41 +188,40 @@ bool MemoryCommandHandler::handleMR(const RadioCommand& command,
     
     switch (command.type) {
         case CommandType::Set: {
-            // Many clients use MR with selector params to request a read; treat as recall/read.
-            // If we can parse the channel, update state; otherwise just forward as-is.
+            // MR with params from a local source is really a parameterized-read query.
+            // The TS-590SG doesn't reliably respond to MR queries on its COM port while
+            // in AI2 mode (busy generating unsolicited traffic).  Synthesize the response
+            // locally so programmer tools (TS-590G Programmer) get an immediate answer.
+            //
+            // Parse P1 (simplex/split selector) and channel from the original command.
+            // Format: MR P1 P2 P3P3 ;  (P1=1 char, P2=1 char hundreds, P3=2 chars tens+ones)
+            const auto& orig = command.originalMessage;
+            if (orig.length() >= 7 && orig[0] == 'M' && orig[1] == 'R') {
+                const char splitSelector = orig[2]; // '0'=simplex, '1'=split
+                // Parse channel from P2P3 (3 digits at positions 3,4,5)
+                const int channel = (orig[3] - '0') * 100 + (orig[4] - '0') * 10 + (orig[5] - '0');
+
+                if (channel >= MIN_MEMORY_CHANNEL && channel <= MAX_MEMORY_CHANNEL) {
+                    radioManager.getState().memoryChannel.store(static_cast<uint16_t>(channel));
+                    std::string response = formatMRResponse(radioManager.getState(), channel, splitSelector);
+                    ESP_LOGI(MemoryCommandHandler::TAG, "MR query ch=%d sel=%c — synthesized locally", channel, splitSelector);
+                    respondToSource(command, response, usbSerial, radioManager);
+                    return true;
+                }
+            }
+
+            // Fallback: unrecognized format, try parseMemoryChannel
             auto memChannel = parseMemoryChannel(command);
             if (memChannel.valid && memChannel.channel >= MIN_MEMORY_CHANNEL && memChannel.channel <= MAX_MEMORY_CHANNEL) {
-                ESP_LOGI(MemoryCommandHandler::TAG, "MR Set: channel %d (valid)", memChannel.channel);
                 radioManager.getState().memoryChannel.store(static_cast<uint16_t>(memChannel.channel));
-                if (shouldSendToRadio(command)) {
-                    // MR "set" from a local source is really a query — record it so
-                    // the response gets forwarded back even in AI0 mode.
-                    if (command.isCatClient()) {
-                        radioManager.getState().queryTracker.recordQuery("MR", esp_timer_get_time());
-                    }
-                    // Format: "MR0" + 3-digit channel + ";"
-                    std::string cmdStr;
-                    cmdStr.reserve(8);
-                    cmdStr.append("MR0");
-                    cmdStr.push_back('0' + (memChannel.channel / 100) % 10);
-                    cmdStr.push_back('0' + (memChannel.channel / 10) % 10);
-                    cmdStr.push_back('0' + memChannel.channel % 10);
-                    cmdStr.push_back(';');
-                    ESP_LOGI(MemoryCommandHandler::TAG, "MR sending to radio: '%s'", cmdStr.c_str());
-                    sendToRadio(radioSerial, cmdStr);
-                }
+                std::string response = formatMRResponse(radioManager.getState(), memChannel.channel);
+                ESP_LOGI(MemoryCommandHandler::TAG, "MR query ch=%d — synthesized (fallback)", memChannel.channel);
+                respondToSource(command, response, usbSerial, radioManager);
                 return true;
             }
-            ESP_LOGW(MemoryCommandHandler::TAG, "MR Set: parseMemoryChannel failed (valid=%d, ch=%d), forwarding original",
-                     memChannel.valid, memChannel.channel);
-            // Fallback: forward original (selector-style) MR command to radio
-            if (shouldSendToRadio(command)) {
-                sendToRadio(radioSerial, command.originalMessage);
-                return true;
-            }
-            // If we can't send to radio, synthesize a basic response for channel 0
-            std::string response = formatMRResponse(radioManager.getState(), 0);
-            respondToSource(command, response, usbSerial, radioManager);
+
+            ESP_LOGW(MemoryCommandHandler::TAG, "MR: unparseable channel, returning ?;");
+            respondToSource(command, "?;", usbSerial, radioManager);
             return true;
         }
         
@@ -362,35 +361,59 @@ std::string MemoryCommandHandler::formatMCResponse(int channel) const {
     return result;
 }
 
-std::string MemoryCommandHandler::formatMRResponse(const RadioState& state, int channel) const {
-    // MR response format: MR0 + 3-digit channel + 11-digit freq + mode + datamode + 10 placeholder digits + ;
+std::string MemoryCommandHandler::formatMRResponse(const RadioState& /*state*/, int channel, char splitSelector) const {
+    // MR answer per TS-590SG spec: MRP1P2P3P3P4(11)P5P6P7P8(2)P9(2)P10(3)P11P12P13(9)P14(2)P15P16(0-8);
+    // For empty/uncached channels: all zeros, no name.
     std::string result;
-    result.reserve(30);
-    result.append("MR0");
+    result.reserve(44); // 42 chars typical for empty channel + margin
 
-    // 3-digit channel
+    // P1: simplex/split selector (from original query)
+    result.append("MR");
+    result.push_back(splitSelector);
+
+    // P2+P3: 3-digit channel number
     result.push_back('0' + (channel / 100) % 10);
     result.push_back('0' + (channel / 10) % 10);
     result.push_back('0' + channel % 10);
 
-    // 11-digit frequency (max 99999999999)
-    uint64_t freq = state.vfoAFrequency.load();
-    constexpr uint64_t divisors[] = {
-        10000000000ULL, 1000000000ULL, 100000000ULL, 10000000ULL, 1000000ULL,
-        100000ULL, 10000ULL, 1000ULL, 100ULL, 10ULL, 1ULL
-    };
-    for (uint64_t div : divisors) {
-        result.push_back('0' + static_cast<char>((freq / div) % 10));
-    }
+    // P4: 11-digit frequency (all zeros for empty channel)
+    result.append("00000000000");
 
-    // Mode (1 digit)
-    result.push_back('0' + state.mode.load() % 10);
+    // P5: mode (0)
+    result.push_back('0');
 
-    // Data mode (1 digit)
-    result.push_back('0' + state.dataMode.load() % 10);
+    // P6: data mode (0)
+    result.push_back('0');
 
-    // Placeholder for other memory fields
-    result.append("0000000000");
+    // P7: tone system (0 = OFF)
+    result.push_back('0');
+
+    // P8: tone frequency index (2 digits)
+    result.append("00");
+
+    // P9: CTCSS frequency index (2 digits)
+    result.append("00");
+
+    // P10: always 000
+    result.append("000");
+
+    // P11: filter (0 = Filter A)
+    result.push_back('0');
+
+    // P12: always 0
+    result.push_back('0');
+
+    // P13: always 000000000
+    result.append("000000000");
+
+    // P14: FM width (00 = Normal)
+    result.append("00");
+
+    // P15: channel lockout (0 = OFF)
+    result.push_back('0');
+
+    // P16: memory name (empty for uncached channels)
+    // Omitted — spec says "name blank" for empty memories
 
     result.push_back(';');
     return result;
