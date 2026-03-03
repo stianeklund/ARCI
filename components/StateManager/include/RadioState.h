@@ -3,6 +3,7 @@
 #include <array>
 #include <atomic>
 #include <string>
+#include <string_view>
 #include "rtos_mutex.h"
 
 // Forward declaration for CommandSource with matching underlying type
@@ -494,10 +495,40 @@ namespace radio
             std::atomic<int> lastRM2Value{-1}; // COMP/PWR
             std::atomic<int> lastRM3Value{-1}; // ALC
 
-            // Per-interface query tracking for AI0 isolation.
+            // Lightweight per-interface query tracking for AI0 isolation.
             // Only queries from THIS interface are recorded here, so AI0 mode
             // can distinguish "I queried IF" from "the display queried IF".
-            mutable CommandTimestampTracker localQueryTracker;
+            // Uses a compact 16-slot hash table (~160 bytes) instead of the full
+            // CommandTimestampTracker (~18 KB) to stay within ESP32-S3 memory limits.
+            struct LightQueryTracker {
+                static constexpr size_t SLOTS = 16;
+                static constexpr uint64_t TTL_US = 5000000; // 5 seconds
+                struct Entry {
+                    std::atomic<uint16_t> hash{0};
+                    std::atomic<uint64_t> timestamp{0};
+                };
+                std::array<Entry, SLOTS> entries{};
+
+                static uint16_t cmdHash(std::string_view cmd) {
+                    if (cmd.size() < 2) return 0;
+                    return (static_cast<uint16_t>(static_cast<unsigned char>(cmd[0])) << 8)
+                         | static_cast<uint16_t>(static_cast<unsigned char>(cmd[1]));
+                }
+                void recordQuery(std::string_view cmd, uint64_t time) {
+                    const uint16_t h = cmdHash(cmd);
+                    auto &e = entries[h % SLOTS];
+                    e.hash.store(h, std::memory_order_relaxed);
+                    e.timestamp.store(time, std::memory_order_relaxed);
+                }
+                bool wasRecentlyQueried(std::string_view cmd, uint64_t now) const {
+                    const uint16_t h = cmdHash(cmd);
+                    const auto &e = entries[h % SLOTS];
+                    return e.hash.load(std::memory_order_relaxed) == h
+                        && e.timestamp.load(std::memory_order_relaxed) > 0
+                        && (now - e.timestamp.load(std::memory_order_relaxed)) < TTL_US;
+                }
+            };
+            mutable LightQueryTracker localQueryTracker;
         };
 
         mutable InterfaceForwardState usb0ForwardState;

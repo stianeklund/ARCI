@@ -343,7 +343,7 @@ namespace radio
             // Use per-interface tracker so queries from OTHER interfaces (e.g. display
             // polling IF) don't cause responses to leak to this AI0 interface.
             const bool locallyQueried = sinkState.localQueryTracker.wasRecentlyQueried(
-                std::string(prefix), currentTime);
+                prefix, currentTime);
             if (locallyQueried)
             {
                 ESP_LOGI(TAG, "AI0 forwarding query response: %.*s", (int)prefix.length(), prefix.data());

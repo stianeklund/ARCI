@@ -252,7 +252,7 @@ esp_err_t SerialHandler::sendMessage(const std::string_view message) {
                 ((message[0] == 'S' && message[1] == 'M') ||
                  (message[0] == 'P' && message[1] == 'S')));
             if (!periodic) {
-                ESP_LOGI(TAG, "UART1 TX: '%.*s%s' (%zu bytes)",
+                ESP_LOGV(TAG, "UART1 TX: '%.*s%s' (%zu bytes)",
                          static_cast<int>(message.length()), message.data(),
                          needs_terminator ? ";" : "",
                          total_len);
@@ -651,7 +651,7 @@ void SerialHandler::processReceivedData(const uint8_t *data, const size_t len) {
                     ((slot.data[0] == 'S' && slot.data[1] == 'M') ||
                      (slot.data[0] == 'P' && slot.data[1] == 'S')));
                 if (!periodic) {
-                    ESP_LOGI(TAG, "UART1 RX queued: '%.*s' (len=%zu)",
+                    ESP_LOGV(TAG, "UART1 RX queued: '%.*s' (len=%zu)",
                              static_cast<int>(copyLen), slot.data, copyLen);
                 }
             } else {
