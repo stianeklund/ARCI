@@ -206,7 +206,7 @@ namespace radio {
 
         // Log local commands at INFO to diagnose programmer tool issues
         if (command.isUsb() || command.isTcp()) {
-            ESP_LOGI(CommandDispatcher::TAG, "📥 %s %s from %s: '%s'",
+            ESP_LOGV(CommandDispatcher::TAG, "📥 %s %s from %s: '%s'",
                      command.type == CommandType::Set ? "SET" :
                      command.type == CommandType::Read ? "READ" : "ANS",
                      command.command.c_str(),

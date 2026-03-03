@@ -1127,10 +1127,10 @@
       "read",
       "answer"
     ],
-    "notes": "P1 distinguishes simplex/split or start/end for section channels. Empty memories return zeros; name blank.",
+    "notes": "P1 distinguishes simplex/split or start/end for section channels. P2 is the channel number as a right-justified, space-padded 3-character field (e.g. ' 00' for channel 0, '100' for channel 100). When reading simplex or RX split frequency, P1=0; when reading TX split frequency, P1=1. For section channels, P1=0 reads start freq, P1=1 reads end freq. Empty memories return zeros for P3–P14 and blank P15.",
     "formats": {
-      "read": "MRP1P2P3P3;",
-      "answer": "MRP1P2P3P3P4P4P4P4P4P4P4P4P4P4P4P5P6P7P8P9P10P10P10P11P12P13P13P13P13P13P13P13P13P13P14P14P15P16P16P16P16P16P16P16P16;"
+      "read": "MRP1P2P2P2;",
+      "answer": "MRP1P2P2P2P3P3P3P3P3P3P3P3P3P3P3P4P5P6P7P7P8P8P9P9P9P10P11P12P12P12P12P12P12P12P12P12P13P13P14P15P15P15P15P15P15P15P15;"
     },
     "params": [
       {
@@ -1138,44 +1138,41 @@
         "width": 1,
         "type": "enum",
         "enum": {
-          "0": "Simplex",
-          "1": "Split"
+          "0": "Simplex / RX split / Section start",
+          "1": "TX split / Section end"
         },
         "description": "Split or simplex operation"
       },
       {
         "id": "P2",
-        "width": 1,
+        "width": 3,
         "type": "number",
-        "description": "Memory channel hundreds digit"
+        "min": 0,
+        "max": 299,
+        "padding": "space",
+        "description": "Channel number (right-justified, space-padded). 000–299 regular, 300–309 section channels."
       },
       {
         "id": "P3",
-        "width": 2,
-        "type": "number",
-        "description": "Memory channel last two digits"
-      },
-      {
-        "id": "P4",
         "width": 11,
         "type": "number",
         "unit": "Hz",
-        "description": "Frequency"
+        "description": "Frequency (depending on P1: simplex/RX or TX split). Unused high digits are 0."
+      },
+      {
+        "id": "P4",
+        "width": 1,
+        "type": "enum",
+        "description": "Mode (depending on P1 setting, see MD)"
       },
       {
         "id": "P5",
         "width": 1,
         "type": "enum",
-        "description": "Mode (see MD)"
+        "description": "Data mode (depending on P1 setting, see DA)"
       },
       {
         "id": "P6",
-        "width": 1,
-        "type": "enum",
-        "description": "Data mode (see DA)"
-      },
-      {
-        "id": "P7",
         "width": 1,
         "type": "enum",
         "enum": {
@@ -1187,30 +1184,30 @@
         "description": "Tone system"
       },
       {
-        "id": "P8",
+        "id": "P7",
         "width": 2,
         "type": "number",
         "min": 0,
         "max": 42,
-        "description": "Tone frequency index (TN)"
+        "description": "Tone frequency index (see TN)"
+      },
+      {
+        "id": "P8",
+        "width": 2,
+        "min": 0,
+        "max": 42,
+        "type": "number",
+        "description": "CTCSS frequency index (see CN)"
       },
       {
         "id": "P9",
-        "width": 2,
-        "min": 0,
-        "max": 42,
-        "type": "number",
-        "description": "CTCSS frequency index (CN)"
-      },
-      {
-        "id": "P10",
         "width": 3,
         "type": "const",
         "const": "000",
         "description": "Always 000"
       },
       {
-        "id": "P11",
+        "id": "P10",
         "width": 1,
         "type": "enum",
         "enum": {
@@ -1220,21 +1217,21 @@
         "description": "Filter A/B for stored mode (always 0 on early TS-590S FW 1.xx)"
       },
       {
-        "id": "P12",
+        "id": "P11",
         "width": 1,
         "type": "const",
         "const": "0",
         "description": "Always 0"
       },
       {
-        "id": "P13",
+        "id": "P12",
         "width": 9,
         "type": "const",
         "const": "000000000",
         "description": "Always 000000000"
       },
       {
-        "id": "P14",
+        "id": "P13",
         "width": 2,
         "type": "enum",
         "enum": {
@@ -1244,7 +1241,7 @@
         "description": "FM width"
       },
       {
-        "id": "P15",
+        "id": "P14",
         "width": 1,
         "type": "enum",
         "enum": {
@@ -1254,7 +1251,7 @@
         "description": "Channel lockout flag"
       },
       {
-        "id": "P16",
+        "id": "P15",
         "width": "var",
         "type": "string",
         "maxlen": 8,

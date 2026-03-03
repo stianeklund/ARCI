@@ -193,13 +193,22 @@ bool MemoryCommandHandler::handleMR(const RadioCommand& command,
             // in AI2 mode (busy generating unsolicited traffic).  Synthesize the response
             // locally so programmer tools (TS-590G Programmer) get an immediate answer.
             //
-            // Parse P1 (simplex/split selector) and channel from the original command.
-            // Format: MR P1 P2 P3P3 ;  (P1=1 char, P2=1 char hundreds, P3=2 chars tens+ones)
+            // Parse P1 (simplex/split selector) and P2 (channel) from the original command.
+            // Format: MRP1P2P2P2; — P1=1 char, P2=3-char space-padded channel number
             const auto& orig = command.originalMessage;
             if (orig.length() >= 7 && orig[0] == 'M' && orig[1] == 'R') {
                 const char splitSelector = orig[2]; // '0'=simplex, '1'=split
-                // Parse channel from P2P3 (3 digits at positions 3,4,5)
-                const int channel = (orig[3] - '0') * 100 + (orig[4] - '0') * 10 + (orig[5] - '0');
+                // Parse channel number from positions 3-5.  The channel is a
+                // right-justified 3-character field that may be space-padded
+                // (e.g. "MR0 00;" for channel 0, "MR0 05;" for channel 5).
+                std::string_view chStr(orig.data() + 3, 3);
+                int channel = 0;
+                // Skip leading spaces then parse digits
+                size_t start = chStr.find_first_not_of(' ');
+                if (start != std::string_view::npos) {
+                    auto [ptr, ec] = std::from_chars(chStr.data() + start, chStr.data() + 3, channel);
+                    if (ec != std::errc{}) channel = -1;
+                }
 
                 if (channel >= MIN_MEMORY_CHANNEL && channel <= MAX_MEMORY_CHANNEL) {
                     radioManager.getState().memoryChannel.store(static_cast<uint16_t>(channel));
@@ -315,35 +324,17 @@ MemoryCommandHandler::MemoryChannel MemoryCommandHandler::parseMemoryChannel(con
     if (std::holds_alternative<std::string>(command.params[0])) {
         const std::string& str = std::get<std::string>(command.params[0]);
 
-        // Handle different string formats
-        if (str.length() >= 3) {
-            // Special case: leading space + two digits means 100-series channels (e.g., " 50" -> 150)
-            if (str.length() == 3 && str[0] == ' ' && std::isdigit(static_cast<unsigned char>(str[1])) && std::isdigit(static_cast<unsigned char>(str[2]))) {
-                int tens = str[1] - '0';
-                int ones = str[2] - '0';
-                result.channel = 100 + tens * 10 + ones;
-                result.valid = true;
-                return result;
-            }
-            // Extract 3-digit channel number (skip any prefix like in MW001)
-            std::string channelStr = str.substr(str.length() - 3);
-            int channel = 0;
-            auto [ptr, ec] = std::from_chars(channelStr.data(), channelStr.data() + channelStr.size(), channel);
-            if (ec == std::errc{} && ptr == channelStr.data() + channelStr.size()) {
-                result.channel = channel;
-                result.valid = true;
-                return result;
-            }
-        }
-
-        // Try direct parsing for simple cases (trim leading spaces)
+        // Channel numbers may be space-padded (e.g. " 00" for ch 0, " 05" for ch 5).
+        // Trim leading spaces and parse as integer.
         std::string_view sv = str;
         while (!sv.empty() && sv.front() == ' ') sv.remove_prefix(1);
-        int channel = 0;
-        auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), channel);
-        if (ec == std::errc{} && ptr == str.data() + str.size()) {
-            result.channel = channel;
-            result.valid = true;
+        if (!sv.empty()) {
+            int channel = 0;
+            auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), channel);
+            if (ec == std::errc{} && ptr == sv.data() + sv.size()) {
+                result.channel = channel;
+                result.valid = true;
+            }
         }
     }
     

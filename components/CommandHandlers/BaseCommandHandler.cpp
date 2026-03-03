@@ -202,7 +202,7 @@ namespace radio {
         }
 
         if (strictPairedSource != CommandSource::UsbCdc0 && shouldForwardCdc0) {
-            ESP_LOGI(BaseCommandHandler::TAG, "📤 Routing answer to CDC0: %.*s",
+            ESP_LOGV(BaseCommandHandler::TAG, "📤 Routing answer to CDC0: %.*s",
                      static_cast<int>(response.size()), response.data());
             sendToUSB(usbSerial, response);
             if (response.length() >= 2 && response.substr(0, 2) == "FA") {
