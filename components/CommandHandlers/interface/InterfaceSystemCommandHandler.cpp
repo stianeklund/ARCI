@@ -651,6 +651,7 @@ namespace radio
 
     std::string InterfaceSystemCommandHandler::formatTCResponse(const int state)
     {
-        return buildCommand("TC", std::to_string(state));
+        // TC uses "TC P1;" format (space before parameter) per TS-590SG spec
+        return buildCommand("TC ", std::to_string(state));
     }
 } // namespace radio

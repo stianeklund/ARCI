@@ -82,15 +82,20 @@ bool ScanCommandHandler::handleSU(const RadioCommand& command,
                                  ISerialChannel& radioSerial,
                                  ISerialChannel& usbSerial,
                                  RadioManager& radioManager) {
-    // SU - Scan up (single step scan)
+    // SU - Scan group read/write
     if (isSet(command)) {
         if (shouldSendToRadio(command)) {
+            // SU read format (SU0;) has P1 param, so parser classifies it as Set.
+            // Record query so the response gets forwarded in AI0 mode.
+            if (command.isCatClient()) {
+                radioManager.getState().queryTracker.recordQuery("SU", esp_timer_get_time());
+            }
             std::string params = getStringParam(command, 0, "");
             std::string cmdStr = params.empty() ? std::string("SU;") : std::string("SU") + params + ";";
             sendToRadio(radioSerial, cmdStr);
         }
 
-        ESP_LOGD(TAG, "Scan up step executed");
+        ESP_LOGD(TAG, "Scan group command executed");
         return true;
     }
     if (isQuery(command)) {
@@ -134,15 +139,18 @@ bool ScanCommandHandler::handleSS(const RadioCommand& command,
         std::string params = getStringParam(command, 0, "");
         std::string cmdStr = params.empty() ? std::string("SS;") : std::string("SS") + params + ";";
         if (shouldSendToRadio(command)) {
+            // SS read format (SS00;) has params, so parser classifies it as Set.
+            // Record query so the response gets forwarded in AI0 mode.
+            if (command.isCatClient()) {
+                radioManager.getState().queryTracker.recordQuery("SS", esp_timer_get_time());
+            }
             sendToRadio(radioSerial, cmdStr);
         }
         return true;
     }
 
     if (command.type == CommandType::Answer) {
-        if (radioManager.shouldForwardToUSB(command.originalMessage)) {
-            respondToSource(command, command.originalMessage, usbSerial, radioManager);
-        }
+        routeAnswerResponse(command, command.originalMessage, usbSerial, radioManager);
         return true;
     }
 

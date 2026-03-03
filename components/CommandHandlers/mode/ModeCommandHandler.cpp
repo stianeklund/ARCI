@@ -340,9 +340,14 @@ namespace radio
             }
             if (command.params.size() == 2)
             {
-                // QUERY command: AS<P1><P2P2>; - for local queries, don't send to radio per test expectations
-                if (command.source == CommandSource::Remote && shouldSendToRadio(command))
+                // QUERY command: AS<P1><P2P2>; - read format has params so parser classifies as Set.
+                // Forward to radio and record query so response gets forwarded in AI0 mode.
+                if (shouldSendToRadio(command))
                 {
+                    if (command.isCatClient())
+                    {
+                        radioManager.getState().queryTracker.recordQuery("AS", esp_timer_get_time());
+                    }
                     const std::string params = getStringParam(command, 0) + getStringParam(command, 1);
                     const std::string cmdStr = buildCommand("AS", params);
                     sendToRadio(radioSerial, cmdStr);
@@ -351,6 +356,13 @@ namespace radio
             }
             ESP_LOGW(TAG, "AS command needs 2 (query) or 5 (set) parameters, got: %zu", command.params.size());
             return false;
+        }
+
+        if (command.type == CommandType::Answer)
+        {
+            // Route AS answers from radio to requesting interfaces
+            routeAnswerResponse(command, command.originalMessage, usbSerial, radioManager);
+            return true;
         }
 
         return false;

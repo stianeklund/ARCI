@@ -277,6 +277,11 @@ bool ToneSquelchCommandHandler::handleSQ(const RadioCommand& cmd,
         }
 
         if (shouldSendToRadio(cmd)) {
+            // SQ read format (SQ0;) has P1 param, so parser classifies it as Set.
+            // Record query so the response gets forwarded in AI0 mode.
+            if (cmd.isCatClient()) {
+                rm.getState().queryTracker.recordQuery("SQ", esp_timer_get_time());
+            }
             sendToRadio(radioSerial, formatResponseSub3D("SQ", 0, squelchLevel));
         }
 

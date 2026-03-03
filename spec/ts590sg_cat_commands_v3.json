@@ -1762,6 +1762,7 @@
     "name": "Terminal Control",
     "availability": "TS-590S/TS-590SG",
     "supports": [
+      "set",
       "read",
       "answer"
     ],
@@ -1925,7 +1926,6 @@
       }
     ]
   },
-
   "UR": {
     "command": "UR",
     "name": "RX equalizer (18-band user levels)",
@@ -3113,6 +3113,7 @@
     "name": "Quick memory read",
     "availability": "TS-590S/TS-590SG",
     "supports": [
+      "set",
       "read",
       "answer"
     ],
@@ -3128,8 +3129,8 @@
         "width": 1,
         "type": "enum",
         "enum": {
-            "0": "Quick Memory OFF",
-            "1": "Quick Memory ON"
+          "0": "Quick Memory OFF",
+          "1": "Quick Memory ON"
         }
       },
       {
@@ -3141,8 +3142,7 @@
         "description": "Quick Memory channel number"
       }
     ]
-  }
-  ,
+  },
   "RA": {
     "command": "RA",
     "name": "Sets and reads the RF attenuator status",
@@ -3311,7 +3311,6 @@
       "read": "RS;",
       "answer": "RSP1"
     },
-
     "params": [
       {
         "id": "P1",
@@ -3460,7 +3459,7 @@
         "max": 9,
         "unit": "Hz",
         "description": "Shift value of split operation frequency 1-9 kHz"
-        }
+      }
     ]
   },
   "SM": {
@@ -3473,7 +3472,6 @@
     ],
     "notes": "The P2 parameter value is the number of dots displayed on the meter. The SM command reads the S-meter during reception and the RF (power) during transmission.",
     "formats": {
-      "set": "SMP1;",
       "read": "SM0;",
       "answer": "SMP1P2P2P2P2;"
     },
@@ -3548,8 +3546,8 @@
         "width": 1,
         "type": "enum",
         "enum": {
-            "0": "VFO Reset",
-            "1": "Full reset"
+          "0": "VFO Reset",
+          "1": "Full reset"
         },
         "unit": "",
         "description": "Resets the transceiver"
@@ -3712,7 +3710,8 @@
           "1": "Selected"
         },
         "description": "The section set in Channel P8. Group 8 when setting the Memory Scan Group"
-      },{
+      },
+      {
         "id": "P11",
         "width": 1,
         "type": "enum",
@@ -3950,7 +3949,7 @@
         "type": "number",
         "unit": "Hz",
         "description": "Lower frequency (Hz)"
-        },
+      },
       {
         "id": "P2",
         "width": 11,
@@ -4086,8 +4085,8 @@
         "width": 1,
         "type": "enum",
         "enum": {
-            "0": "Data mode OFF",
-            "1": "Data mode ON"
+          "0": "Data mode OFF",
+          "1": "Data mode ON"
         },
         "description": "Data mode"
       },
@@ -4120,8 +4119,8 @@
         "width": 1,
         "type": "enum",
         "enum": {
-            "0": "Plus direction",
-            "1": "Minus direction"
+          "0": "Plus direction",
+          "1": "Minus direction"
         },
         "description": "(For the transceiver frequency, the transverter frequency can be set in either direction)"
       },

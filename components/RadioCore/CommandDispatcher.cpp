@@ -204,11 +204,23 @@ namespace radio {
                      command.source == CommandSource::Remote ? "Remote" : "Local");
         }
 
+        // Log local commands at INFO to diagnose programmer tool issues
+        if (command.isUsb() || command.isTcp()) {
+            ESP_LOGI(CommandDispatcher::TAG, "📥 %s %s from %s: '%s'",
+                     command.type == CommandType::Set ? "SET" :
+                     command.type == CommandType::Read ? "READ" : "ANS",
+                     command.command.c_str(),
+                     (command.source == CommandSource::UsbCdc0 ? "CDC0" :
+                      command.source == CommandSource::UsbCdc1 ? "CDC1" :
+                      command.source == CommandSource::Tcp0 ? "TCP0" : "TCP1"),
+                     command.originalMessage.c_str());
+        }
+
         ESP_LOGD(CommandDispatcher::TAG, "Dispatching command: '%s' (type: %s, source: %s, depth: %lu)",
                  command.command.c_str(),
                  command.type == CommandType::Set ? "Set" :
                  command.type == CommandType::Read ? "Read" : "Answer",
-                 (command.source == CommandSource::UsbCdc0 ? "Usb0" : (command.source == CommandSource::UsbCdc1 ? "Usb1" : 
+                 (command.source == CommandSource::UsbCdc0 ? "Usb0" : (command.source == CommandSource::UsbCdc1 ? "Usb1" :
                  (command.source == CommandSource::Display ? "Display" :
                  (command.source == CommandSource::Panel ? "Panel" : "Remote")))),
                  stats_.currentProcessingDepth.load());
@@ -315,13 +327,23 @@ namespace radio {
                      "Processing error response '%s;' from radio",
                      command.command.c_str());
             
-            // Don't forward '?;' errors to USB clients - they indicate invalid/unsupported commands
-            // Only forward 'E;' and 'O;' errors which may be relevant to the USB client
+            // Forward 'E;' and 'O;' errors unconditionally
+            // Forward '?;' only when a CDC/TCP client has a pending query — this is
+            // the radio's legitimate error response to their command (e.g., MR for an
+            // empty channel).  Suppress unsolicited '?;' to avoid flooding clients.
             if (command.command != "?") {
                 ESP_LOGD(CommandDispatcher::TAG, "Forwarding error response '%s;' to USB", command.command.c_str());
                 radioManager.sendDirectResponse(command.originalMessage);
+            } else if (lastCmdCopy.size() >= 2) {
+                const std::string prefix = lastCmdCopy.substr(0, 2);
+                if (radioManager.getState().queryTracker.wasRecentlyQueried(prefix, currentTime)) {
+                    ESP_LOGI(CommandDispatcher::TAG, "Forwarding '?;' to CDC0 — response to pending query '%s'", prefix.c_str());
+                    radioManager.sendDirectResponse("?;");
+                } else {
+                    ESP_LOGD(CommandDispatcher::TAG, "Suppressing '?;' — no pending query for '%s'", prefix.c_str());
+                }
             } else {
-                ESP_LOGD(CommandDispatcher::TAG, "Suppressing '?;' error response from USB forwarding");
+                ESP_LOGD(CommandDispatcher::TAG, "Suppressing '?;' — no command context");
             }
             stats_.commandsHandled++;
             return true;
@@ -372,8 +394,11 @@ namespace radio {
                 }
 
                 stats_.handlerErrors++;
-                ESP_LOGW(CommandDispatcher::TAG, "Mapped handler failed to process command '%s'",
-                         command.command.c_str());
+                ESP_LOGW(CommandDispatcher::TAG, "Mapped handler failed to process command '%s' (source: %d)",
+                         command.command.c_str(), static_cast<int>(command.source));
+                if (command.isLocal()) {
+                    radioManager.sendToSource(command.source, "?;");
+                }
                 return false;
             }
         }
@@ -420,15 +445,25 @@ namespace radio {
                 }
 
                 stats_.handlerErrors++;
-                ESP_LOGW(CommandDispatcher::TAG, "Fallback handler failed to process command '%s'",
-                         command.command.c_str());
+                ESP_LOGW(CommandDispatcher::TAG, "Fallback handler failed to process command '%s' (source: %d)",
+                         command.command.c_str(), static_cast<int>(command.source));
+                if (command.isLocal()) {
+                    radioManager.sendToSource(command.source, "?;");
+                }
                 return false;
             }
         }
 
-        // No handler found
+        // No handler found — reply ?; to local sources (like a real radio would)
         stats_.commandsUnhandled++;
-        ESP_LOGW(CommandDispatcher::TAG, "No handler found for command: '%s'", command.command.c_str());
+        ESP_LOGW(CommandDispatcher::TAG, "No handler for command: '%s' (source: %d, original: '%s')",
+                 command.command.c_str(),
+                 static_cast<int>(command.source),
+                 command.originalMessage.c_str());
+
+        if (command.isLocal()) {
+            radioManager.sendToSource(command.source, "?;");
+        }
         return false;
     }
 

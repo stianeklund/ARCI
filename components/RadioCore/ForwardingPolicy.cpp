@@ -336,14 +336,21 @@ namespace radio
     {
         const std::string_view prefix = getCommandPrefix(response);
 
-        if (aiMode == 0)
-        {
-            ESP_LOGV(TAG, "Non-AI forwarding suppressed (ai=0, prefix=%.*s)", (int)prefix.length(), prefix.data());
-            return false;
-        }
-
         // Check if interface recently queried this command type (5 second TTL)
         const bool recentlyQueried = state.queryTracker.wasRecentlyQueried(std::string(prefix), currentTime);
+
+        if (aiMode == 0)
+        {
+            // AI0 = no unsolicited updates, but query responses MUST still be forwarded.
+            // A real TS-590SG in AI0 mode still responds to explicit queries.
+            if (recentlyQueried)
+            {
+                ESP_LOGI(TAG, "AI0 forwarding query response: %.*s", (int)prefix.length(), prefix.data());
+                return true;
+            }
+            ESP_LOGD(TAG, "AI0 suppressing unsolicited: %.*s", (int)prefix.length(), prefix.data());
+            return false;
+        }
 
         // DEBUG: Add special logging for IF responses
         if (prefix == "IF")

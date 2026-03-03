@@ -105,11 +105,16 @@ bool GainLevelCommandHandler::handleAG(const RadioCommand& command,
 
         // Forward to radio if from local source
         if (shouldSendToRadio(command)) {
+            // AG read format (AG0;) has P1 param, so parser classifies it as Set.
+            // Record query so the response gets forwarded in AI0 mode.
+            if (command.isCatClient()) {
+                radioManager.getState().queryTracker.recordQuery("AG", esp_timer_get_time());
+            }
             const auto cmdStr = formatResponseSub3D("AG", 0, gain);
             sendToRadio(radioSerial, cmdStr);
             ESP_LOGV(TAG, "Sent to radio: %s", cmdStr.c_str());
         }
-        
+
         // Route AG SET commands to AI-enabled interfaces (especially for potentiometer changes)
         const std::string agMsg = formatResponseSub3D("AG", 0, gain);
         routeSetCommandToAIInterfaces(command, agMsg, usbSerial, radioManager);

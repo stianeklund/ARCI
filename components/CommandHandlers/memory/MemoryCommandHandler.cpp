@@ -195,6 +195,11 @@ bool MemoryCommandHandler::handleMR(const RadioCommand& command,
                 ESP_LOGD(MemoryCommandHandler::TAG, "Memory read from channel %d", memChannel.channel);
                 radioManager.getState().memoryChannel.store(static_cast<uint16_t>(memChannel.channel));
                 if (shouldSendToRadio(command)) {
+                    // MR "set" from a local source is really a query — record it so
+                    // the response gets forwarded back even in AI0 mode.
+                    if (command.isCatClient()) {
+                        radioManager.getState().queryTracker.recordQuery("MR", esp_timer_get_time());
+                    }
                     // Format: "MR0" + 3-digit channel + ";"
                     std::string cmdStr;
                     cmdStr.reserve(8);

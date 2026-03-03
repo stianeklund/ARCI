@@ -60,12 +60,8 @@ namespace radio {
             return command;
         }
 
-        // Handle error responses
-        // Radio sometimes emits bare "?;" as a benign/ambiguous error marker. We suppress it.
-        if (source == CommandSource::Remote && frame == "?;") {
-            ESP_LOGD(CatParser::TAG, "Ignoring remote '?;' frame from radio");
-            return std::nullopt;
-        }
+        // Handle error responses (?;, E;, O;) — route to CommandDispatcher
+        // which decides per-interface forwarding based on pending query context.
         if (isErrorResponse(frame)) {
             RadioCommand command(std::string(frame.substr(0, frame.length() - 1)), CommandType::Answer, source,
                                  std::string(frame));

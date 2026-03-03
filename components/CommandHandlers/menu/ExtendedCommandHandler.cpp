@@ -205,6 +205,34 @@ namespace radio {
         }
 
         if (isSet(command)) {
+            // EX read format (EX[menu]0000;) has params but empty value — the parser
+            // classifies it as Set because it has params from a local source.
+            // Treat empty-value Set as a read query so responses get forwarded.
+            if (value.empty()) {
+                if (command.isCatClient()) {
+                    std::string cacheKey;
+                    cacheKey.reserve(2 + menuNumber.size());
+                    cacheKey += "EX";
+                    cacheKey.append(menuNumber.data(), menuNumber.size());
+
+                    std::string_view currentValue = menuState.getValue(menuNumber);
+                    if (!currentValue.empty()) {
+                        std::string response = formatEXResponse(menuNumber, currentValue);
+                        respondToSource(command, response, usbSerial, radioManager);
+                    }
+                    const uint64_t nowUs = esp_timer_get_time();
+                    radioManager.getState().queryTracker.recordQuery("EX", nowUs);
+                    radioManager.noteQueryOrigin("EX", command.source, nowUs);
+                    sendToRadio(radioSerial, command.originalMessage);
+                } else if (shouldSendToRadio(command)) {
+                    const uint64_t nowUs = esp_timer_get_time();
+                    radioManager.getState().queryTracker.recordQuery("EX", nowUs);
+                    radioManager.noteQueryOrigin("EX", command.source, nowUs);
+                    sendToRadio(radioSerial, command.originalMessage);
+                }
+                return true;
+            }
+
             if (!isValidParameterValue(*menuItem, value)) {
                 ESP_LOGW(TAG_EX, "Invalid value '%.*s' for EX menu %.*s (%s)",
                          int(value.size()), value.data(),

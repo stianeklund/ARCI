@@ -1195,6 +1195,454 @@ namespace {
         tearDownTestRadioManager();
     }
 
+    // ============== PROGRAMMER TOOL COMPATIBILITY TESTS ==============
+    // Tests for fixes enabling TS-590G Programmer and similar tools to work
+    // through ARCI. See: TC format fix, AI0 query forwarding, unhandled ?; response.
+
+    // Test: TC command uses correct "TC P1;" format (space before parameter)
+    void test_TC_format_has_space() {
+        setUpTestRadioManager();
+        mockRadioSerial.sentMessages.clear();
+
+        // Local SET: TC 1; should send "TC 1;" to radio (with space)
+        testRadioManager->getLocalCATHandler().parseMessage("TC 1;");
+
+        bool foundTC = false;
+        for (const auto& msg : mockRadioSerial.sentMessages) {
+            if (msg.find("TC") != std::string::npos) {
+                // Must contain a space between TC and digit
+                TEST_ASSERT_EQUAL_STRING("TC 1;", msg.c_str());
+                foundTC = true;
+                break;
+            }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(foundTC, "Expected TC command to be sent to radio");
+
+        // TC query should respond locally with space format
+        mockUsbSerial.sentMessages.clear();
+        testRadioManager->getLocalCATHandler().parseMessage("TC;");
+        bool foundTCResponse = false;
+        for (const auto& msg : mockUsbSerial.sentMessages) {
+            if (msg.find("TC ") != std::string::npos) {
+                foundTCResponse = true;
+                break;
+            }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(foundTCResponse, "Expected TC response with space format");
+        tearDownTestRadioManager();
+    }
+
+    // Test: AI0 mode still forwards responses to explicit queries
+    void test_AI0_forwards_query_responses() {
+        setUpTestRadioManager();
+
+        // CDC0 AI mode defaults to 0 (which is what programmers set)
+        TEST_ASSERT_EQUAL(0, testRadioManager->getState().usbCdc0AiMode.load());
+
+        // Clear cache so SC query goes to radio
+        testRadioManager->clearCommandCache();
+        mockRadioSerial.sentMessages.clear();
+        mockUsbSerial.sentMessages.clear();
+
+        // Programmer sends SC; query (source: UsbCdc0, AI mode 0)
+        testRadioManager->getLocalCATHandler().parseMessage("SC;");
+
+        // Should have been forwarded to radio
+        bool sentToRadio = false;
+        for (const auto& msg : mockRadioSerial.sentMessages) {
+            if (msg == "SC;") {
+                sentToRadio = true;
+                break;
+            }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(sentToRadio, "SC; should be forwarded to radio");
+
+        // Simulate radio response
+        mockUsbSerial.sentMessages.clear();
+        testRadioManager->getRemoteCATHandler().parseMessage("SC0;");
+
+        // Response MUST be forwarded to USB even though AI mode is 0
+        bool foundSCResponse = false;
+        for (const auto& msg : mockUsbSerial.sentMessages) {
+            if (msg == "SC0;") {
+                foundSCResponse = true;
+                break;
+            }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(foundSCResponse,
+            "SC0; response must be forwarded to CDC0 in AI0 mode when recently queried");
+        tearDownTestRadioManager();
+    }
+
+    // Test: AI0 mode suppresses unsolicited responses (not queried)
+    void test_AI0_suppresses_unsolicited_responses() {
+        setUpTestRadioManager();
+
+        // CDC0 AI mode defaults to 0
+        TEST_ASSERT_EQUAL(0, testRadioManager->getState().usbCdc0AiMode.load());
+
+        mockUsbSerial.sentMessages.clear();
+
+        // Radio sends unsolicited FA update (no prior query from CDC0)
+        testRadioManager->getRemoteCATHandler().parseMessage("FA00014074000;");
+
+        // Should NOT be forwarded to USB in AI0 mode (unsolicited)
+        bool foundFA = false;
+        for (const auto& msg : mockUsbSerial.sentMessages) {
+            if (msg.find("FA") != std::string::npos) {
+                foundFA = true;
+                break;
+            }
+        }
+        TEST_ASSERT_FALSE_MESSAGE(foundFA,
+            "Unsolicited FA should NOT be forwarded to CDC0 in AI0 mode");
+        tearDownTestRadioManager();
+    }
+
+    // Test: Unhandled commands get ?; response back to originating interface
+    void test_unhandled_command_returns_error() {
+        setUpTestRadioManager();
+        mockUsbSerial.sentMessages.clear();
+
+        // Send a command with no handler (XX is not a real CAT command)
+        testRadioManager->getLocalCATHandler().parseMessage("XX;");
+
+        // Should receive ?; back on USB (like a real radio would)
+        bool foundError = false;
+        for (const auto& msg : mockUsbSerial.sentMessages) {
+            if (msg == "?;") {
+                foundError = true;
+                break;
+            }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(foundError,
+            "Unhandled command should return ?; to originating interface");
+        tearDownTestRadioManager();
+    }
+
+    // Test: Simulates a TS-590G Programmer startup sequence
+    void test_programmer_startup_sequence() {
+        setUpTestRadioManager();
+
+        // CDC0 AI mode defaults to 0 (programmer behavior)
+        TEST_ASSERT_EQUAL(0, testRadioManager->getState().usbCdc0AiMode.load());
+
+        // Step 1: Programmer sends TC 1; (terminal control on)
+        testRadioManager->getLocalCATHandler().parseMessage("TC 1;");
+
+        // Step 2: Programmer sends ID; (identification)
+        mockUsbSerial.sentMessages.clear();
+        testRadioManager->getLocalCATHandler().parseMessage("ID;");
+        bool foundID = false;
+        for (const auto& msg : mockUsbSerial.sentMessages) {
+            if (msg.find("ID023") != std::string::npos) {
+                foundID = true;
+                break;
+            }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(foundID, "ID response should be returned locally");
+
+        // Step 3: Programmer sends AI0; (disable auto-information)
+        testRadioManager->getLocalCATHandler().parseMessage("AI0;");
+
+        // Step 4: Programmer queries SC; — must get a response even in AI0
+        testRadioManager->clearCommandCache();
+        mockRadioSerial.sentMessages.clear();
+        mockUsbSerial.sentMessages.clear();
+        testRadioManager->getLocalCATHandler().parseMessage("SC;");
+
+        // Simulate radio response
+        mockUsbSerial.sentMessages.clear();
+        testRadioManager->getRemoteCATHandler().parseMessage("SC0;");
+        bool foundSC = false;
+        for (const auto& msg : mockUsbSerial.sentMessages) {
+            if (msg == "SC0;") {
+                foundSC = true;
+                break;
+            }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(foundSC,
+            "Programmer must receive SC0; response after AI0 + SC; query");
+
+        // Step 5: Programmer queries EX menu item — must get a response
+        testRadioManager->clearCommandCache();
+        mockRadioSerial.sentMessages.clear();
+        mockUsbSerial.sentMessages.clear();
+        testRadioManager->getLocalCATHandler().parseMessage("EX0060000;");
+
+        // Simulate radio response
+        mockUsbSerial.sentMessages.clear();
+        testRadioManager->getRemoteCATHandler().parseMessage("EX006000005;");
+        bool foundEX = false;
+        for (const auto& msg : mockUsbSerial.sentMessages) {
+            if (msg == "EX006000005;") {
+                foundEX = true;
+                break;
+            }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(foundEX,
+            "Programmer must receive EX response after AI0 + EX query");
+
+        tearDownTestRadioManager();
+    }
+
+    // Test: MR0000; (parameterized read classified as Set) gets query-tracked in AI0 mode
+    void test_MR_AI0_forwards_query_response() {
+        setUpTestRadioManager();
+
+        TEST_ASSERT_EQUAL(0, testRadioManager->getState().usbCdc0AiMode.load());
+        testRadioManager->clearCommandCache();
+        mockRadioSerial.sentMessages.clear();
+        mockUsbSerial.sentMessages.clear();
+
+        // Programmer sends MR0000; (memory read channel 0) — parser classifies as Set
+        testRadioManager->getLocalCATHandler().parseMessage("MR0000;");
+
+        // Should have been forwarded to radio
+        bool sentToRadio = false;
+        for (const auto& msg : mockRadioSerial.sentMessages) {
+            if (msg.find("MR0") != std::string::npos) {
+                sentToRadio = true;
+                break;
+            }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(sentToRadio, "MR0000; should be forwarded to radio");
+
+        // Simulate radio response
+        mockUsbSerial.sentMessages.clear();
+        testRadioManager->getRemoteCATHandler().parseMessage("MR000014074000100000000000;");
+
+        // Response MUST be forwarded to USB even in AI0 mode
+        bool foundMRResponse = false;
+        for (const auto& msg : mockUsbSerial.sentMessages) {
+            if (msg.find("MR0000") != std::string::npos) {
+                foundMRResponse = true;
+                break;
+            }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(foundMRResponse,
+            "MR response must be forwarded to CDC0 in AI0 mode when recently queried");
+        tearDownTestRadioManager();
+    }
+
+    // Test: EX0060000; (read query classified as Set) gets forwarded in AI0 mode
+    void test_EX_parameterized_read_AI0() {
+        setUpTestRadioManager();
+
+        TEST_ASSERT_EQUAL(0, testRadioManager->getState().usbCdc0AiMode.load());
+        testRadioManager->clearCommandCache();
+        mockRadioSerial.sentMessages.clear();
+        mockUsbSerial.sentMessages.clear();
+
+        // Programmer sends EX0060000; (read menu 006, sidetone volume)
+        testRadioManager->getLocalCATHandler().parseMessage("EX0060000;");
+
+        // Should have been forwarded to radio
+        bool sentToRadio = false;
+        for (const auto& msg : mockRadioSerial.sentMessages) {
+            if (msg == "EX0060000;") {
+                sentToRadio = true;
+                break;
+            }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(sentToRadio, "EX0060000; must be forwarded to radio");
+
+        // Simulate radio response
+        mockUsbSerial.sentMessages.clear();
+        testRadioManager->getRemoteCATHandler().parseMessage("EX006000005;");
+
+        // Response MUST be forwarded in AI0 mode
+        bool foundEXResponse = false;
+        for (const auto& msg : mockUsbSerial.sentMessages) {
+            if (msg == "EX006000005;") {
+                foundEXResponse = true;
+                break;
+            }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(foundEXResponse,
+            "EX response must be forwarded to CDC0 in AI0 mode for parameterized read");
+        tearDownTestRadioManager();
+    }
+
+    // Test: AG0; (parameterized read) gets query-tracked in AI0 mode
+    void test_AG_parameterized_read_AI0() {
+        setUpTestRadioManager();
+
+        TEST_ASSERT_EQUAL(0, testRadioManager->getState().usbCdc0AiMode.load());
+        testRadioManager->clearCommandCache();
+        mockRadioSerial.sentMessages.clear();
+        mockUsbSerial.sentMessages.clear();
+
+        // Programmer sends AG0; (read AF gain — P1=0)
+        testRadioManager->getLocalCATHandler().parseMessage("AG0;");
+
+        // Should have been forwarded to radio
+        bool sentToRadio = false;
+        for (const auto& msg : mockRadioSerial.sentMessages) {
+            if (msg.find("AG") != std::string::npos) {
+                sentToRadio = true;
+                break;
+            }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(sentToRadio, "AG0; should be forwarded to radio");
+
+        // Simulate radio response
+        mockUsbSerial.sentMessages.clear();
+        testRadioManager->getRemoteCATHandler().parseMessage("AG0128;");
+
+        bool foundAGResponse = false;
+        for (const auto& msg : mockUsbSerial.sentMessages) {
+            if (msg.find("AG0") != std::string::npos) {
+                foundAGResponse = true;
+                break;
+            }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(foundAGResponse,
+            "AG response must be forwarded to CDC0 in AI0 mode for parameterized read");
+        tearDownTestRadioManager();
+    }
+
+    // Test: SU0; (scan group read) gets query-tracked in AI0 mode
+    void test_SU_parameterized_read_AI0() {
+        setUpTestRadioManager();
+
+        TEST_ASSERT_EQUAL(0, testRadioManager->getState().usbCdc0AiMode.load());
+        testRadioManager->clearCommandCache();
+        mockRadioSerial.sentMessages.clear();
+        mockUsbSerial.sentMessages.clear();
+
+        // Programmer sends SU0; (read scan group 0)
+        testRadioManager->getLocalCATHandler().parseMessage("SU0;");
+
+        // Should have been forwarded to radio
+        bool sentToRadio = false;
+        for (const auto& msg : mockRadioSerial.sentMessages) {
+            if (msg.find("SU") != std::string::npos) {
+                sentToRadio = true;
+                break;
+            }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(sentToRadio, "SU0; should be forwarded to radio");
+
+        // Simulate radio response (SU answer has many params)
+        mockUsbSerial.sentMessages.clear();
+        testRadioManager->getRemoteCATHandler().parseMessage("SU000014000000000140740001000;");
+
+        bool foundSUResponse = false;
+        for (const auto& msg : mockUsbSerial.sentMessages) {
+            if (msg.find("SU0") != std::string::npos) {
+                foundSUResponse = true;
+                break;
+            }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(foundSUResponse,
+            "SU response must be forwarded to CDC0 in AI0 mode for parameterized read");
+        tearDownTestRadioManager();
+    }
+
+    // Test: SS00; (program slow scan read) gets query-tracked in AI0 mode
+    void test_SS_parameterized_read_AI0() {
+        setUpTestRadioManager();
+
+        TEST_ASSERT_EQUAL(0, testRadioManager->getState().usbCdc0AiMode.load());
+        testRadioManager->clearCommandCache();
+        mockRadioSerial.sentMessages.clear();
+        mockUsbSerial.sentMessages.clear();
+
+        // Programmer sends SS00; (read program slow scan channel 0, lower freq)
+        testRadioManager->getLocalCATHandler().parseMessage("SS00;");
+
+        // Should have been forwarded to radio
+        bool sentToRadio = false;
+        for (const auto& msg : mockRadioSerial.sentMessages) {
+            if (msg.find("SS") != std::string::npos) {
+                sentToRadio = true;
+                break;
+            }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(sentToRadio, "SS00; should be forwarded to radio");
+
+        // Simulate radio response
+        mockUsbSerial.sentMessages.clear();
+        testRadioManager->getRemoteCATHandler().parseMessage("SS0000014000000;");
+
+        bool foundSSResponse = false;
+        for (const auto& msg : mockUsbSerial.sentMessages) {
+            if (msg.find("SS00") != std::string::npos) {
+                foundSSResponse = true;
+                break;
+            }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(foundSSResponse,
+            "SS response must be forwarded to CDC0 in AI0 mode for parameterized read");
+        tearDownTestRadioManager();
+    }
+
+    // Test: Radio ?; response to MR query is forwarded to CDC0 (empty memory channel)
+    void test_MR_error_response_forwarded_to_CDC0() {
+        setUpTestRadioManager();
+
+        TEST_ASSERT_EQUAL(0, testRadioManager->getState().usbCdc0AiMode.load());
+        testRadioManager->clearCommandCache();
+        mockRadioSerial.sentMessages.clear();
+        mockUsbSerial.sentMessages.clear();
+
+        // Programmer sends MR0000; (memory read channel 0)
+        testRadioManager->getLocalCATHandler().parseMessage("MR0000;");
+
+        // Verify it was forwarded to radio
+        bool sentToRadio = false;
+        for (const auto& msg : mockRadioSerial.sentMessages) {
+            if (msg.find("MR0") != std::string::npos) {
+                sentToRadio = true;
+                break;
+            }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(sentToRadio, "MR0000; should be forwarded to radio");
+
+        // Radio responds with ?; (empty/invalid channel)
+        mockUsbSerial.sentMessages.clear();
+        testRadioManager->getRemoteCATHandler().parseMessage("?;");
+
+        // ?; MUST be forwarded to CDC0 because MR was recently queried
+        bool foundError = false;
+        for (const auto& msg : mockUsbSerial.sentMessages) {
+            if (msg == "?;") {
+                foundError = true;
+                break;
+            }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(foundError,
+            "Radio ?; response must be forwarded to CDC0 when there is a pending query (MR)");
+        tearDownTestRadioManager();
+    }
+
+    // Test: Unsolicited ?; from radio is NOT forwarded to CDC0 (no pending query)
+    void test_unsolicited_error_suppressed() {
+        setUpTestRadioManager();
+
+        TEST_ASSERT_EQUAL(0, testRadioManager->getState().usbCdc0AiMode.load());
+        testRadioManager->clearCommandCache();
+        // Clear the query tracker so prior tests don't leave stale pending queries
+        testRadioManager->getState().queryTracker.clear();
+        mockUsbSerial.sentMessages.clear();
+
+        // No query sent — just a stray ?; from the radio
+        testRadioManager->getRemoteCATHandler().parseMessage("?;");
+
+        // ?; should NOT appear on CDC0 (no pending query context)
+        bool foundError = false;
+        for (const auto& msg : mockUsbSerial.sentMessages) {
+            if (msg == "?;") {
+                foundError = true;
+                break;
+            }
+        }
+        TEST_ASSERT_FALSE_MESSAGE(foundError,
+            "Unsolicited ?; should NOT be forwarded to CDC0 when no query is pending");
+        tearDownTestRadioManager();
+    }
+
     // Test runner function
     extern "C" void run_radiomanager_cat_tests(void) {
         // Original basic tests
@@ -1290,7 +1738,25 @@ namespace {
         RUN_TEST(test_frequency_operations);
         RUN_TEST(test_mode_operations);
         RUN_TEST(test_filter_operations);
-        
+
+        // Programmer tool compatibility tests
+        RUN_TEST(test_TC_format_has_space);
+        RUN_TEST(test_AI0_forwards_query_responses);
+        RUN_TEST(test_AI0_suppresses_unsolicited_responses);
+        RUN_TEST(test_unhandled_command_returns_error);
+        RUN_TEST(test_programmer_startup_sequence);
+
+        // Parameterized-read AI0 query tracking tests
+        RUN_TEST(test_MR_AI0_forwards_query_response);
+        RUN_TEST(test_EX_parameterized_read_AI0);
+        RUN_TEST(test_AG_parameterized_read_AI0);
+        RUN_TEST(test_SU_parameterized_read_AI0);
+        RUN_TEST(test_SS_parameterized_read_AI0);
+
+        // Radio ?; forwarding tests
+        RUN_TEST(test_MR_error_response_forwarded_to_CDC0);
+        RUN_TEST(test_unsolicited_error_suppressed);
+
         cleanupSharedRadioManager();
     }
 }

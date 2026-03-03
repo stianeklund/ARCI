@@ -597,19 +597,9 @@ void SerialHandler::processReceivedData(const uint8_t *data, const size_t len) {
             // Extract the valid command
             size_t cmd_len = m_accum_len - cmd_start;
 
-            // Special handling for '?;' to avoid error floods
-            if (cmd_len == 2 && m_accum[cmd_start] == '?' && m_accum[cmd_start + 1] == ';') {
-                ESP_LOGD(TAG, "UART %d: Dropping standalone '?;' frame", m_uart_num);
-                // Clear everything up to and including this error marker
-                if (m_accum_len > cmd_start + 2) {
-                    // Keep remaining data after the '?;'
-                    memmove(m_accum, m_accum + cmd_start + 2, m_accum_len - cmd_start - 2);
-                    m_accum_len = m_accum_len - cmd_start - 2;
-                } else {
-                    m_accum_len = 0;
-                }
-                continue;
-            }
+            // '?;' frames are queued like any other valid response.
+            // Routing/suppression is handled by the CommandDispatcher which
+            // has query context to decide whether to forward or drop.
 
             // Capture data needed for queue operation
             const size_t copyLen = cmd_len > MAX_MESSAGE_LENGTH ? MAX_MESSAGE_LENGTH : cmd_len;
@@ -642,8 +632,14 @@ void SerialHandler::processReceivedData(const uint8_t *data, const size_t len) {
             if (droppedOldest) {
                 ESP_LOGV(TAG, "UART %d: Message queue full, dropping oldest", m_uart_num);
             }
-            ESP_LOGD(TAG, "UART %d: Queued valid message: '%.*s' (len=%zu, q=%zu)",
-                     m_uart_num, static_cast<int>(copyLen), slot.data, copyLen, queueCount);
+            // Log radio UART (UART1) messages at INFO for diagnostics; others at DEBUG
+            if (m_uart_num == UART_NUM_1) {
+                ESP_LOGI(TAG, "UART1 RX queued: '%.*s' (len=%zu, q=%zu)",
+                         static_cast<int>(copyLen), slot.data, copyLen, queueCount);
+            } else {
+                ESP_LOGD(TAG, "UART %d: Queued valid message: '%.*s' (len=%zu, q=%zu)",
+                         m_uart_num, static_cast<int>(copyLen), slot.data, copyLen, queueCount);
+            }
 
             // Remove processed command from accumulator
             // If there's data before the command (fragments), discard it

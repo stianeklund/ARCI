@@ -57,6 +57,11 @@ namespace radio {
             }
             radioManager.getState().commandCache.update("EQ", esp_timer_get_time());
             if (shouldSendToRadio(command)) {
+                // EQ read format (EQ00;) has params, so parser classifies it as Set.
+                // Record query so the response gets forwarded in AI0 mode.
+                if (command.isCatClient()) {
+                    radioManager.getState().queryTracker.recordQuery("EQ", esp_timer_get_time());
+                }
                 const auto cmdStr = buildCommand("EQ", param);
                 sendToRadio(radioSerial, cmdStr);
             }
