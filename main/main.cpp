@@ -950,7 +950,7 @@ void app_main()
     xTaskCreate(usb_task, "usb_task", 8192, NULL, 10, &g_usbTaskHandle);
     xTaskCreate(usb2_task, "usb2_task", 8192, NULL, 10, &g_usb2TaskHandle);
     xTaskCreate(radio_task, "radio_task", 8192, NULL, 8, &g_radioTaskHandle);
-    xTaskCreate(display_task, "display_task", 4096, NULL, 8, &g_displayTaskHandle);
+    xTaskCreate(display_task, "display_task", 6144, NULL, 8, &g_displayTaskHandle);
     xTaskCreate(main_task, "main_task", 4096, NULL, 5, &g_mainTaskHandle);
 
     // Configure diagnostics to monitor task stacks
