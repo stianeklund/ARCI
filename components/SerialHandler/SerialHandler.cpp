@@ -546,6 +546,12 @@ void SerialHandler::processReceivedData(const uint8_t *data, const size_t len) {
 
         // Append to accumulator if space remains
         if (m_accum_len < MAX_MESSAGE_LENGTH) {
+            // On Radio UART, valid CAT responses start with uppercase letter or '?'
+            // Reject lowercase/garbage start chars that would just fill the accumulator
+            if (m_accum_len == 0 && m_uart_num == UART_NUM_1 &&
+                !(inChar >= 'A' && inChar <= 'Z') && inChar != '?') {
+                continue;
+            }
             m_accum[m_accum_len++] = inChar;
         }
 
