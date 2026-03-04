@@ -183,6 +183,13 @@ public:
     DispatcherStatistics getStatistics() const;
 
     /**
+     * @brief Record that a command was sent to the radio (for error diagnostics)
+     * Called from RadioManager::sendRadioCommand to track all commands sent to the radio,
+     * not just those dispatched through handlers.
+     */
+    void recordCommandSentToRadio(std::string_view command);
+
+    /**
      * @brief Reset statistics (thread-safe)
      */
     void resetStatistics();

@@ -876,7 +876,7 @@ namespace radio
         }
 
         // Track last command sent for error diagnostics
-        // TODO: Add stats tracking when CommandDispatcher supports it
+        commandDispatcher_->recordCommandSentToRadio(command);
 
         const RtosLockGuard<RtosMutex> txLock(radioTxMutex_);
         radioSerial_.sendMessage(command);
@@ -911,6 +911,14 @@ namespace radio
         {
             ESP_LOGE(RadioManager::TAG, "❌ BLOCKED 2-part command invalid char");
             return;
+        }
+        // Track combined command for error diagnostics
+        {
+            std::string combined;
+            combined.reserve(part1.size() + part2.size());
+            combined.append(part1);
+            combined.append(part2);
+            commandDispatcher_->recordCommandSentToRadio(combined);
         }
         const RtosLockGuard<RtosMutex> txLock(radioTxMutex_);
         radioSerial_.sendMessage(part1, part2);

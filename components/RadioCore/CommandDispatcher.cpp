@@ -490,6 +490,12 @@ namespace radio {
         return stats_;  // Returns a copy, safe to access from any task
     }
 
+    void CommandDispatcher::recordCommandSentToRadio(const std::string_view command) {
+        RtosLockGuard<RtosMutex> lock(statsMutex_);
+        stats_.lastCommandBeforeError = command;
+        stats_.recordCommandSent(esp_timer_get_time());
+    }
+
     void CommandDispatcher::resetStatistics() {
         RtosLockGuard<RtosMutex> lock(statsMutex_);
         stats_.reset();
