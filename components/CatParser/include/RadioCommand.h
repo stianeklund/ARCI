@@ -229,6 +229,23 @@ public:
     }
     
     /**
+     * @brief Get short name for a CommandSource
+     */
+    [[nodiscard]] static constexpr std::string_view sourceName(CommandSource src) {
+        switch (src) {
+            case CommandSource::UsbCdc0: return "UsbCdc0";
+            case CommandSource::UsbCdc1: return "UsbCdc1";
+            case CommandSource::Tcp0:    return "Tcp0";
+            case CommandSource::Tcp1:    return "Tcp1";
+            case CommandSource::Display: return "Display";
+            case CommandSource::Panel:   return "Panel";
+            case CommandSource::Remote:  return "Remote";
+            case CommandSource::Macro:   return "Macro";
+        }
+        return "Unknown";
+    }
+
+    /**
      * @brief Get a description of this command for debugging
      */
     [[nodiscard]] std::string describe() const {

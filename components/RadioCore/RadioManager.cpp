@@ -912,23 +912,24 @@ namespace radio
             ESP_LOGE(RadioManager::TAG, "❌ BLOCKED 2-part command invalid char");
             return;
         }
-        // Track combined command for error diagnostics
+        // Track combined command for error diagnostics (stack buffer, no heap)
         {
-            std::string combined;
-            combined.reserve(part1.size() + part2.size());
-            combined.append(part1);
-            combined.append(part2);
-            commandDispatcher_->recordCommandSentToRadio(combined);
+            char buf[48];
+            const size_t total = part1.size() + part2.size();
+            const size_t n = std::min(total, sizeof(buf) - 1);
+            const size_t n1 = std::min(part1.size(), n);
+            std::memcpy(buf, part1.data(), n1);
+            const size_t n2 = std::min(part2.size(), n - n1);
+            std::memcpy(buf + n1, part2.data(), n2);
+            buf[n1 + n2] = '\0';
+            commandDispatcher_->recordCommandSentToRadio(std::string_view{buf, n1 + n2});
         }
         const RtosLockGuard<RtosMutex> txLock(radioTxMutex_);
         radioSerial_.sendMessage(part1, part2);
         if (state_.isTx.load() && state_.getTxOwner() == static_cast<int>(CommandSource::Remote))
         {
-            std::string combined;
-            combined.reserve(part1.size() + part2.size());
-            combined.append(part1);
-            combined.append(part2);
-            ESP_LOGD(RadioManager::TAG, "TXMON: remote TX active -> command '%s'", combined.c_str());
+            ESP_LOGD(RadioManager::TAG, "TXMON: remote TX active -> command '%.*s%.*s'",
+                     (int)part1.size(), part1.data(), (int)part2.size(), part2.data());
         }
         ESP_LOGD(RadioManager::TAG, "SEND->RADIO(2-part): '%.*s' + '%.*s'", (int)part1.size(), part1.data(),
                  (int)part2.size(), part2.data());
@@ -1824,31 +1825,15 @@ namespace radio
         // Note: RadioMacroManager is created separately and set via setMacroManager()
     }
 
-    uint8_t RadioManager::internOriginPrefix(const std::string &prefix)
-    {
-        if (auto it = originIds_.find(prefix); it != originIds_.end())
-        {
-            return it->second;
-        }
-        const uint8_t id = nextOriginId_.fetch_add(1, std::memory_order_relaxed);
-        const uint8_t slot = id < ORIGIN_TABLE_SIZE ? id : static_cast<uint8_t>(ORIGIN_TABLE_SIZE - 1);
-        originIds_.emplace(prefix, slot);
-        // Initialize time/src slots on first assignment
-        lastOriginTime_[slot].store(0, std::memory_order_relaxed);
-        lastOriginSrc_[slot].store(static_cast<int>(CommandSource::Remote), std::memory_order_relaxed);
-        return slot;
-    }
-
     void RadioManager::noteQueryOrigin(std::string_view prefix, CommandSource src, const uint64_t nowUs)
     {
         if (prefix.size() < 2)
             return;
-        const std::string key{prefix.substr(0, 2)};
-        const uint8_t id = internOriginPrefix(key);
+        const uint8_t id = originHash(prefix[0], prefix[1]);
         lastOriginTime_[id].store(nowUs, std::memory_order_relaxed);
         lastOriginSrc_[id].store(static_cast<int>(src), std::memory_order_relaxed);
-        ESP_LOGV(RadioManager::TAG, "Recorded origin for %s -> %d at %llu us", key.c_str(), static_cast<int>(src),
-                 static_cast<unsigned long long>(nowUs));
+        ESP_LOGV(RadioManager::TAG, "Recorded origin for %c%c -> %d at %llu us", prefix[0], prefix[1],
+                 static_cast<int>(src), static_cast<unsigned long long>(nowUs));
     }
 
     bool RadioManager::routeMatchedAnswer(std::string_view prefix, std::string_view response,
@@ -1864,11 +1849,7 @@ namespace radio
     {
         if (prefix.size() < 2)
             return std::nullopt;
-        const std::string key{prefix.substr(0, 2)};
-        auto it = originIds_.find(key);
-        if (it == originIds_.end())
-            return std::nullopt;
-        const uint8_t id = it->second;
+        const uint8_t id = originHash(prefix[0], prefix[1]);
         const uint64_t t = lastOriginTime_[id].load(std::memory_order_relaxed);
         if (t == 0 || (nowUs - t) > ORIGIN_TTL_US)
         {
@@ -1876,7 +1857,7 @@ namespace radio
         }
         const int srcInt = lastOriginSrc_[id].load(std::memory_order_relaxed);
         const CommandSource src = static_cast<CommandSource>(srcInt);
-        ESP_LOGD(RadioManager::TAG, "Routing matched answer %.*s to origin=%d", 2, key.data(), srcInt);
+        ESP_LOGD(RadioManager::TAG, "Routing matched answer %c%c to origin=%d", prefix[0], prefix[1], srcInt);
         sendToSource(src, response);
         return src;
     }

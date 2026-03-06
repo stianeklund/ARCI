@@ -277,13 +277,15 @@ void Diagnostics::task() {
             ESP_LOGI(TAG, "Average Error Interval: %llu ms", dispatcherStats.averageErrorInterval / 1000);
 
             const uint64_t currentTime = esp_timer_get_time();
+            const char* source = dispatcherStats.lastCommandSource[0] == '\0'
+                ? "unknown" : dispatcherStats.lastCommandSource;
             if (dispatcherStats.lastCommandBeforeErrorTime > 0) {
                 const uint64_t commandAge = (currentTime - dispatcherStats.lastCommandBeforeErrorTime) / 1000;
-                ESP_LOGI(TAG, "Last Command Before Error: %s (sent %llu ms ago)",
-                         dispatcherStats.lastCommandBeforeError.c_str(), commandAge);
+                ESP_LOGI(TAG, "Last Command Before Error: %s from %s (sent %llu ms ago)",
+                         dispatcherStats.lastCommandBeforeError, source, commandAge);
             } else {
-                ESP_LOGI(TAG, "Last Command Before Error: %s (timestamp unknown)",
-                         dispatcherStats.lastCommandBeforeError.c_str());
+                ESP_LOGI(TAG, "Last Command Before Error: %s from %s (timestamp unknown)",
+                         dispatcherStats.lastCommandBeforeError, source);
             }
 
             if (const uint64_t runtimeMs = esp_timer_get_time() / 1000; runtimeMs > 60000) {

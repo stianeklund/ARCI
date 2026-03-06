@@ -291,7 +291,7 @@ namespace radio
         // EX commands (menu items) should only be forwarded if specifically queried
         if (prefix == "EX")
         {
-            if (state.queryTracker.wasRecentlyQueried(std::string(prefix), currentTime))
+            if (state.queryTracker.wasRecentlyQueried(prefix, currentTime))
             {
                 ESP_LOGV(TAG, "📡 AI mode %d: forwarding EX - was queried", aiMode);
                 return true;
@@ -346,7 +346,7 @@ namespace radio
                 prefix, currentTime);
             if (locallyQueried)
             {
-                ESP_LOGI(TAG, "AI0 forwarding query response: %.*s", (int)prefix.length(), prefix.data());
+                ESP_LOGD(TAG, "AI0 forwarding query response: %.*s", (int)prefix.length(), prefix.data());
                 return true;
             }
             ESP_LOGD(TAG, "AI0 suppressing unsolicited: %.*s", (int)prefix.length(), prefix.data());
@@ -354,7 +354,7 @@ namespace radio
         }
 
         // For non-AI0 modes, use the global query tracker
-        const bool recentlyQueried = state.queryTracker.wasRecentlyQueried(std::string(prefix), currentTime);
+        const bool recentlyQueried = state.queryTracker.wasRecentlyQueried(prefix, currentTime);
 
         // DEBUG: Add special logging for IF responses
         if (prefix == "IF")

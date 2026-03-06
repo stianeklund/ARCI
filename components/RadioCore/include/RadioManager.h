@@ -6,7 +6,6 @@
 #include <memory>
 #include <optional>
 #include <string_view>
-#include <unordered_map>
 #include "rtos_mutex.h"
 #include "../../AntennaSwitch/include/AntennaSwitch.h"
 #include "../../CommonConstants/include/radio_constants.h"
@@ -823,12 +822,14 @@ namespace radio
                                                                   uint64_t nowUs) const;
 
     private:
-        // Lightweight prefix→id interning for origin tracking
-        uint8_t internOriginPrefix(const std::string &prefix);
+        // Lightweight prefix→slot mapping for origin tracking using compact hash
+        // 2-char CAT prefixes hash directly to a fixed array (no heap allocation)
         static constexpr size_t ORIGIN_TABLE_SIZE = 128;
         static constexpr uint64_t ORIGIN_TTL_US = 2000000; // 2s window to match answer to origin
-        mutable std::unordered_map<std::string, uint8_t> originIds_{};
-        mutable std::atomic<uint8_t> nextOriginId_{0};
+        static constexpr uint8_t originHash(char c1, char c2) {
+            // Simple hash of 2-char prefix into ORIGIN_TABLE_SIZE slots
+            return static_cast<uint8_t>(((static_cast<unsigned>(c1) * 31) + static_cast<unsigned>(c2)) % ORIGIN_TABLE_SIZE);
+        }
         std::array<std::atomic<uint64_t>, ORIGIN_TABLE_SIZE> lastOriginTime_{}; // per prefix
         std::array<std::atomic<int>, ORIGIN_TABLE_SIZE> lastOriginSrc_{}; // stores int(CommandSource)
 

@@ -4,8 +4,10 @@
 #include <vector>
 #include <unordered_map>
 #include <string>
+#include <string_view>
 #include <memory>
 #include <atomic>
+#include <cstring>
 #include "rtos_mutex.h"
 
 class ISerialChannel;
@@ -35,16 +37,22 @@ struct DispatcherStatistics {
     size_t oErrors{0};                   // "O;" responses
     uint64_t lastErrorTime{0};           // Last error timestamp (microseconds)
     uint64_t lastCommandTime{0};         // Last command sent timestamp (microseconds)
-    std::string lastCommandBeforeError;  // Command that preceded the error
+    static constexpr size_t CMD_BUF_SIZE = 32;  // CAT commands are short (typically 3-15 chars)
+    char lastCommandBeforeError[CMD_BUF_SIZE]{};  // Command that preceded the error (fixed buffer, no heap)
+    char lastCommandSource[CMD_BUF_SIZE]{};       // Source interface of the command (fixed buffer, no heap)
     uint64_t lastCommandBeforeErrorTime{0}; // Timestamp of the command that preceded the error (microseconds)
     uint64_t averageErrorInterval{0};    // Running average of error intervals
     size_t errorBursts{0};               // Number of error bursts detected
+
+    // Helper to get string_view of the fixed buffers
+    std::string_view lastCommandBeforeErrorView() const { return {lastCommandBeforeError}; }
+    std::string_view lastCommandSourceView() const { return {lastCommandSource}; }
 
     // Default constructor (required since we have custom copy constructor)
     DispatcherStatistics() = default;
 
     // Copy constructor to handle atomic members
-    DispatcherStatistics(const DispatcherStatistics& other) 
+    DispatcherStatistics(const DispatcherStatistics& other)
         : totalCommandsDispatched(other.totalCommandsDispatched),
           commandsHandled(other.commandsHandled),
           commandsUnhandled(other.commandsUnhandled),
@@ -57,10 +65,12 @@ struct DispatcherStatistics {
           oErrors(other.oErrors),
           lastErrorTime(other.lastErrorTime),
           lastCommandTime(other.lastCommandTime),
-          lastCommandBeforeError(other.lastCommandBeforeError),
           lastCommandBeforeErrorTime(other.lastCommandBeforeErrorTime),
           averageErrorInterval(other.averageErrorInterval),
-          errorBursts(other.errorBursts) {}
+          errorBursts(other.errorBursts) {
+        std::memcpy(lastCommandBeforeError, other.lastCommandBeforeError, CMD_BUF_SIZE);
+        std::memcpy(lastCommandSource, other.lastCommandSource, CMD_BUF_SIZE);
+    }
 
     // Assignment operator to handle atomic members
     DispatcherStatistics& operator=(const DispatcherStatistics& other) {
@@ -77,12 +87,19 @@ struct DispatcherStatistics {
             oErrors = other.oErrors;
             lastErrorTime = other.lastErrorTime;
             lastCommandTime = other.lastCommandTime;
-            lastCommandBeforeError = other.lastCommandBeforeError;
+            std::memcpy(lastCommandBeforeError, other.lastCommandBeforeError, CMD_BUF_SIZE);
+            std::memcpy(lastCommandSource, other.lastCommandSource, CMD_BUF_SIZE);
             lastCommandBeforeErrorTime = other.lastCommandBeforeErrorTime;
             averageErrorInterval = other.averageErrorInterval;
             errorBursts = other.errorBursts;
         }
         return *this;
+    }
+
+    static void storeToBuf(char (&buf)[CMD_BUF_SIZE], std::string_view src) {
+        const size_t n = std::min(src.size(), CMD_BUF_SIZE - 1);
+        std::memcpy(buf, src.data(), n);
+        buf[n] = '\0';
     }
 
     void reset() {
@@ -98,18 +115,19 @@ struct DispatcherStatistics {
         oErrors = 0;
         lastErrorTime = 0;
         lastCommandTime = 0;
-        lastCommandBeforeError.clear();
+        lastCommandBeforeError[0] = '\0';
+        lastCommandSource[0] = '\0';
         lastCommandBeforeErrorTime = 0;
         averageErrorInterval = 0;
         errorBursts = 0;
     }
-    
-    void recordError(std::string_view errorType, std::string_view lastCmd, const uint64_t currentTime) {
+
+    void recordError(std::string_view errorType, std::string_view lastCmd, std::string_view lastSource, const uint64_t currentTime) {
         totalErrorResponses++;
         if (errorType == "?") questionMarkErrors++;
-        else if (errorType == "E") eErrors++;  
+        else if (errorType == "E") eErrors++;
         else if (errorType == "O") oErrors++;
-        
+
         // Calculate interval and detect patterns
         if (lastErrorTime > 0) {
             uint64_t interval = currentTime - lastErrorTime;
@@ -119,18 +137,19 @@ struct DispatcherStatistics {
                 // Simple moving average
                 averageErrorInterval = (averageErrorInterval * 3 + interval) / 4;
             }
-            
+
             // Detect error bursts (errors < 5 seconds apart)
             if (interval < 5000000) {
                 errorBursts++;
             }
         }
-        
+
         lastErrorTime = currentTime;
-        lastCommandBeforeError = lastCmd;
+        storeToBuf(lastCommandBeforeError, lastCmd);
+        storeToBuf(lastCommandSource, lastSource);
         lastCommandBeforeErrorTime = lastCommandTime;  // Store when the problematic command was sent
     }
-    
+
     void recordCommandSent(const uint64_t currentTime) {
         lastCommandTime = currentTime;
     }
@@ -186,8 +205,11 @@ public:
      * @brief Record that a command was sent to the radio (for error diagnostics)
      * Called from RadioManager::sendRadioCommand to track all commands sent to the radio,
      * not just those dispatched through handlers.
+     * Only records the timestamp; command/source strings are captured lazily on error.
+     * @param command The command string (stored in fixed buffer, no heap allocation)
+     * @param source Human-readable source identifier (e.g. "Internal", "UsbCdc0")
      */
-    void recordCommandSentToRadio(std::string_view command);
+    void recordCommandSentToRadio(std::string_view command, std::string_view source = "Internal");
 
     /**
      * @brief Reset statistics (thread-safe)

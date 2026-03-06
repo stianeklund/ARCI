@@ -66,7 +66,7 @@ namespace radio
             }
         }
 
-        static size_t computeTableIndex(const std::string &command)
+        static size_t computeTableIndex(std::string_view command)
         {
             if (command.empty())
             {
@@ -106,7 +106,7 @@ namespace radio
          * @param command CAT command prefix (e.g., "FA", "FB", "MD")
          * @param timestamp Timestamp in microseconds (from esp_timer_get_time)
          */
-        void record(const std::string &command, const uint64_t timestamp) const
+        void record(std::string_view command, const uint64_t timestamp) const
         {
             const size_t id = computeTableIndex(command);
             timestamps_[id].store(timestamp, std::memory_order_relaxed);
@@ -117,7 +117,7 @@ namespace radio
          * @param command CAT command prefix
          * @return Last update timestamp, or 0 if never updated
          */
-        uint64_t get(const std::string &command) const
+        uint64_t get(std::string_view command) const
         {
             const size_t id = computeTableIndex(command);
             return timestamps_[id].load(std::memory_order_relaxed);
@@ -130,7 +130,7 @@ namespace radio
          * @param ttlUs TTL in microseconds
          * @return true if cache is fresh (within TTL)
          */
-        bool isFresh(const std::string &command, const uint64_t currentTime, const uint64_t ttlUs) const
+        bool isFresh(std::string_view command, const uint64_t currentTime, const uint64_t ttlUs) const
         {
             const uint64_t lastUpdate = get(command);
             return lastUpdate > 0 && currentTime - lastUpdate < ttlUs;
@@ -153,7 +153,7 @@ namespace radio
          * Forces next query for this command to be forwarded to radio
          * @param command CAT command prefix (e.g., "FA", "FB", "IF")
          */
-        void invalidate(const std::string &command) const
+        void invalidate(std::string_view command) const
         {
             const size_t id = computeTableIndex(command);
             timestamps_[id].store(0, std::memory_order_relaxed);
@@ -164,12 +164,12 @@ namespace radio
         /**
          * @brief Alias for record() - maintains CommandTimestamps API
          */
-        void update(const std::string &command, const uint64_t timestamp) const { record(command, timestamp); }
+        void update(std::string_view command, const uint64_t timestamp) const { record(command, timestamp); }
 
         /**
          * @brief Alias for record() - maintains SentQueryTracker API
          */
-        void recordQuery(const std::string &command, const uint64_t timestamp) const { record(command, timestamp); }
+        void recordQuery(std::string_view command, const uint64_t timestamp) const { record(command, timestamp); }
 
         /**
          * @brief Check if USB recently queried this command type
@@ -179,7 +179,7 @@ namespace radio
          * @param ttlUs TTL in microseconds (default: 5 seconds)
          * @return true if USB queried this command within TTL
          */
-        bool wasRecentlyQueried(const std::string &command, const uint64_t currentTime,
+        bool wasRecentlyQueried(std::string_view command, const uint64_t currentTime,
                                 const uint64_t ttlUs = 5000000) const
         {
             return isFresh(command, currentTime, ttlUs);

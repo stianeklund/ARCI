@@ -370,7 +370,7 @@ namespace radio {
     bool BaseCommandHandler::isCacheFresh(const RadioManager &radioManager, std::string_view command,
                                           const uint64_t ttlUs) {
         const uint64_t currentTime = esp_timer_get_time();
-        return radioManager.getState().commandCache.isFresh(std::string{command}, currentTime, ttlUs);
+        return radioManager.getState().commandCache.isFresh(command, currentTime, ttlUs);
     }
 
     bool BaseCommandHandler::handleLocalQueryStandard(const RadioCommand &command,
@@ -388,8 +388,7 @@ namespace radio {
             // This prevents keeping the radio "awake" with ongoing communication
             if (state.powerOffRequestTime.load() > 0) {
                 // Return cached value if available, otherwise return empty/error
-                const std::string keyStr{key};
-                const uint64_t lastUpdateUs = state.commandCache.get(keyStr);
+                const uint64_t lastUpdateUs = state.commandCache.get(key);
                 if (lastUpdateUs != 0U) {
                     const std::string response = buildResponse(state);
                     respondToSource(command, response, usbSerial, radioManager);
@@ -415,8 +414,7 @@ namespace radio {
                 return true;
             }
 
-            const std::string keyStr{key};
-            const uint64_t lastUpdateUs = state.commandCache.get(keyStr);
+            const uint64_t lastUpdateUs = state.commandCache.get(key);
             const bool hasCachedValue = lastUpdateUs != 0U;
             const bool cacheFresh = !command.bypassCache && isCacheFresh(radioManager, key, ttlUs);
             const bool shouldRefresh = command.bypassCache || !cacheFresh;
@@ -474,13 +472,13 @@ namespace radio {
                 // Record local query and capture origin for strict pairing
                 const uint64_t nowUs = esp_timer_get_time();
                 constexpr uint64_t MIN_RESEND_DELAY_US = 200000; // 200 ms guard between refreshes
-                const bool recentRefresh = state.queryTracker.wasRecentlyQueried(keyStr, nowUs, MIN_RESEND_DELAY_US);
+                const bool recentRefresh = state.queryTracker.wasRecentlyQueried(key, nowUs, MIN_RESEND_DELAY_US);
 
                 if (recentRefresh) {
                     ESP_LOGD(BaseCommandHandler::TAG,
                              "Refresh for %.*s already in-flight (last=%llu us); skipping resend",
                              static_cast<int>(key.size()), key.data(),
-                             static_cast<unsigned long long>(state.queryTracker.get(keyStr)));
+                             static_cast<unsigned long long>(state.queryTracker.get(key)));
                 } else {
                     ESP_LOGD(BaseCommandHandler::TAG,
                              "Refreshing %.*s (TTL=%llu us) after local request (source=%d)",
@@ -488,7 +486,7 @@ namespace radio {
                              static_cast<unsigned long long>(ttlUs), static_cast<int>(command.source));
                     // Skip query tracking for Macro commands (don't pollute strict pairing)
                     if (command.source != CommandSource::Macro) {
-                        state.queryTracker.recordQuery(keyStr, nowUs);
+                        state.queryTracker.recordQuery(key, nowUs);
                         // Only record origin if we didn't send cached response (to avoid duplicates)
                         if (!hasCachedValue) {
                             radioManager.noteQueryOrigin(key, command.source, nowUs);
