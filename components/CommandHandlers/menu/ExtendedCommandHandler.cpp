@@ -19,7 +19,7 @@ namespace radio {
             ExtendedMenuItem{"003"sv, "Back light color"sv, "0|1|2|3|4|5|6|7|8|9|10"sv},
             ExtendedMenuItem{"004"sv, "Panel key response for double function"sv, "1|2|3"sv},
             ExtendedMenuItem{"005"sv, "Beep volume"sv, "0|1|2|3|4|5|6|7|8|9"sv},
-            ExtendedMenuItem{"006"sv, "Sidetone volume"sv, "0|1|2|3|4|5|6|7|8|9"sv},
+            ExtendedMenuItem{"006"sv, "Sidetone volume"sv, "0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20"sv},
             ExtendedMenuItem{"007"sv, "Message playback volume"sv, "0|1|2|3|4|5|6|7|8|9"sv},
             ExtendedMenuItem{"008"sv, "Voice guide volume"sv, "0|1|2|3|4|5|6|7|8|9"sv},
             ExtendedMenuItem{"009"sv, "Voice guide speed"sv, "0|1|2|3|4"sv},
