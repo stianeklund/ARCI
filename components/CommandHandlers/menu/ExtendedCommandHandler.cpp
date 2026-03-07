@@ -53,7 +53,7 @@ namespace radio {
             ExtendedMenuItem{"037"sv, "Receive equalizer"sv, "0|1|2|3|4|5|6|7|8"sv},
             ExtendedMenuItem{"038"sv, "Electronic keyer operation mode"sv, "A|B"sv},
             ExtendedMenuItem{"039"sv, "Insert keying ON/OFF"sv, "0|1"sv},
-            ExtendedMenuItem{"040"sv, "Side tone/pitch frequency setting (Hz)"sv, "0|1|2|3|4|5|6|7|8|9|10|11|12|13"sv},
+            ExtendedMenuItem{"040"sv, "Side tone/pitch frequency setting (Hz)"sv, "0|1|2|3|4|5|6|7|8|9|10|11|12|13|14"sv},
             ExtendedMenuItem{"041"sv, "CW clipping (ms)"sv, "1|2|4|6"sv},
             ExtendedMenuItem{"042"sv, "Keying weight ratio"sv, "AUTO|0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15"sv},
             ExtendedMenuItem{"043"sv, "Reverse keying auto weight ratio"sv, "0|1"sv},
