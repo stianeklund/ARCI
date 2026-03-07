@@ -8,7 +8,7 @@ namespace radio
 {
 
     UICommandHandler::UICommandHandler() :
-        BaseCommandHandler({"UIPC", "UIML", "UIRL", "UIRS", "UINL", "UIPI", "UIPO", "UINF", "UIIS", "UIDA", "UIRI", "UIMN", "UIBL", "UIXD", "UIPS", "UIDE"}, "UI Meta Commands (Panel-Display Only)")
+        BaseCommandHandler({"UIPC", "UIML", "UIRL", "UIRS", "UINL", "UIPI", "UIPO", "UINF", "UIIS", "UIDA", "UIRI", "UIMN", "UIBL", "UIXD", "UIPS", "UIDE", "UIKS"}, "UI Meta Commands (Panel-Display Only)")
     {
     }
 
@@ -83,6 +83,10 @@ namespace radio
         if (cmd.command == "UIDE")
         {
             return handleUIDE(cmd, rm);
+        }
+        if (cmd.command == "UIKS")
+        {
+            return handleUIKS(cmd, rm);
         }
 
         return false;
@@ -907,6 +911,55 @@ namespace radio
         return false;
     }
 
+    bool UICommandHandler::handleUIKS(const RadioCommand &cmd, RadioManager &rm) const
+    {
+        // UIKS: Keying Speed UI command
+        // Format: UIKSnnn; where nnn is 004-060 (WPM)
+        auto &state = rm.getState();
+
+        if (isQuery(cmd))
+        {
+            const int value = state.uiState.isActive() &&
+                              state.uiState.getActiveControl() == UIControl::KeyingSpeed
+                              ? state.uiState.currentValue.load()
+                              : state.keyingSpeed;
+            const std::string response = formatUIKS(value);
+            sendToDisplayOnly(response, rm);
+            return true;
+        }
+
+        if (isSet(cmd))
+        {
+            const int value = getIntParam(cmd, 0, -1);
+            if (!isValidKeyingSpeedValue(value))
+            {
+                ESP_LOGW(TAG, "Invalid UIKS value: %d (must be 4-60)", value);
+                return false;
+            }
+
+            state.uiState.currentValue.store(static_cast<int16_t>(value));
+            state.uiState.lastUpdateTime.store(esp_timer_get_time());
+
+            const std::string response = formatUIKS(value);
+            ESP_LOGD(TAG, "UIKS set: %d, sending to display: %s", value, response.c_str());
+            sendToDisplayOnly(response, rm);
+            return true;
+        }
+
+        if (cmd.type == CommandType::Answer)
+        {
+            const int value = getIntParam(cmd, 0, -1);
+            if (isValidKeyingSpeedValue(value))
+            {
+                state.uiState.currentValue.store(static_cast<int16_t>(value));
+                ESP_LOGD(TAG, "UIKS answer from display: %d", value);
+            }
+            return true;
+        }
+
+        return false;
+    }
+
     // =============================================================================
     // Static helper functions
     // =============================================================================
@@ -1014,6 +1067,13 @@ namespace radio
         return enabled ? "UIDE1;" : "UIDE0;";
     }
 
+    std::string UICommandHandler::formatUIKS(const int value)
+    {
+        char buf[12];
+        snprintf(buf, sizeof(buf), "UIKS%03d;", value);
+        return std::string(buf);
+    }
+
     void UICommandHandler::sendToDisplayOnly(const std::string &cmd, RadioManager &rm)
     {
         if (auto *disp = rm.getDisplaySerial(); disp)
@@ -1075,6 +1135,11 @@ namespace radio
     bool UICommandHandler::isValidBacklightValue(const int value)
     {
         return value >= 0 && value <= 255;
+    }
+
+    bool UICommandHandler::isValidKeyingSpeedValue(const int value)
+    {
+        return value >= 4 && value <= 60;
     }
 
 } // namespace radio

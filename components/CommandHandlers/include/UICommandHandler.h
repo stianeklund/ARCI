@@ -28,6 +28,7 @@ namespace radio
      * - UIXD: Transverter display offset toggle (0=off, 1=on)
      * - UIPS: Panel status / display wake (0=idle/sleep, 1=active/awake)
      * - UIDE: Display communication enable/disable (0=disabled, 1=enabled)
+     * - UIKS: Keying Speed UI (slider for KS command, 4-60 WPM)
      *
      * Command format: UIxxPPP; where xx is the control type and PPP is the value
      *
@@ -62,6 +63,7 @@ namespace radio
         static std::string formatUIXD(bool enabled); // Transverter display offset: UIXD0; or UIXD1;
         static std::string formatUIPS(bool active);  // Panel status: UIPS0; or UIPS1;
         static std::string formatUIDE(bool enabled); // Display communication: UIDE0; or UIDE1;
+        static std::string formatUIKS(int value);    // Keying speed: UIKS020;
 
         static constexpr auto TAG = "UICommandHandler";
 
@@ -83,6 +85,7 @@ namespace radio
         bool handleUIXD(const RadioCommand &cmd, RadioManager &rm) const;
         bool handleUIPS(const RadioCommand &cmd, RadioManager &rm) const;
         bool handleUIDE(const RadioCommand &cmd, RadioManager &rm) const;
+        bool handleUIKS(const RadioCommand &cmd, RadioManager &rm) const;
 
         // Helper to send UI command to display only
         static void sendToDisplayOnly(const std::string &cmd, RadioManager &rm);
@@ -99,6 +102,7 @@ namespace radio
         static bool isValidDataModeValue(int value);   // 0-1 (Data mode toggle)
         static bool isValidRitXitValue(int value);    // -9999 to +9999 (RIT/XIT Hz)
         static bool isValidBacklightValue(int value);  // 0-255 (Display backlight)
+        static bool isValidKeyingSpeedValue(int value); // 4-60 (CW WPM)
     };
 
 } // namespace radio

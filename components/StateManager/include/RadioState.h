@@ -211,6 +211,8 @@ namespace radio
         IfShift = 12,  // IS - IF shift (0-9999 Hz, CW/CW-R only)
         RitXitOffset = 13, // RU/RD - RIT/XIT offset (-9999 to +9999 Hz)
         DataMode = 14, // DA - Data mode ON/OFF toggle (0=OFF, 1=ON)
+        // Note: display uses 15 for CW_CARRIER_LEVEL
+        KeyingSpeed = 16, // KS - CW keying speed (4-60 WPM)
     };
 
     /**

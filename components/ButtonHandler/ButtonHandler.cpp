@@ -2638,16 +2638,27 @@ void ButtonHandler::handleLeftPcbButton8(MatrixButton &button)
     m_radioManager.recordButtonActivity();
     auto &state = m_radioManager.getState();
 
-    // Handle long press: Enter carrier/monitor level (ML) adjustment mode
+    // Handle long press: CW mode → keying speed, other modes → carrier/monitor level
     if (button.wasLongPressed())
     {
         // Only enter UI mode if not already active
         if (!m_radioManager.isUIModeActive())
         {
-            const int currentLevel = state.txMonitorLevel;
-            // ML command range: 000-020 for TS-590SG (000=OFF, 001-020 level)
-            m_radioManager.enterUIMode(radio::UIControl::CarrierLevel, currentLevel, 0, 20, 1);
-            ESP_LOGI(TAG, "PWR button long press - entering carrier level (ML) UI mode, current=%d", currentLevel);
+            const int mode = state.mode.load(std::memory_order_relaxed);
+            if (mode == 3 || mode == 7) // CW or CW-R
+            {
+                const int currentSpeed = state.keyingSpeed;
+                // KS command range: 004-060 WPM for TS-590SG
+                m_radioManager.enterUIMode(radio::UIControl::KeyingSpeed, currentSpeed, 4, 60, 1);
+                ESP_LOGI(TAG, "PWR button long press (CW) - entering keying speed (KS) UI mode, current=%d WPM", currentSpeed);
+            }
+            else
+            {
+                const int currentLevel = state.txMonitorLevel;
+                // ML command range: 000-020 for TS-590SG (000=OFF, 001-020 level)
+                m_radioManager.enterUIMode(radio::UIControl::CarrierLevel, currentLevel, 0, 20, 1);
+                ESP_LOGI(TAG, "PWR button long press - entering carrier level (ML) UI mode, current=%d", currentLevel);
+            }
         }
     }
 

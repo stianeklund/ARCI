@@ -2057,6 +2057,9 @@ namespace radio
         case UIControl::RitXitOffset:
             sendUICommand(UICommandHandler::formatUIRI(initialValue));
             break;
+        case UIControl::KeyingSpeed:
+            sendUICommand(UICommandHandler::formatUIKS(initialValue));
+            break;
         default:
             // Send generic menu active signal
             sendUICommand(UICommandHandler::formatUIMN(true));
@@ -2115,6 +2118,7 @@ namespace radio
             case UIControl::NotchFrequency:
             case UIControl::IfShift:
             case UIControl::RitXitOffset:
+            case UIControl::KeyingSpeed:
                 // Already applied in real-time during adjustment
                 break;
             default:
@@ -2263,6 +2267,13 @@ namespace radio
                     // Moving negative direction - use RD with step amount
                     snprintf(cmdBuf, sizeof(cmdBuf), "RD%05d;", step);
                 }
+                dispatchMessage(*panelHandler_, cmdBuf);
+                break;
+            case UIControl::KeyingSpeed:
+                sendUICommand(UICommandHandler::formatUIKS(newValue));
+                // Apply immediately to radio for real-time feedback
+                state_.keyingSpeed = newValue;
+                snprintf(cmdBuf, sizeof(cmdBuf), "KS%03d;", newValue);
                 dispatchMessage(*panelHandler_, cmdBuf);
                 break;
             default:
