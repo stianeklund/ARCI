@@ -451,15 +451,20 @@ void TCA8418Handler::keyTask(void *param) {
                 // Reset timeout counter when we successfully process events
                 consecutiveTimeouts = 0;
                 handler->handleKeyEvents();
-                // No need to re-enable interrupt with ANYEDGE (edge-triggered)
             } else {
-                // Log potential task starvation during macro execution
+                // Timeout fallback: if INT is asserted but edge was missed, process events
+                if (gpio_get_level(handler->m_interruptPin) == 0) {
+                    handler->handleKeyEvents();
+                    consecutiveTimeouts = 0;
+                    continue;
+                }
+
                 consecutiveTimeouts++;
                 if (consecutiveTimeouts >= 3) {
                     ESP_LOGV(TAG, "TCA8418 task timeout %lu times - possible CPU starvation during macro execution", consecutiveTimeouts);
-                    consecutiveTimeouts = 0; // Reset counter after warning
+                    consecutiveTimeouts = 0;
                 }
-                
+
                 // Timeout occurred - perform health check
                 healthCheckCounter++;
                 if (healthCheckCounter >= HEALTH_CHECK_INTERVAL) {
@@ -510,6 +515,13 @@ void TCA8418Handler::handleKeyEvents() {
     
     // Single INT_STAT clear after all processing - critical for proper interrupt handling
     writeRegister(REG_INT_STAT, 0xFF);
+
+    // Race condition guard: if a new event arrived during processing, INT stays LOW
+    // and the edge-triggered ISR won't fire (no transition). Re-give semaphore so
+    // the task immediately re-enters to drain the remaining events.
+    if (!m_usePolling && gpio_get_level(m_interruptPin) == 0) {
+        xSemaphoreGive(m_keySemaphore);
+    }
 }
 
 void TCA8418Handler::processKeyEvent(uint8_t eventByte) {
