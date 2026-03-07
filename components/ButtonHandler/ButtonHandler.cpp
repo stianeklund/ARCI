@@ -18,6 +18,17 @@ static const char *TAG = "BUTTONHANDLER";
 const char *bandNames[] = {"1.8MHz", "3.5MHz", "7MHz",  "10MHz", "14MHz", "18MHz",
                            "21MHz",  "24MHz",  "28MHz", "50MHz", "GENE"};
 
+// Shared constant lookup tables — kept at file scope so they live in .rodata
+// instead of being rebuilt on the stack every button press.
+static const char *const modeNames[] = {"Invalid", "LSB", "USB", "CW", "FM", "AM", "FSK", "CW-R", "Invalid", "FSK-R"};
+static const int8_t      validModes[] = {1, 2, 3, 4, 5, 6, 7, 9};
+static const char *const nbNames[]   = {"OFF", "NB1", "NB2", "NB3"};
+static const char *const agcNames[]  = {"OFF", "FAST", "SLOW", "AUTO"};
+static const char *const nrNames[]   = {"OFF", "NR1", "NR2"};
+static const char *const vfoNames[]  = {"VFO A", "VFO B", "Memory"};
+static const int         voxDelays[] = {150, 300, 500, 1000};
+static const char *const antNames[]  = {"ANT1", "ANT2"};
+
 ButtonHandler::ButtonHandler(RadioManager *radioManager, radio::RadioMacroManager *macroManager, NvsManager *nvsManager) :
     m_radioManager(*radioManager), m_macroManager(*macroManager), m_nvsManager(*nvsManager), m_taskHandle(nullptr)
 {
@@ -364,8 +375,7 @@ void ButtonHandler::trigger_A_equals_B_button()
     m_radioManager.recordButtonActivity();
 
     ESP_LOGI(TAG, "A=B button pressed - copying current RX VFO to other VFO");
-    std::string vvCommand = "VV;";
-    m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), vvCommand);
+    m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), "VV;");
     ESP_LOGI(TAG, "Sent VV command for VFO copy");
 }
 
@@ -392,7 +402,6 @@ void ButtonHandler::triggerFunctionButton1()
     std::snprintf(gtCommand, sizeof(gtCommand), "GT%d;", newAgc);
     m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), gtCommand);
 
-    const char *agcNames[] = {"OFF", "FAST", "SLOW", "AUTO"};
     ESP_LOGI(TAG, "Function Button 1 pressed: AGC from %s to %s", agcNames[currentAgc], agcNames[newAgc]);
 }
 
@@ -409,7 +418,6 @@ void ButtonHandler::triggerFunctionButton2()
     std::snprintf(nlCommand, sizeof(nlCommand), "NL%d;", newNB);
     m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), nlCommand);
 
-    const char *nbNames[] = {"OFF", "NB1", "NB2", "NB3"};
     ESP_LOGI(TAG, "Function Button 2 pressed: Noise Blanker from %s to %s", nbNames[currentNB], nbNames[newNB]);
 }
 
@@ -457,7 +465,6 @@ void ButtonHandler::triggerFunctionButton4()
     std::snprintf(nlCommand, sizeof(nlCommand), "NL%d;", nextNB);
     m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), nlCommand);
 
-    const char *nbNames[] = {"OFF", "NB1", "NB2", "NB3"};
     ESP_LOGI(TAG, "Function Button 4 pressed: Toggling Noise Blanker from %s to %s", nbNames[currentNB],
              nbNames[nextNB]);
 }
@@ -560,10 +567,6 @@ void ButtonHandler::triggerModeUpButton()
     // Get current mode and increment it
     int8_t currentMode = m_radioManager.getState().mode.load();
 
-    // Valid modes: 1=LSB, 2=USB, 3=CW, 4=FM, 5=AM, 6=FSK, 7=CW-R, 9=FSK-R (skip 0,8)
-    const int8_t validModes[] = {1, 2, 3, 4, 5, 6, 7, 9};
-    const char *modeNames[] = {"Invalid", "LSB", "USB", "CW", "FM", "AM", "FSK", "CW-R", "Invalid", "FSK-R"};
-
     // Find current mode in valid modes array
     int currentIndex = -1;
     for (int i = 0; i < 8; i++)
@@ -604,10 +607,6 @@ void ButtonHandler::triggerModeDownButton()
 
     // Get current mode and decrement it
     int8_t currentMode = m_radioManager.getState().mode.load();
-
-    // Valid modes: 1=LSB, 2=USB, 3=CW, 4=FM, 5=AM, 6=FSK, 7=CW-R, 9=FSK-R (skip 0,8)
-    const int8_t validModes[] = {1, 2, 3, 4, 5, 6, 7, 9};
-    const char *modeNames[] = {"Invalid", "LSB", "USB", "CW", "FM", "AM", "FSK", "CW-R", "Invalid", "FSK-R"};
 
     // Find current mode in valid modes array
     int currentIndex = -1;
@@ -676,7 +675,6 @@ void ButtonHandler::triggerVfoToggleButton()
         std::snprintf(frCommand, sizeof(frCommand), "FR%d;", newRxVfo);
         m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), frCommand);
 
-        const char *vfoNames[] = {"VFO A", "VFO B", "Memory"};
         ESP_LOGI(TAG, "VFO A/B toggle (simplex): RX VFO changed from %s to %s",
                  (currentRxVfo >= 0 && currentRxVfo <= 2) ? vfoNames[currentRxVfo] : "Unknown",
                  (newRxVfo >= 0 && newRxVfo <= 2) ? vfoNames[newRxVfo] : "Unknown");
@@ -1540,7 +1538,7 @@ void ButtonHandler::handleNotchButton(MatrixButton &button)
         int currentBandwidth = m_radioManager.getState().notchFilterBandwidth;
 
         int newNotch, newBandwidth;
-        std::string modeDescription;
+        const char *modeDescription;
 
         if (isCwMode)
         {
@@ -1567,7 +1565,7 @@ void ButtonHandler::handleNotchButton(MatrixButton &button)
             const char *currentDesc = (currentNotch == 0)      ? "OFF"
                 : (currentNotch == 2 && currentBandwidth == 0) ? "Manual Normal"
                                                                : "Manual Wide";
-            ESP_LOGI(TAG, "Notch button (CW mode): %s -> %s", currentDesc, modeDescription.c_str());
+            ESP_LOGI(TAG, "Notch button (CW mode): %s -> %s", currentDesc, modeDescription);
         }
         else
         {
@@ -1605,7 +1603,7 @@ void ButtonHandler::handleNotchButton(MatrixButton &button)
                 : (currentNotch == 1)                          ? "Auto"
                 : (currentNotch == 2 && currentBandwidth == 0) ? "Manual Normal"
                                                                : "Manual Wide";
-            ESP_LOGI(TAG, "Notch button: %s -> %s", currentDesc, modeDescription.c_str());
+            ESP_LOGI(TAG, "Notch button: %s -> %s", currentDesc, modeDescription);
         }
 
         char notchCommand[8];
@@ -1814,7 +1812,6 @@ void ButtonHandler::handleNoiseReductionButton(MatrixButton &button)
         std::snprintf(nrCommand, sizeof(nrCommand), "NR%d;", newNR);
         m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), nrCommand);
 
-        const char *nrNames[] = {"OFF", "NR1", "NR2"};
         ESP_LOGI(TAG, "NR button short press: %s -> %s", nrNames[currentNR], nrNames[newNR]);
     }
 }
@@ -2011,7 +2008,6 @@ void ButtonHandler::handleNoiseBlankerButton(MatrixButton &button)
             // Cycle 1→2→3→1 (staying within active modes, not going to OFF)
             int newNB = (currentNB % 3) + 1;
 
-            const char *nbNames[] = {"OFF", "NB1", "NB2", "NB3"};
             ESP_LOGI(TAG, "NB button short press - cycling mode: %s -> %s (popup stays open)",
                      nbNames[currentNB], nbNames[newNB]);
 
@@ -2041,7 +2037,6 @@ void ButtonHandler::handleNoiseBlankerButton(MatrixButton &button)
         std::snprintf(nbCommand, sizeof(nbCommand), "NB%d;", newNB);
         m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), nbCommand);
 
-        const char *nbNames[] = {"OFF", "NB1", "NB2", "NB3"};
         ESP_LOGI(TAG, "NB button short press: %s -> %s", nbNames[currentNB], nbNames[newNB]);
     }
 }
@@ -2345,7 +2340,6 @@ void ButtonHandler::handleModeMatrixButton(MatrixButton &button)
 
     const int8_t currentMode = m_radioManager.getMode();
     const int bandIndex = m_radioManager.getState().bandNumber.load(std::memory_order_relaxed);
-    const char *modeNames[] = {"Invalid", "LSB", "USB", "CW", "FM", "AM", "FSK", "CW-R", "Invalid", "FSK-R"};
 
     // Handle long press using Button class logic
     if (button.wasLongPressed())
@@ -2531,8 +2525,7 @@ void ButtonHandler::handleVoxButton(MatrixButton &button)
         // Query current VOX delay and increment it (cycling through reasonable values)
         // For simplicity, we'll cycle through common delay values: 150ms, 300ms, 500ms, 1000ms
         static int voxDelayIndex = 0;
-        const int voxDelays[] = {150, 300, 500, 1000}; // milliseconds
-        const int numDelays = sizeof(voxDelays) / sizeof(voxDelays[0]);
+        constexpr int numDelays = sizeof(voxDelays) / sizeof(voxDelays[0]);
 
         voxDelayIndex = (voxDelayIndex + 1) % numDelays;
         int newDelay = voxDelays[voxDelayIndex];
@@ -2581,7 +2574,6 @@ void ButtonHandler::fallbackToRadioAntennaSwitch()
     std::snprintf(anCommand, sizeof(anCommand), "AN%d99;", newAnt);
     m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), anCommand);
 
-    const char *antNames[] = {"ANT1", "ANT2"};
     ESP_LOGI(TAG, "Radio antenna fallback: %s -> %s", antNames[currentAnt], antNames[newAnt]);
 }
 
@@ -2604,8 +2596,7 @@ void ButtonHandler::handleAntennaTunerButton(MatrixButton &button)
         ESP_LOGI(TAG, "Antenna Tuner button long press detected");
 
         // AC111; enables RX-AT IN, TX-AT IN, and starts tuning
-        std::string acCommand = "AC111;";
-        m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), acCommand);
+        m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), "AC111;");
 
         ESP_LOGI(TAG, "Antenna Tuner button long press: Starting tuning cycle");
     }
