@@ -81,7 +81,8 @@ namespace radio::cat {
             }
 
             // Check that first two characters are letters for standard CAT commands
-            return std::isalpha(cmd[0]) && std::isalpha(cmd[1]);
+            return std::isalpha(static_cast<unsigned char>(cmd[0])) &&
+                   std::isalpha(static_cast<unsigned char>(cmd[1]));
         }
 
         /**
@@ -91,10 +92,15 @@ namespace radio::cat {
          * or "RESPONSE?;" which are protocol-level quirks that should be handled
          * at the parser layer, not the transport layer.
          *
+         * Leading "?;" before a valid command is stripped to recover the command.
+         * Trailing "?;" is stripped entirely (both '?' and ';'), producing an
+         * unterminated frame that will fail CAT validation and be dropped.
+         * This is intentional: trailing "?;" indicates a radio error condition.
+         *
          * Examples:
-         *   "?;FA14070000;" -> "FA14070000;"
-         *   "FA14070000?;" -> "FA14070000;"
-         *   "FA14070000;" -> "FA14070000;" (unchanged)
+         *   "?;FA14070000;" -> "FA14070000;" (leading error marker stripped)
+         *   "FA14070000?;" -> "FA14070000"   (error frame, will fail validation)
+         *   "FA14070000;" -> "FA14070000;"   (unchanged)
          *
          * @param frame CAT frame to sanitize
          * @return Sanitized frame view (may point into original frame)
@@ -107,9 +113,8 @@ namespace radio::cat {
             }
 
             // Strip trailing "?;" quirk from radio responses
-            // Example: "FA14070000?;" -> "FA14070000" (removing both '?' and ';')
-            // Note: The frame will be re-validated and re-parsed, so missing ';' is handled
-            // by the caller through standard CAT validation which will reject invalid frames
+            // Removes both '?' and ';', producing an unterminated frame that will
+            // fail CAT validation. This effectively drops error-tagged responses.
             if (frame.length() > 2 && frame.ends_with("?;")) {
                 frame.remove_suffix(2);
             }

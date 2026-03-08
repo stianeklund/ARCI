@@ -153,10 +153,16 @@ private:
     void processClientInput(int clientIdx, const uint8_t* data, size_t length);
 
     /**
-     * @brief Close client connection and cleanup
+     * @brief Close client connection and cleanup (acquires clientsMutex_)
      * @param clientIdx Client index in clients_ array
      */
     void closeClient(int clientIdx);
+
+    /**
+     * @brief Close client connection (caller must hold clientsMutex_)
+     * @param clientIdx Client index in clients_ array
+     */
+    void closeClientLocked(int clientIdx);
 
     /**
      * @brief Close all client connections
@@ -198,6 +204,7 @@ private:
     std::atomic<uint64_t> bytesSent_{0};
     std::function<void(std::string_view)> incomingFrameCallback_;
     mutable RtosMutex callbackMutex_;
+    mutable RtosMutex clientsMutex_;  // Protects clients_[] access across tasks
 };
 
 } // namespace tcp_cat_bridge

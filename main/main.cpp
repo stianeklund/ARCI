@@ -377,7 +377,7 @@ void initializeSystemComponents()
 
 void initializeUsbCdc()
 {
-#if (defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32S3) && !defined(CONFIG_RUN_UNIT_TESTS))
+#if ((defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32S3)) && !defined(CONFIG_RUN_UNIT_TESTS))
     ESP_ERROR_CHECK(UsbCdc::init());
 #else
     ESP_LOGW(TAG, "USB CDC not supported on this target");
@@ -768,7 +768,7 @@ void setup()
     setLEDColor(255, 0, 0, 2); // Initial state: Red
 #endif
 
-#if (defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32S3) && !defined(CONFIG_RUN_UNIT_TESTS))
+#if ((defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32S3)) && !defined(CONFIG_RUN_UNIT_TESTS))
     initializeUsbCdc();
 #endif
     initializeSystemComponents();
@@ -908,7 +908,7 @@ void setup()
     // Register callbacks to signal the correct semaphores
     radioSerial.setOnFrameCallback([]() { xSemaphoreGive(g_radioMessageReadySem); });
     displaySerial.setOnFrameCallback([]() { xSemaphoreGive(g_displayMessageReadySem); });
-#if (defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32S3) && !defined(CONFIG_RUN_UNIT_TESTS))
+#if ((defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32S3)) && !defined(CONFIG_RUN_UNIT_TESTS))
     UsbCdc::setRxCallback(
         [](const uint8_t instance)
         {
@@ -943,7 +943,7 @@ void setup()
     // Load EX menu cache from NVS - populates ExtendedMenuState before any client connects
     nvsManager.loadExtendedMenu();
 
-#if (defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32S3) && !defined(CONFIG_RUN_UNIT_TESTS))
+#if ((defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32S3)) && !defined(CONFIG_RUN_UNIT_TESTS))
     ESP_LOGI(TAG, "Waiting for CDC connection...");
     vTaskDelay(pdMS_TO_TICKS(3000));
     usbSerial.sendMessage("USB CDC Interface Ready");

@@ -155,11 +155,13 @@ int TcpCatBridge::acceptClient() {
         return -1;
     }
 
+    RtosLockGuard<RtosMutex> lock(clientsMutex_);
+
     // Single client enforcement: close existing client before accepting new one
     for (int i = 0; i < MAX_CLIENTS; ++i) {
         if (clients_[i].connected) {
             ESP_LOGI(TAG, "Closing existing client %d to accept new connection on bridge %d", i, bridgeId_);
-            closeClient(i);
+            closeClientLocked(i);
             break;  // Only one client can be connected at a time
         }
     }
@@ -191,23 +193,36 @@ int TcpCatBridge::acceptClient() {
 }
 
 void TcpCatBridge::handleClientData(int clientIdx) {
-    ClientState& client = clients_[clientIdx];
+    int sock;
+    {
+        RtosLockGuard<RtosMutex> lock(clientsMutex_);
+        if (clientIdx < 0 || clientIdx >= MAX_CLIENTS || !clients_[clientIdx].connected) {
+            return;
+        }
+        sock = clients_[clientIdx].socket;
+    }
 
-    ssize_t received = recv(client.socket, client.rxBuffer, BUFFER_SIZE, 0);
+    // recv() outside lock — safe because only bridgeTask reads from client sockets
+    uint8_t rxBuf[BUFFER_SIZE];
+    ssize_t received = recv(sock, rxBuf, BUFFER_SIZE, 0);
 
     if (received > 0) {
-        client.bytesRx += static_cast<uint64_t>(received);
+        {
+            RtosLockGuard<RtosMutex> lock(clientsMutex_);
+            clients_[clientIdx].bytesRx += static_cast<uint64_t>(received);
+        }
         bytesReceived_.fetch_add(static_cast<uint64_t>(received));
 
         ESP_LOGV(TAG, "Bridge %d received %d bytes from client %d", bridgeId_, (int)received, clientIdx);
 
         // Process input and invoke frame callback for complete CAT commands
-        processClientInput(clientIdx, client.rxBuffer, static_cast<size_t>(received));
+        processClientInput(clientIdx, rxBuf, static_cast<size_t>(received));
     } else if (received == 0) {
         // Client disconnected gracefully
+        RtosLockGuard<RtosMutex> lock(clientsMutex_);
         ESP_LOGI(TAG, "Client %d disconnected from bridge %d (RX=%llu, TX=%llu)",
-                 clientIdx, bridgeId_, client.bytesRx, client.bytesTx);
-        closeClient(clientIdx);
+                 clientIdx, bridgeId_, clients_[clientIdx].bytesRx, clients_[clientIdx].bytesTx);
+        closeClientLocked(clientIdx);
     } else {
         // Error
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
@@ -222,12 +237,17 @@ void TcpCatBridge::processClientInput(int clientIdx, const uint8_t* data, size_t
         return;
     }
 
-    ClientState& client = clients_[clientIdx];
-
     std::function<void(std::string_view)> frameCallback;
     {
         RtosLockGuard<RtosMutex> lock(callbackMutex_);
         frameCallback = incomingFrameCallback_;
+    }
+
+    // Process input under clients lock (protects pendingBuffer/pendingLen)
+    RtosLockGuard<RtosMutex> lock(clientsMutex_);
+    ClientState& client = clients_[clientIdx];
+    if (!client.connected) {
+        return;
     }
 
     for (size_t i = 0; i < length; ++i) {
@@ -285,19 +305,33 @@ void TcpCatBridge::sendToActiveClient(std::string_view message) {
         return;
     }
 
+    RtosLockGuard<RtosMutex> lock(clientsMutex_);
+
     // Send to the first connected client (single client enforcement ensures only one exists)
     for (int i = 0; i < MAX_CLIENTS; ++i) {
         if (clients_[i].connected) {
             ESP_LOGV(TAG, "Bridge %d TX to client %d: %.*s", bridgeId_, i,
                      (int)message.size(), message.data());
-            ssize_t sent = send(clients_[i].socket, message.data(), message.size(), 0);
 
-            if (sent > 0) {
-                clients_[i].bytesTx += static_cast<uint64_t>(sent);
-                bytesSent_.fetch_add(static_cast<uint64_t>(sent));
-            } else if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                ESP_LOGW(TAG, "Client %d send error: errno %d", i, errno);
-                closeClient(i);
+            const char* ptr = message.data();
+            size_t remaining = message.size();
+            while (remaining > 0) {
+                ssize_t sent = send(clients_[i].socket, ptr, remaining, 0);
+                if (sent > 0) {
+                    clients_[i].bytesTx += static_cast<uint64_t>(sent);
+                    bytesSent_.fetch_add(static_cast<uint64_t>(sent));
+                    ptr += sent;
+                    remaining -= static_cast<size_t>(sent);
+                } else if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                    ESP_LOGW(TAG, "Client %d send error: errno %d", i, errno);
+                    closeClient(i);
+                    return;
+                } else {
+                    // EAGAIN/EWOULDBLOCK on non-blocking socket - drop remaining bytes
+                    // rather than blocking the caller (CAT frames are small, this is rare)
+                    ESP_LOGD(TAG, "Client %d send would block, %zu bytes unsent", i, remaining);
+                    break;
+                }
             }
             return;  // Single client only - done after first send attempt
         }
@@ -308,7 +342,7 @@ void TcpCatBridge::sendToActiveClient(std::string_view message) {
              bridgeId_, static_cast<int>(message.size()), message.data());
 }
 
-void TcpCatBridge::closeClient(int clientIdx) {
+void TcpCatBridge::closeClientLocked(int clientIdx) {
     if (clientIdx < 0 || clientIdx >= MAX_CLIENTS) {
         return;
     }
@@ -328,9 +362,15 @@ void TcpCatBridge::closeClient(int clientIdx) {
     clientCount_.fetch_sub(1);
 }
 
+void TcpCatBridge::closeClient(int clientIdx) {
+    RtosLockGuard<RtosMutex> lock(clientsMutex_);
+    closeClientLocked(clientIdx);
+}
+
 void TcpCatBridge::closeAllClients() {
+    RtosLockGuard<RtosMutex> lock(clientsMutex_);
     for (int i = 0; i < MAX_CLIENTS; ++i) {
-        closeClient(i);
+        closeClientLocked(i);
     }
 }
 
@@ -363,13 +403,19 @@ void TcpCatBridge::bridgeTask(void* arg) {
         int maxfd = bridge->serverSocket_;
         FD_SET(bridge->serverSocket_, &readfds);
 
-        // Add client sockets to set
-        for (int i = 0; i < MAX_CLIENTS; ++i) {
-            if (bridge->clients_[i].connected) {
-                int sock = bridge->clients_[i].socket;
-                FD_SET(sock, &readfds);
-                if (sock > maxfd) {
-                    maxfd = sock;
+        // Snapshot client sockets under lock for select() fd_set setup
+        int clientSockets[MAX_CLIENTS];
+        {
+            RtosLockGuard<RtosMutex> lock(bridge->clientsMutex_);
+            for (int i = 0; i < MAX_CLIENTS; ++i) {
+                if (bridge->clients_[i].connected) {
+                    clientSockets[i] = bridge->clients_[i].socket;
+                    FD_SET(clientSockets[i], &readfds);
+                    if (clientSockets[i] > maxfd) {
+                        maxfd = clientSockets[i];
+                    }
+                } else {
+                    clientSockets[i] = -1;
                 }
             }
         }
@@ -378,7 +424,7 @@ void TcpCatBridge::bridgeTask(void* arg) {
         timeout.tv_sec = 0;
         timeout.tv_usec = SELECT_TIMEOUT_MS * 1000;
 
-        // Wait for activity
+        // Wait for activity (outside lock - this blocks)
         int activity = select(maxfd + 1, &readfds, nullptr, nullptr, &timeout);
 
         if (activity < 0) {
@@ -396,8 +442,7 @@ void TcpCatBridge::bridgeTask(void* arg) {
 
         // Check for client data
         for (int i = 0; i < MAX_CLIENTS; ++i) {
-            if (bridge->clients_[i].connected &&
-                FD_ISSET(bridge->clients_[i].socket, &readfds)) {
+            if (clientSockets[i] >= 0 && FD_ISSET(clientSockets[i], &readfds)) {
                 bridge->handleClientData(i);
             }
         }
