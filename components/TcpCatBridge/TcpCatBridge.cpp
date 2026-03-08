@@ -243,79 +243,73 @@ void TcpCatBridge::processClientInput(int clientIdx, const uint8_t* data, size_t
         frameCallback = incomingFrameCallback_;
     }
 
-    // Collect complete frames under clientsMutex_, then dispatch AFTER releasing it.
-    // This prevents ABBA deadlock: clientsMutex_ → dispatchMutex_ (here) vs
-    // dispatchMutex_ → clientsMutex_ (radio_task routing responses to TCP).
-    static constexpr size_t MAX_FRAMES_PER_BATCH = 16;
+    // Process one frame at a time: lock → extract one complete frame → unlock → dispatch.
+    // This prevents ABBA deadlock (clientsMutex_ → dispatchMutex_ vs reverse order)
+    // while keeping stack usage minimal (~128 bytes vs ~2KB+ for batching).
     static constexpr size_t MAX_FRAME_LEN = 128; // CAT commands are <=64 bytes; generous limit
-    struct FrameCopy {
-        char data[MAX_FRAME_LEN];
-        size_t len;
-    };
-    FrameCopy frameBatch[MAX_FRAMES_PER_BATCH];
-    size_t frameCount = 0;
+    char frameData[MAX_FRAME_LEN];
+    size_t inputPos = 0;
 
-    {
-        RtosLockGuard<RtosMutex> lock(clientsMutex_);
-        ClientState& client = clients_[clientIdx];
-        if (!client.connected) {
-            return;
-        }
+    while (inputPos < length) {
+        size_t frameLen = 0;
+        bool gotFrame = false;
 
-        for (size_t i = 0; i < length; ++i) {
-            const unsigned char ch = data[i];
-
-            // Strip all control characters except ';' (matches USB CDC sanitization)
-            if (isControlChar(ch)) {
-                continue;
+        {
+            RtosLockGuard<RtosMutex> lock(clientsMutex_);
+            ClientState& client = clients_[clientIdx];
+            if (!client.connected) {
+                return;
             }
 
-            // Handle buffer overflow: drop oldest data, keep newest (matches USB CDC behavior)
-            if (client.pendingLen >= COMMAND_BUFFER_SIZE) {
-                // Find the start of the most recent partial command (after last ';')
-                size_t lastDelim = 0;
-                for (size_t j = 0; j < client.pendingLen; ++j) {
-                    if (client.pendingBuffer[j] == ';') {
-                        lastDelim = j + 1;
+            while (inputPos < length) {
+                const unsigned char ch = data[inputPos++];
+
+                // Strip all control characters except ';' (matches USB CDC sanitization)
+                if (isControlChar(ch)) {
+                    continue;
+                }
+
+                // Handle buffer overflow: drop oldest data, keep newest (matches USB CDC behavior)
+                if (client.pendingLen >= COMMAND_BUFFER_SIZE) {
+                    size_t lastDelim = 0;
+                    for (size_t j = 0; j < client.pendingLen; ++j) {
+                        if (client.pendingBuffer[j] == ';') {
+                            lastDelim = j + 1;
+                        }
+                    }
+
+                    if (lastDelim > 0 && lastDelim < client.pendingLen) {
+                        const size_t keep = client.pendingLen - lastDelim;
+                        memmove(client.pendingBuffer.data(), client.pendingBuffer.data() + lastDelim, keep);
+                        client.pendingLen = keep;
+                        ESP_LOGW(TAG, "Client %d buffer overflow: dropped %zu bytes, kept %zu",
+                                 clientIdx, lastDelim, keep);
+                    } else {
+                        const size_t drop = COMMAND_BUFFER_SIZE / 2;
+                        const size_t keep = client.pendingLen - drop;
+                        memmove(client.pendingBuffer.data(), client.pendingBuffer.data() + drop, keep);
+                        client.pendingLen = keep;
+                        ESP_LOGW(TAG, "Client %d buffer overflow: dropped %zu bytes, kept %zu",
+                                 clientIdx, drop, keep);
                     }
                 }
 
-                if (lastDelim > 0 && lastDelim < client.pendingLen) {
-                    const size_t keep = client.pendingLen - lastDelim;
-                    memmove(client.pendingBuffer.data(), client.pendingBuffer.data() + lastDelim, keep);
-                    client.pendingLen = keep;
-                    ESP_LOGW(TAG, "Client %d buffer overflow: dropped %zu bytes, kept %zu",
-                             clientIdx, lastDelim, keep);
-                } else {
-                    const size_t drop = COMMAND_BUFFER_SIZE / 2;
-                    const size_t keep = client.pendingLen - drop;
-                    memmove(client.pendingBuffer.data(), client.pendingBuffer.data() + drop, keep);
-                    client.pendingLen = keep;
-                    ESP_LOGW(TAG, "Client %d buffer overflow: dropped %zu bytes, kept %zu",
-                             clientIdx, drop, keep);
-                }
-            }
+                client.pendingBuffer[client.pendingLen++] = static_cast<char>(ch);
 
-            client.pendingBuffer[client.pendingLen++] = static_cast<char>(ch);
-
-            if (ch == ';') {
-                if (client.pendingLen > 0 && frameCount < MAX_FRAMES_PER_BATCH) {
+                if (ch == ';') {
                     const size_t copyLen = std::min(client.pendingLen, MAX_FRAME_LEN);
-                    memcpy(frameBatch[frameCount].data, client.pendingBuffer.data(), copyLen);
-                    frameBatch[frameCount].len = copyLen;
-                    frameCount++;
-                } else if (frameCount >= MAX_FRAMES_PER_BATCH) {
-                    ESP_LOGW(TAG, "Client %d frame batch full (%zu), dropping frame", clientIdx, MAX_FRAMES_PER_BATCH);
+                    memcpy(frameData, client.pendingBuffer.data(), copyLen);
+                    frameLen = copyLen;
+                    client.pendingLen = 0;
+                    gotFrame = true;
+                    break; // Exit inner loop to dispatch this frame
                 }
-                client.pendingLen = 0;
             }
-        }
-    } // clientsMutex_ released here
+        } // clientsMutex_ released here
 
-    // Dispatch collected frames WITHOUT holding clientsMutex_
-    if (frameCallback) {
-        for (size_t i = 0; i < frameCount; ++i) {
-            std::string_view frame(frameBatch[i].data, frameBatch[i].len);
+        // Dispatch WITHOUT holding clientsMutex_
+        if (gotFrame && frameCallback) {
+            std::string_view frame(frameData, frameLen);
             ESP_LOGV(TAG, "Bridge %d RX from client %d: %.*s", bridgeId_, clientIdx,
                      (int)frame.size(), frame.data());
             frameCallback(frame);
