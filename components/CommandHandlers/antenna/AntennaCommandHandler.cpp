@@ -174,16 +174,21 @@ bool AntennaCommandHandler::handleAN(const RadioCommand& command,
 
 AntennaCommandHandler::ACParams AntennaCommandHandler::parseACParams(const RadioCommand& command) const {
     ACParams result = {0, 0, 0, false};
-    
-    if (command.params.empty()) {
+
+    if (command.paramsEmpty()) {
         return result;
     }
-    
+
     std::string paramStr;
-    if (std::holds_alternative<std::string>(command.params[0])) {
-        paramStr = std::get<std::string>(command.params[0]);
-    } else if (std::holds_alternative<int>(command.params[0])) {
-        paramStr = std::to_string(std::get<int>(command.params[0]));
+    if (command.paramCount > 0) {
+        const auto &p = command.inlineParams[0];
+        if (p.isString()) {
+            paramStr = p.asString();
+        } else if (p.isInt()) {
+            paramStr = std::to_string(p.asInt());
+        } else {
+            return result;
+        }
     } else {
         return result;
     }
@@ -215,16 +220,21 @@ AntennaCommandHandler::ACParams AntennaCommandHandler::parseACParams(const Radio
 
 AntennaCommandHandler::ANParams AntennaCommandHandler::parseANParams(const RadioCommand& command) const {
     ANParams result = {1, 0, 0, false};
-    
-    if (command.params.empty()) {
+
+    if (command.paramsEmpty()) {
         return result;
     }
-    
+
     std::string paramStr;
-    if (std::holds_alternative<std::string>(command.params[0])) {
-        paramStr = std::get<std::string>(command.params[0]);
-    } else if (std::holds_alternative<int>(command.params[0])) {
-        paramStr = std::to_string(std::get<int>(command.params[0]));
+    if (command.paramCount > 0) {
+        const auto &p = command.inlineParams[0];
+        if (p.isString()) {
+            paramStr = p.asString();
+        } else if (p.isInt()) {
+            paramStr = std::to_string(p.asInt());
+        } else {
+            return result;
+        }
     } else {
         return result;
     }

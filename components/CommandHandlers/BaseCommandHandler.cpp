@@ -321,50 +321,79 @@ namespace radio {
     }
 
     int BaseCommandHandler::getIntParam(const RadioCommand &command, size_t index, int defaultValue) const {
-        if (index >= command.params.size()) [[unlikely]] {
+        // Read from SSO inline params first, then overflow
+        if (index < command.paramCount && index < RadioCommand::INLINE_PARAM_CAPACITY) {
+            const auto &p = command.inlineParams[index];
+            if (p.isInt()) {
+                return p.asInt();
+            }
+            if (p.isString()) {
+                int result = 0;
+                const auto sv = p.asStringView();
+                const auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), result);
+                if (ec == std::errc{} && ptr == sv.data() + sv.size()) [[likely]] {
+                    return result;
+                }
+                ESP_LOGW(BaseCommandHandler::TAG, "Failed to parse int parameter %zu: invalid format", index);
+                return defaultValue;
+            }
             return defaultValue;
         }
 
-        // Use std::visit for cleaner variant handling
-        return std::visit([this, index, defaultValue]<typename T0>(const T0 &value) -> int {
-            using T = std::decay_t<T0>;
-
-            if constexpr (std::is_same_v<T, int>) {
-                return value;
-            } else if constexpr (std::is_same_v<T, std::string>) {
-                int result = 0;
-                const auto [ptr, ec] = std::from_chars(value.data(), value.data() + value.size(), result);
-
-                if (ec == std::errc{} && ptr == value.data() + value.size()) [[likely]] {
-                    return result;
+        // Check overflow params
+        const size_t overflowIndex = index - command.paramCount;
+        if (index >= command.paramCount && overflowIndex < command.overflowParams.size()) {
+            return std::visit([this, index, defaultValue]<typename T0>(const T0 &value) -> int {
+                using T = std::decay_t<T0>;
+                if constexpr (std::is_same_v<T, int>) {
+                    return value;
+                } else if constexpr (std::is_same_v<T, std::string>) {
+                    int result = 0;
+                    const auto [ptr, ec] = std::from_chars(value.data(), value.data() + value.size(), result);
+                    if (ec == std::errc{} && ptr == value.data() + value.size()) [[likely]] {
+                        return result;
+                    }
+                    ESP_LOGW(BaseCommandHandler::TAG, "Failed to parse int parameter %zu: invalid format", index);
+                    return defaultValue;
+                } else {
+                    return defaultValue;
                 }
+            }, command.overflowParams[overflowIndex]);
+        }
 
-                ESP_LOGW(BaseCommandHandler::TAG, "Failed to parse int parameter %zu: invalid format", index);
-                return defaultValue;
-            } else {
-                return defaultValue;
-            }
-        }, command.params[index]);
+        return defaultValue;
     }
 
     std::string BaseCommandHandler::getStringParam(const RadioCommand &command, const size_t index,
                                                    std::string_view defaultValue) {
-        if (index >= command.params.size()) [[unlikely]] {
+        // Read from SSO inline params first, then overflow
+        if (index < command.paramCount && index < RadioCommand::INLINE_PARAM_CAPACITY) {
+            const auto &p = command.inlineParams[index];
+            if (p.isString()) {
+                return p.asString();
+            }
+            if (p.isInt()) {
+                return std::to_string(p.asInt());
+            }
             return std::string{defaultValue};
         }
 
-        // Use std::visit for cleaner variant handling
-        return std::visit([]<typename T0>(const T0 &value) -> std::string {
-            using T = std::decay_t<T0>;
+        // Check overflow params
+        const size_t overflowIndex = index - command.paramCount;
+        if (index >= command.paramCount && overflowIndex < command.overflowParams.size()) {
+            return std::visit([]<typename T0>(const T0 &value) -> std::string {
+                using T = std::decay_t<T0>;
+                if constexpr (std::is_same_v<T, std::string>) {
+                    return value;
+                } else if constexpr (std::is_same_v<T, int>) {
+                    return std::to_string(value);
+                } else {
+                    return std::string{};
+                }
+            }, command.overflowParams[overflowIndex]);
+        }
 
-            if constexpr (std::is_same_v<T, std::string>) {
-                return value;
-            } else if constexpr (std::is_same_v<T, int>) {
-                return std::to_string(value);
-            } else {
-                return std::string{};
-            }
-        }, command.params[index]);
+        return std::string{defaultValue};
     }
 
     bool BaseCommandHandler::isCacheFresh(const RadioManager &radioManager, std::string_view command,

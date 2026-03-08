@@ -26,159 +26,145 @@ namespace radio
     };
 
     /**
-     * @brief High-performance unified timestamp tracker for CAT commands
+     * @brief Compact timestamp tracker using open-addressed hash table
      *
-     * Uses string interning to map command strings to array indices for O(1)
-     * timestamp access. Replaces both CommandTimestamps and SentQueryTracker
-     * with a single, optimized implementation.
+     * 256-slot hash table with 16-bit verification tags for collision detection.
+     * With ~170 max entries (72 commands + up to 100 EX menus), load factor is
+     * ~66% giving average probe length of ~1.5 with linear probing.
+     *
+     * Memory: ~4 KB per instance vs ~18 KB for the old flat array.
      */
     class CommandTimestampTracker
     {
     private:
-        static constexpr size_t PRIMARY_BUCKET_SIZE = 48;
-        static constexpr size_t TIMESTAMP_TABLE_SIZE = PRIMARY_BUCKET_SIZE * PRIMARY_BUCKET_SIZE;
-        static size_t bucketIndex(char ch)
+        struct Slot
         {
-            if (ch >= 'A' && ch <= 'Z')
-            {
-                return static_cast<size_t>(ch - 'A');
-            }
-            if (ch >= '0' && ch <= '9')
-            {
-                return 26u + static_cast<size_t>(ch - '0');
-            }
-            if (ch >= 'a' && ch <= 'z')
-            {
-                return static_cast<size_t>(ch - 'a');
-            }
-            switch (ch)
-            {
-            case ';':
-                return 42u;
-            case '?':
-                return 43u;
-            case '!':
-                return 44u;
-            case '#':
-                return 45u;
-            default:
-                return 47u;
-            }
-        }
+            std::atomic<uint16_t> tag{0};       // verification hash (0 = empty)
+            std::atomic<uint64_t> timestamp{0}; // the cached timestamp
+        };
+
+        static constexpr size_t TABLE_SIZE = 256;
+        static constexpr size_t MAX_PROBES = 8;
 
         static size_t computeTableIndex(std::string_view command)
         {
             if (command.empty())
             {
-                return TIMESTAMP_TABLE_SIZE - 1;
+                return 0;
             }
-
-            const char first = command[0];
-            const size_t firstIdx = bucketIndex(first);
-
-            if (command.size() == 1)
+            size_t h = static_cast<unsigned char>(command[0]);
+            if (command.size() > 1)
             {
-                return (firstIdx * PRIMARY_BUCKET_SIZE) % TIMESTAMP_TABLE_SIZE;
+                h = h * 48 + static_cast<unsigned char>(command[1]);
             }
-
-            const char second = command[1];
-            const size_t secondIdx = bucketIndex(second);
-            size_t combined = (firstIdx * PRIMARY_BUCKET_SIZE) + secondIdx;
-
-            // For longer keys (EX056, VS0, etc.), incorporate up to 5 chars total
-            // This prevents collisions for EX menu commands and VS visual scan
             constexpr size_t MAX_HASH_CHARS = 5;
             const size_t hashLen = std::min(command.size(), MAX_HASH_CHARS);
             for (size_t i = 2; i < hashLen; ++i)
             {
-                combined = combined * 31 + bucketIndex(command[i]);
+                h = h * 31 + static_cast<unsigned char>(command[i]);
             }
-
-            return combined % TIMESTAMP_TABLE_SIZE;
+            return h % TABLE_SIZE;
         }
 
-        // Fast array-based timestamp storage shared for all CAT prefixes
-        mutable std::array<std::atomic<uint64_t>, TIMESTAMP_TABLE_SIZE> timestamps_{};
+        static uint16_t computeTag(std::string_view command)
+        {
+            // 16-bit verification tag using a different hash mix to reduce false matches
+            if (command.empty()) return 1; // never 0 (0 = empty slot)
+            uint32_t h = 0x811c9dc5u; // FNV-1a offset basis
+            for (char c : command)
+            {
+                h ^= static_cast<unsigned char>(c);
+                h *= 0x01000193u; // FNV-1a prime
+            }
+            uint16_t t = static_cast<uint16_t>(h ^ (h >> 16));
+            return t == 0 ? 1 : t; // ensure non-zero
+        }
+
+        mutable std::array<Slot, TABLE_SIZE> slots_{};
 
     public:
-        /**
-         * @brief Record timestamp for a command
-         * @param command CAT command prefix (e.g., "FA", "FB", "MD")
-         * @param timestamp Timestamp in microseconds (from esp_timer_get_time)
-         */
         void record(std::string_view command, const uint64_t timestamp) const
         {
-            const size_t id = computeTableIndex(command);
-            timestamps_[id].store(timestamp, std::memory_order_relaxed);
+            const size_t base = computeTableIndex(command);
+            const uint16_t t = computeTag(command);
+
+            for (size_t i = 0; i < MAX_PROBES; ++i)
+            {
+                auto &slot = slots_[(base + i) % TABLE_SIZE];
+                const uint16_t existing = slot.tag.load(std::memory_order_relaxed);
+                if (existing == t || existing == 0)
+                {
+                    slot.tag.store(t, std::memory_order_relaxed);
+                    slot.timestamp.store(timestamp, std::memory_order_relaxed);
+                    return;
+                }
+            }
+            // Table full in probe window — overwrite last probed slot
+            auto &slot = slots_[(base + MAX_PROBES - 1) % TABLE_SIZE];
+            slot.tag.store(t, std::memory_order_relaxed);
+            slot.timestamp.store(timestamp, std::memory_order_relaxed);
         }
 
-        /**
-         * @brief Get timestamp for a command
-         * @param command CAT command prefix
-         * @return Last update timestamp, or 0 if never updated
-         */
         uint64_t get(std::string_view command) const
         {
-            const size_t id = computeTableIndex(command);
-            return timestamps_[id].load(std::memory_order_relaxed);
+            const size_t base = computeTableIndex(command);
+            const uint16_t t = computeTag(command);
+
+            for (size_t i = 0; i < MAX_PROBES; ++i)
+            {
+                const auto &slot = slots_[(base + i) % TABLE_SIZE];
+                const uint16_t existing = slot.tag.load(std::memory_order_relaxed);
+                if (existing == t)
+                {
+                    return slot.timestamp.load(std::memory_order_relaxed);
+                }
+                if (existing == 0)
+                {
+                    return 0; // empty slot — not found
+                }
+            }
+            return 0;
         }
 
-        /**
-         * @brief Check if cached data for a command is fresh
-         * @param command CAT command prefix
-         * @param currentTime Current timestamp in microseconds
-         * @param ttlUs TTL in microseconds
-         * @return true if cache is fresh (within TTL)
-         */
         bool isFresh(std::string_view command, const uint64_t currentTime, const uint64_t ttlUs) const
         {
             const uint64_t lastUpdate = get(command);
             return lastUpdate > 0 && currentTime - lastUpdate < ttlUs;
         }
 
-        /**
-         * @brief Clear all cached timestamps
-         * Used primarily for testing to ensure clean cache state
-         */
         void clear() const
         {
-            for (auto &timestamp : timestamps_)
+            for (auto &slot : slots_)
             {
-                timestamp.store(0, std::memory_order_relaxed);
+                slot.tag.store(0, std::memory_order_relaxed);
+                slot.timestamp.store(0, std::memory_order_relaxed);
             }
         }
 
-        /**
-         * @brief Invalidate a specific command's cache entry
-         * Forces next query for this command to be forwarded to radio
-         * @param command CAT command prefix (e.g., "FA", "FB", "IF")
-         */
         void invalidate(std::string_view command) const
         {
-            const size_t id = computeTableIndex(command);
-            timestamps_[id].store(0, std::memory_order_relaxed);
+            const size_t base = computeTableIndex(command);
+            const uint16_t t = computeTag(command);
+
+            for (size_t i = 0; i < MAX_PROBES; ++i)
+            {
+                auto &slot = slots_[(base + i) % TABLE_SIZE];
+                const uint16_t existing = slot.tag.load(std::memory_order_relaxed);
+                if (existing == t)
+                {
+                    slot.timestamp.store(0, std::memory_order_relaxed);
+                    return;
+                }
+                if (existing == 0)
+                {
+                    return;
+                }
+            }
         }
 
-        // Compatibility methods for existing code
-
-        /**
-         * @brief Alias for record() - maintains CommandTimestamps API
-         */
         void update(std::string_view command, const uint64_t timestamp) const { record(command, timestamp); }
-
-        /**
-         * @brief Alias for record() - maintains SentQueryTracker API
-         */
         void recordQuery(std::string_view command, const uint64_t timestamp) const { record(command, timestamp); }
 
-        /**
-         * @brief Check if USB recently queried this command type
-         * Maintains SentQueryTracker API with 5s default TTL
-         * @param command CAT command prefix
-         * @param currentTime Current timestamp in microseconds
-         * @param ttlUs TTL in microseconds (default: 5 seconds)
-         * @return true if USB queried this command within TTL
-         */
         bool wasRecentlyQueried(std::string_view command, const uint64_t currentTime,
                                 const uint64_t ttlUs = 5000000) const
         {

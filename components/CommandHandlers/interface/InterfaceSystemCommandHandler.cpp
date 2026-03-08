@@ -492,7 +492,7 @@ namespace radio
                                                  ISerialChannel &usbSerial, RadioManager &rm)
     {
         // SR: Reset the transceiver
-        if (isSet(cmd) || cmd.params.empty())
+        if (isSet(cmd) || cmd.paramsEmpty())
         {
             ESP_LOGW(TAG, "Transceiver reset requested - this would normally reset the radio");
 

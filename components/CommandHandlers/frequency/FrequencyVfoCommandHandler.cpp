@@ -196,7 +196,7 @@ namespace radio
         if (isSet(cmd))
         {
             // FA[frequency]; - Set VFO A frequency
-            if (cmd.params.empty())
+            if (cmd.paramsEmpty())
             {
                 ESP_LOGW(TAG, "FA set cmd missing frequency parameter");
                 return false;
@@ -483,7 +483,7 @@ namespace radio
         if (isSet(cmd))
         {
             // FB[frequency]; - Set VFO B frequency
-            if (cmd.params.empty())
+            if (cmd.paramsEmpty())
             {
                 ESP_LOGW(TAG, "FB set command missing frequency parameter");
                 return false;
@@ -1873,7 +1873,7 @@ namespace radio
     uint64_t FrequencyVfoCommandHandler::parseFrequency(const RadioCommand &cmd, const size_t index,
                                                         const uint64_t defaultValue) const
     {
-        if (index >= cmd.params.size())
+        if (index >= cmd.paramSize())
         {
             return defaultValue;
         }

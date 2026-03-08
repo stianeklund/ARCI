@@ -190,14 +190,23 @@ bool ReceiverProcessingCommandHandler::handleIS(const RadioCommand& command,
     auto& state = radioManager.getState();
 
     std::string paramsStr;
-    if (!command.params.empty()) {
+    if (!command.paramsEmpty()) {
         std::ostringstream oss;
         oss << "[";
-        for (size_t i = 0; i < command.params.size(); ++i) {
+        for (size_t i = 0; i < command.paramSize(); ++i) {
             if (i > 0) oss << ", ";
-            std::visit([&oss](const auto& value) {
-                oss << value;
-            }, command.params[i]);
+            if (i < command.paramCount) {
+                const auto &p = command.inlineParams[i];
+                if (p.isInt()) oss << p.asInt();
+                else if (p.isString()) oss << p.asStringView();
+            } else {
+                const size_t oi = i - command.paramCount;
+                if (oi < command.overflowParams.size()) {
+                    std::visit([&oss](const auto& value) {
+                        oss << value;
+                    }, command.overflowParams[oi]);
+                }
+            }
         }
         oss << "]";
         paramsStr = oss.str();

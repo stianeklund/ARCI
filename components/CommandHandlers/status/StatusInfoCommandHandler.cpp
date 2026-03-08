@@ -298,7 +298,7 @@ bool StatusInfoCommandHandler::handleSM(const RadioCommand& command,
                  command.originalMessage.c_str(), (int)command.source);
 
         // Parse and store real S-meter value from radio (P2: 4-digit value 0000-9999)
-        if (command.params.size() >= 2) {
+        if (command.paramSize() >= 2) {
             std::string valueStr = getStringParam(command, 1, "");
             if (!valueStr.empty() && valueStr.length() <= 4) {
                 int smValue = std::stoi(valueStr);
@@ -396,7 +396,7 @@ bool StatusInfoCommandHandler::handleRM(const RadioCommand& command,
         auto &state = radioManager.getState();
 
         // Parse meter function (P1) and meter value (P2: 4-digit value 0000-9999)
-        if (command.params.size() >= 2) {
+        if (command.paramSize() >= 2) {
             int func = getIntParam(command, 0, -1);
             std::string valueStr = getStringParam(command, 1, "");
 
@@ -470,7 +470,7 @@ bool StatusInfoCommandHandler::handleIF(const RadioCommand& command,
     
     if (command.type == CommandType::Answer) {
         // Parse IF answer parameters and update state
-        if (command.params.size() >= 5) {
+        if (command.paramSize() >= 5) {
             auto &state = radioManager.getState();
 
             const int txRxState = getIntParam(command, 7, -1);  // P8: 0=RX, 1=TX
@@ -551,7 +551,7 @@ bool StatusInfoCommandHandler::handleIF(const RadioCommand& command,
         }
         
         // Process additional parameters if available (P6-P15)
-        if (command.params.size() >= 15) {
+        if (command.paramSize() >= 15) {
             auto& state = radioManager.getState();
             
             // P6+P7: Memory channel (P6=hundreds, P7=tens+ones)
@@ -966,7 +966,7 @@ bool StatusInfoCommandHandler::handleRI(const RadioCommand &command,
         routeAnswerResponse(command, response, usbSerial, radioManager);
 
         // Update state from RI answer
-        if (!command.params.empty()) {
+        if (!command.paramsEmpty()) {
             if (const std::string paramStr = getStringParam(command, 0, ""); paramStr.length() >= 11) {
                 if (const uint64_t frequency = std::stoull(paramStr.substr(0, 11)); frequency > 0) {
                     // Update RX frequency (which VFO depends on split state)

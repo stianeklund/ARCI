@@ -309,35 +309,36 @@ bool MemoryCommandHandler::handleSV(const RadioCommand& command,
 MemoryCommandHandler::MemoryChannel MemoryCommandHandler::parseMemoryChannel(const RadioCommand& command) const {
     MemoryChannel result = {0, false};
 
-    if (command.params.empty()) {
+    if (command.paramsEmpty()) {
         return result;
     }
-    
-    // Try to get integer from variant
-    if (std::holds_alternative<int>(command.params[0])) {
-        result.channel = std::get<int>(command.params[0]);
-        result.valid = true;
-        return result;
-    }
-    
-    // Try to parse from string
-    if (std::holds_alternative<std::string>(command.params[0])) {
-        const std::string& str = std::get<std::string>(command.params[0]);
 
-        // Channel numbers may be space-padded (e.g. " 00" for ch 0, " 05" for ch 5).
-        // Trim leading spaces and parse as integer.
-        std::string_view sv = str;
-        while (!sv.empty() && sv.front() == ' ') sv.remove_prefix(1);
-        if (!sv.empty()) {
-            int channel = 0;
-            auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), channel);
-            if (ec == std::errc{} && ptr == sv.data() + sv.size()) {
-                result.channel = channel;
-                result.valid = true;
+    // Read from inline params
+    if (command.paramCount > 0) {
+        const auto &p = command.inlineParams[0];
+        if (p.isInt()) {
+            result.channel = p.asInt();
+            result.valid = true;
+            return result;
+        }
+        if (p.isString()) {
+            const std::string str = p.asString();
+
+            // Channel numbers may be space-padded (e.g. " 00" for ch 0, " 05" for ch 5).
+            // Trim leading spaces and parse as integer.
+            std::string_view sv = str;
+            while (!sv.empty() && sv.front() == ' ') sv.remove_prefix(1);
+            if (!sv.empty()) {
+                int channel = 0;
+                auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), channel);
+                if (ec == std::errc{} && ptr == sv.data() + sv.size()) {
+                    result.channel = channel;
+                    result.valid = true;
+                }
             }
         }
     }
-    
+
     return result;
 }
 

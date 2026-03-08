@@ -299,7 +299,7 @@ namespace radio
         ESP_LOGI(TAG, "🔧 RX SET: Setting to RX mode (source: %s, cmd: %s)", sourceToString(command.source),
                  command.originalMessage.c_str());
 
-        if (isSet(command) || (command.isLocal() && command.params.empty()))
+        if (isSet(command) || (command.isLocal() && command.paramsEmpty()))
         {
             // Try to release TX ownership
             const uint64_t currentTime = esp_timer_get_time();
@@ -558,9 +558,9 @@ namespace radio
         if (isSet(command))
         {
             // PL set command expects 2 parameters: input level (3 digits) and output level (3 digits)
-            if (command.params.size() < 2)
+            if (command.paramSize() < 2)
             {
-                ESP_LOGW(TAG, "PL set command needs 2 parameters, got: %zu", command.params.size());
+                ESP_LOGW(TAG, "PL set command needs 2 parameters, got: %zu", command.paramSize());
                 return false;
             }
 

@@ -68,8 +68,8 @@ bool VoiceMessageCommandHandler::handleLM(const RadioCommand& command,
     
     if (isSet(command)) {
         // LM set command expects 2 parameters: target (P1) and control (P2)
-        if (command.params.size() < 2) {
-            ESP_LOGW(TAG, "LM set command needs 2 parameters, got: %zu", command.params.size());
+        if (command.paramSize() < 2) {
+            ESP_LOGW(TAG, "LM set command needs 2 parameters, got: %zu", command.paramSize());
             return false;
         }
 

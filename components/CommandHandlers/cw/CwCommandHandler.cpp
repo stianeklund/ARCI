@@ -159,15 +159,15 @@ bool CwCommandHandler::handleKY(const RadioCommand& command,
     // Format: KYP1P2P2P2...P2; where P1 is control, P2 is 24-character text field
     if (isSet(command)) {
         if (shouldSendToRadio(command)) {
-            if (command.params.empty()) {
+            if (command.paramsEmpty()) {
                 // Edge case: just "KY;" - not valid
                 ESP_LOGW(TAG, "KY set command missing parameters");
                 return false;
             }
-            
+
             // Check if this is a control command (single digit parameter)
             std::string firstParam = getStringParam(command, 0, "");
-            if (command.params.size() == 1 && firstParam.length() == 1 && std::isdigit(firstParam[0])) {
+            if (command.paramSize() == 1 && firstParam.length() == 1 && std::isdigit(firstParam[0])) {
                 // Set 2: KYP1; (control command, like stop)
                 std::string cmdStr = buildCommand("KY ", firstParam);
                 sendToRadio(radioSerial, cmdStr);
@@ -176,7 +176,7 @@ bool CwCommandHandler::handleKY(const RadioCommand& command,
                 // Set 1: KY<P1=space><P2...>; (text transmission)
                 // Combine all parameters as the text (P2)
                 std::string text;
-                for (size_t i = 0; i < command.params.size(); ++i) {
+                for (size_t i = 0; i < command.paramSize(); ++i) {
                     if (i > 0) text += " "; // Add space between parameters
                     text += getStringParam(command, i, "");
                 }
@@ -432,20 +432,20 @@ bool CwCommandHandler::handleCD(const RadioCommand& command,
     // Route to appropriate subcommand based on parameters
     
     // Analyze the command to determine which CD subcommand it represents
-    if (!command.params.empty()) {
+    if (!command.paramsEmpty()) {
         std::string firstParam = getStringParam(command, 0, "");
 
         // Build a subcommand with adjusted parameters so CD0/CD1/CD2 handlers
         // receive their expected single-parameter payloads at index 0.
         auto makeSubCommand = [&](char sub) {
             RadioCommand subCmd = command;
-            subCmd.params.clear();
+            subCmd.clearParams();
             // If there is a remainder after the selector, pass it as the single param
-            if (command.params.size() >= 2) {
+            if (command.paramSize() >= 2) {
                 // Use string form to preserve leading zeros (e.g., "015")
                 std::string rest = getStringParam(command, 1, "");
                 if (!rest.empty()) {
-                    subCmd.params.emplace_back(rest);
+                    subCmd.addParam(std::string_view(rest));
                 }
             }
             return subCmd;

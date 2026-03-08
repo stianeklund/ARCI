@@ -35,7 +35,7 @@ RadioCommand parseCommand(const std::string& cmd, const CommandType type, const 
         if (const size_t semicolonPos = cmd.find(';'); semicolonPos != std::string::npos && semicolonPos > 2) {
             if (const std::string paramStr = cmd.substr(2, semicolonPos - 2); !paramStr.empty()) {
                 // For EX commands and others, store the full parameter string
-                command.params.emplace_back(paramStr);
+                command.addParam(std::string_view(paramStr));
             }
         }
     }

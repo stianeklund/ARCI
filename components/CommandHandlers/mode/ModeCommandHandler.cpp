@@ -85,7 +85,7 @@ namespace radio
         if (isSet(command))
         {
             // MD[mode]; - Set operating mode
-            if (command.params.empty())
+            if (command.paramsEmpty())
             {
                 ESP_LOGW(ModeCommandHandler::TAG, "MD set command missing mode parameter");
                 return false;
@@ -129,7 +129,7 @@ namespace radio
         if (command.type == CommandType::Answer)
         {
             // This is a response from the radio - update our state
-            if (command.params.empty())
+            if (command.paramsEmpty())
             {
                 ESP_LOGW(ModeCommandHandler::TAG, "MD answer missing mode parameter");
                 return false;
@@ -171,7 +171,7 @@ namespace radio
         if (isSet(command))
         {
             // DA[mode]; - Set data mode
-            if (command.params.empty())
+            if (command.paramsEmpty())
             {
                 ESP_LOGW(ModeCommandHandler::TAG, "DA set command missing data mode parameter");
                 return false;
@@ -202,7 +202,7 @@ namespace radio
         if (command.type == CommandType::Answer)
         {
             // This is a response from the radio - update our state
-            if (command.params.empty())
+            if (command.paramsEmpty())
             {
                 ESP_LOGW(ModeCommandHandler::TAG, "DA answer missing data mode parameter");
                 return false;
@@ -249,7 +249,7 @@ namespace radio
         if (isSet(command))
         {
             // Update local state if a numeric parameter is provided
-            if (!command.params.empty())
+            if (!command.paramsEmpty())
             {
                 if (const int key = getIntParam(command, 0, -1); key >= 0)
                 {
@@ -265,7 +265,7 @@ namespace radio
             if (shouldSendToRadio(command))
             {
                 std::string cmdStr = buildCommand("MK");
-                if (!command.params.empty())
+                if (!command.paramsEmpty())
                 {
                     cmdStr = buildCommand("MK", getStringParam(command, 0));
                 }
@@ -278,7 +278,7 @@ namespace radio
         if (command.type == CommandType::Answer)
         {
             // Update state from radio response if we have a valid parameter
-            if (!command.params.empty())
+            if (!command.paramsEmpty())
             {
                 if (const int key = getIntParam(command, 0, -1); key >= 0)
                 {
@@ -293,7 +293,7 @@ namespace radio
             }
 
             std::string response = buildCommand("MK");
-            if (!command.params.empty())
+            if (!command.paramsEmpty())
             {
                 response = buildCommand("MK", getStringParam(command, 0));
             }
@@ -321,7 +321,7 @@ namespace radio
                     radioManager.getState().queryTracker.recordQuery("AS", esp_timer_get_time());
                 }
                 std::string cmdStr = buildCommand("AS");
-                if (!command.params.empty())
+                if (!command.paramsEmpty())
                 {
                     cmdStr = buildCommand("AS", getStringParam(command, 0));
                 }
@@ -333,12 +333,12 @@ namespace radio
         if (isSet(command))
         {
             // AS command with multi-parameter parsing
-            if (command.params.size() == 5)
+            if (command.paramSize() == 5)
             {
                 // SET command: AS<P1><P2P2><P3...><P4><P5>;
                 return handleASSet(command, radioSerial, usbSerial, radioManager);
             }
-            if (command.params.size() == 2)
+            if (command.paramSize() == 2)
             {
                 // QUERY command: AS<P1><P2P2>; - read format has params so parser classifies as Set.
                 // Forward to radio and record query so response gets forwarded in AI0 mode.
@@ -354,7 +354,7 @@ namespace radio
                 }
                 return true;
             }
-            ESP_LOGW(TAG, "AS command needs 2 (query) or 5 (set) parameters, got: %zu", command.params.size());
+            ESP_LOGW(TAG, "AS command needs 2 (query) or 5 (set) parameters, got: %zu", command.paramSize());
             return false;
         }
 
@@ -438,7 +438,7 @@ namespace radio
         if (isSet(command))
         {
             // BU requires a band parameter per specification (format: BUP1P1;)
-            if (command.params.empty())
+            if (command.paramsEmpty())
             {
                 ESP_LOGW(TAG, "BU command requires band parameter per TS-590SG specification");
                 return false;
@@ -477,7 +477,7 @@ namespace radio
         if (isSet(command))
         {
             // BD requires a band parameter per specification (format: BDP1P1;)
-            if (command.params.empty())
+            if (command.paramsEmpty())
             {
                 ESP_LOGW(TAG, "BD command requires band parameter per TS-590SG specification");
                 return false;

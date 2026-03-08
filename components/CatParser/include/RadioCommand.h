@@ -92,10 +92,6 @@ struct RadioCommand {
     std::string originalMessage; // Original message as received (e.g., "FA;" or "FA00014150000;")
     bool bypassCache = false;   // Flag to bypass TTL caching for button-initiated commands
 
-    // Legacy params field for backward compatibility - publicly accessible
-    // NOTE: Prefer addParam()/getParamFast() in new code to avoid heap allocations
-    // addParam() populates both inlineParams and params for backward compatibility
-    std::vector<std::variant<int, std::string>> params{};
 
 public:
 
@@ -104,8 +100,16 @@ public:
         return static_cast<size_t>(paramCount) + overflowParams.size();
     }
 
+    [[nodiscard]] size_t paramSize() const {
+        return static_cast<size_t>(paramCount) + overflowParams.size();
+    }
+
     [[nodiscard]] bool hasParams() const {
         return paramCount > 0 || !overflowParams.empty();
+    }
+
+    [[nodiscard]] bool paramsEmpty() const {
+        return paramCount == 0 && overflowParams.empty();
     }
 
     // Zero-allocation parameter access
@@ -122,8 +126,6 @@ public:
         } else {
             overflowParams.emplace_back(value);
         }
-        // Also populate legacy params vector for backward compatibility
-        params.emplace_back(value);
     }
 
     void addParam(std::string_view value) {
@@ -132,14 +134,11 @@ public:
         } else {
             overflowParams.emplace_back(std::string(value));
         }
-        // Also populate legacy params vector for backward compatibility
-        params.emplace_back(std::string(value));
     }
 
     void clearParams() {
         paramCount = 0;
         overflowParams.clear();
-        params.clear();
     }
 
     // Constructors
@@ -250,27 +249,27 @@ public:
      */
     [[nodiscard]] std::string describe() const {
         std::string desc;
-        switch (source) {
-            case CommandSource::UsbCdc0: desc = "UsbCdc0 "; break;
-            case CommandSource::UsbCdc1: desc = "UsbCdc1 "; break;
-            case CommandSource::Tcp0: desc = "Tcp0 "; break;
-            case CommandSource::Tcp1: desc = "Tcp1 "; break;
-            case CommandSource::Display: desc = "Display "; break;
-            case CommandSource::Panel: desc = "Panel "; break;
-            case CommandSource::Remote: desc = "Remote "; break;
-            case CommandSource::Macro: desc = "Macro "; break;
-        }
+        desc += sourceName(source);
+        desc += " ";
         desc += (type == CommandType::Set ? "Set" :
                 type == CommandType::Read ? "Read" : "Answer");
         desc += " " + command;
-        if (!params.empty()) {
+        const size_t total = paramSize();
+        if (total > 0) {
             desc += "(";
-            for (size_t i = 0; i < params.size(); ++i) {
+            for (size_t i = 0; i < total; ++i) {
                 if (i > 0) desc += ",";
-                if (std::holds_alternative<int>(params[i])) {
-                    desc += std::to_string(std::get<int>(params[i]));
+                if (i < paramCount) {
+                    const auto &p = inlineParams[i];
+                    if (p.isInt()) desc += std::to_string(p.asInt());
+                    else if (p.isString()) desc += p.asString();
                 } else {
-                    desc += std::get<std::string>(params[i]);
+                    const auto &v = overflowParams[i - paramCount];
+                    if (std::holds_alternative<int>(v)) {
+                        desc += std::to_string(std::get<int>(v));
+                    } else {
+                        desc += std::get<std::string>(v);
+                    }
                 }
             }
             desc += ")";
