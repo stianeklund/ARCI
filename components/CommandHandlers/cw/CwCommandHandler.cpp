@@ -44,8 +44,9 @@ bool CwCommandHandler::handleKS(const RadioCommand& command,
     // KS: Keying speed
     if (isQuery(command)) {
         if (command.isCatClient()) {
-            // Return default CW speed
-            const auto response = buildCommand("KS", "020");
+            // Return current CW speed from state
+            const int speed = radioManager.getState().keyingSpeed;
+            const auto response = formatResponse3D("KS", speed);
             respondToSource(command, response, usbSerial, radioManager);
         } else if (shouldSendToRadio(command)) {
             // Forward query to radio
@@ -65,8 +66,7 @@ bool CwCommandHandler::handleKS(const RadioCommand& command,
         radioManager.getState().keyingSpeed = speed;
         
         if (shouldSendToRadio(command)) {
-            const auto cmdStr = buildCommand("KS", std::to_string(speed));
-            sendToRadio(radioSerial, cmdStr);
+            sendToRadio(radioSerial, formatResponse3D("KS", speed));
         }
         
         ESP_LOGD(TAG, "Set CW keying speed to %d WPM", speed);
@@ -80,8 +80,7 @@ bool CwCommandHandler::handleKS(const RadioCommand& command,
             radioManager.getState().keyingSpeed = speed;
             
             // Use unified routing for KS answers
-            const auto response = buildCommand("KS", std::to_string(speed));
-            routeAnswerResponse(command, response, usbSerial, radioManager);
+            routeAnswerResponse(command, formatResponse3D("KS", speed), usbSerial, radioManager);
         }
         return true;
     }
