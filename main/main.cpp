@@ -702,13 +702,42 @@ void initializeUsbCdc()
         }
 #endif
 
-        // Display latency profiler - log summary every 10 seconds
+        // Display latency profiler + queue health - log summary every 10 seconds
         {
             const uint64_t nowUs = esp_timer_get_time();
             constexpr uint64_t PROFILER_INTERVAL_US = 10000000; // 10 seconds
             if (nowUs - lastProfilerLogUs >= PROFILER_INTERVAL_US)
             {
                 radio::DisplayLatencyProfiler::instance().logAndReset();
+
+                // Radio serial queue health
+                const auto rq = radioSerial.resetQueueStats();
+                if (rq.dequeued > 0 || rq.expired > 0 || rq.overflowDrops > 0)
+                {
+                    ESP_LOGI(TAG, "RadioQ: depth=%u hw=%u deq=%lu age(avg=%llu max=%llu us) expired=%lu dropped=%lu",
+                             static_cast<unsigned>(rq.currentDepth),
+                             static_cast<unsigned>(rq.highWatermark),
+                             static_cast<unsigned long>(rq.dequeued),
+                             static_cast<unsigned long long>(rq.avgAgeUs),
+                             static_cast<unsigned long long>(rq.maxAgeUs),
+                             static_cast<unsigned long>(rq.expired),
+                             static_cast<unsigned long>(rq.overflowDrops));
+                }
+
+                // Display serial queue health
+                const auto dq = displaySerial.resetQueueStats();
+                if (dq.dequeued > 0 || dq.expired > 0 || dq.overflowDrops > 0)
+                {
+                    ESP_LOGI(TAG, "DispQ: depth=%u hw=%u deq=%lu age(avg=%llu max=%llu us) expired=%lu dropped=%lu",
+                             static_cast<unsigned>(dq.currentDepth),
+                             static_cast<unsigned>(dq.highWatermark),
+                             static_cast<unsigned long>(dq.dequeued),
+                             static_cast<unsigned long long>(dq.avgAgeUs),
+                             static_cast<unsigned long long>(dq.maxAgeUs),
+                             static_cast<unsigned long>(dq.expired),
+                             static_cast<unsigned long>(dq.overflowDrops));
+                }
+
                 lastProfilerLogUs = nowUs;
             }
         }

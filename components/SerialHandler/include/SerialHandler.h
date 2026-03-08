@@ -70,4 +70,46 @@ private:
     // Debug tracking for last frame sent (used for correlating radio errors)
     std::string lastSentFrame_;
     std::atomic<uint64_t> lastSentTimestampUs_{0};
+
+    // --- Queue health diagnostics (atomic, zero overhead in hot path) ---
+    std::atomic<uint32_t> queueHighWatermark_{0};  // Max queue depth seen
+    std::atomic<uint32_t> totalExpired_{0};         // Messages dropped due to age
+    std::atomic<uint32_t> totalOverflowDrops_{0};   // Messages dropped due to full queue
+    std::atomic<uint64_t> maxDequeueAgeUs_{0};      // Worst-case message age at dequeue
+    std::atomic<uint64_t> totalDequeueAgeUs_{0};    // Sum of all dequeue ages (for average)
+    std::atomic<uint32_t> totalDequeued_{0};         // Count of dequeued messages
+
+public:
+    /// Snapshot of queue health counters (call periodically, e.g., every 10s)
+    struct QueueStats {
+        uint32_t highWatermark;
+        uint32_t expired;
+        uint32_t overflowDrops;
+        size_t   currentDepth;
+        uint64_t maxAgeUs;       // Worst-case message age at dequeue (µs)
+        uint64_t avgAgeUs;       // Average message age at dequeue (µs)
+        uint32_t dequeued;       // Total messages dequeued in period
+    };
+    QueueStats resetQueueStats();
+
+    /// Current queue depth (lock-free read of atomic)
+    size_t getQueueDepth() const {
+        portENTER_CRITICAL(&m_queueSpinlock);
+        const size_t d = m_count;
+        portEXIT_CRITICAL(&m_queueSpinlock);
+        return d;
+    }
+
+    /// Message age (µs) of the head slot, or 0 if empty.
+    /// Useful for checking how stale the oldest pending message is.
+    int64_t peekHeadAgeUs() const {
+        portENTER_CRITICAL(&m_queueSpinlock);
+        if (m_count == 0) {
+            portEXIT_CRITICAL(&m_queueSpinlock);
+            return 0;
+        }
+        const int64_t age = esp_timer_get_time() - m_queue[m_head].timestamp;
+        portEXIT_CRITICAL(&m_queueSpinlock);
+        return age;
+    }
 };

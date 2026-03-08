@@ -191,7 +191,7 @@ std::pair<esp_err_t, std::string_view> SerialHandler::getMessageView() {
     }
 
     auto &[data, len, timestamp] = m_queue[m_head];
-    (void)timestamp;  // Unused in this function
+    const int64_t msgAge = esp_timer_get_time() - timestamp;
     std::string_view view{data, len};
 
     // CAT protocol sanitization moved to CatParser layer (see ParserUtils::sanitizeFrame)
@@ -202,7 +202,18 @@ std::pair<esp_err_t, std::string_view> SerialHandler::getMessageView() {
     const size_t remainingCount = m_count;
     portEXIT_CRITICAL(&m_queueSpinlock);
 
-    ESP_LOGV(TAG, "UART %d: Returning queued message view (len=%zu, q=%zu)", m_uart_num, view.length(), remainingCount);
+    // Track worst-case message age (lock-free, relaxed)
+    if (msgAge > 0) {
+        const auto ageUs = static_cast<uint64_t>(msgAge);
+        uint64_t prevMax = maxDequeueAgeUs_.load(std::memory_order_relaxed);
+        while (ageUs > prevMax &&
+               !maxDequeueAgeUs_.compare_exchange_weak(prevMax, ageUs, std::memory_order_relaxed)) {
+        }
+        totalDequeueAgeUs_.fetch_add(ageUs, std::memory_order_relaxed);
+        totalDequeued_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    ESP_LOGV(TAG, "UART %d: Returning queued message view (len=%zu, q=%zu, age=%lldus)", m_uart_num, view.length(), remainingCount, (long long)msgAge);
 
     return {ESP_OK, view};
 }
@@ -633,6 +644,7 @@ void SerialHandler::processReceivedData(const uint8_t *data, const size_t len) {
                 m_head = (m_head + 1) % QUEUE_CAPACITY;
                 m_count--;
                 droppedOldest = true;
+                totalOverflowDrops_.fetch_add(1, std::memory_order_relaxed);
             }
 
             // Copy the valid command into tail slot
@@ -646,6 +658,13 @@ void SerialHandler::processReceivedData(const uint8_t *data, const size_t len) {
             const size_t queueCount = m_count;
 
             portEXIT_CRITICAL(&m_queueSpinlock);
+
+            // Update high watermark (lock-free, relaxed)
+            uint32_t prevHW = queueHighWatermark_.load(std::memory_order_relaxed);
+            while (queueCount > prevHW &&
+                   !queueHighWatermark_.compare_exchange_weak(prevHW, static_cast<uint32_t>(queueCount),
+                                                              std::memory_order_relaxed)) {
+            }
 
             // Logging outside critical section
             if (droppedOldest) {
@@ -720,6 +739,7 @@ void SerialHandler::clearExpiredMessages() {
     portEXIT_CRITICAL(&m_queueSpinlock);
 
     if (cleared > 0) {
+        totalExpired_.fetch_add(static_cast<uint32_t>(cleared), std::memory_order_relaxed);
         ESP_LOGD(TAG, "UART %d: Cleared %zu expired messages (queue now: %zu)",
                  m_uart_num, cleared, remainingCount);
     }
@@ -785,4 +805,17 @@ void SerialHandler::uartEventTask(void *pvParameters) {
     free(dtmp);
     dtmp = nullptr;
     vTaskDelete(nullptr);
+}
+
+SerialHandler::QueueStats SerialHandler::resetQueueStats() {
+    QueueStats stats{};
+    stats.highWatermark = queueHighWatermark_.exchange(0, std::memory_order_relaxed);
+    stats.expired = totalExpired_.exchange(0, std::memory_order_relaxed);
+    stats.overflowDrops = totalOverflowDrops_.exchange(0, std::memory_order_relaxed);
+    stats.currentDepth = getQueueDepth();
+    stats.maxAgeUs = maxDequeueAgeUs_.exchange(0, std::memory_order_relaxed);
+    const uint64_t totalAge = totalDequeueAgeUs_.exchange(0, std::memory_order_relaxed);
+    stats.dequeued = totalDequeued_.exchange(0, std::memory_order_relaxed);
+    stats.avgAgeUs = stats.dequeued > 0 ? totalAge / stats.dequeued : 0;
+    return stats;
 }
