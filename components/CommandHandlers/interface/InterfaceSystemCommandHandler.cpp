@@ -264,7 +264,21 @@ namespace radio
                     ESP_LOGW(TAG, "📻 Radio AI answer: AI%d; (✗ expected AI%d - radio may be rejecting mode)",
                              mode, expectedMode);
                 }
+                // Route radio's actual AI mode to USB/TCP clients (they need to know
+                // the real radio state), but send per-interface preference to display.
+                // The display should reflect its own AI preference (displayAiMode),
+                // not the radio's raw mode which may have been changed by external
+                // software on another COM port. The enforcement loop will restore the
+                // radio to the desired mode; forwarding a transient AI0 to the display
+                // would confuse its state tracking.
                 routeAnswerResponse(command, formatAIResponse(mode), usbSerial, radioManager);
+                const int displayMode = state.displayAiMode.load();
+                if (mode != displayMode)
+                {
+                    ESP_LOGI(TAG, "📻 Sending display its AI preference AI%d; (radio reported AI%d)",
+                             displayMode, mode);
+                    radioManager.sendToDisplay(formatAIResponse(displayMode));
+                }
             }
             else
             {

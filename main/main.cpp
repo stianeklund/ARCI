@@ -641,7 +641,9 @@ void initializeUsbCdc()
             if (nowUs - lastAiEnforceUs >= radio::BaseCommandHandler::TTL_STATUS)
             { // align with STATUS TTL
                 const uint8_t desiredAi =
-                    std::max({state.usbCdc0AiMode.load(), state.usbCdc1AiMode.load(), state.displayAiMode.load()});
+                    std::max({state.usbCdc0AiMode.load(), state.usbCdc1AiMode.load(),
+                              state.tcp0AiMode.load(), state.tcp1AiMode.load(),
+                              state.displayAiMode.load()});
                 const uint8_t reportedAi = state.aiMode.load();
 
                 if (desiredAi > 0 && reportedAi != desiredAi)
@@ -650,7 +652,13 @@ void initializeUsbCdc()
                              reportedAi, desiredAi);
                     std::string aiCmd = "AI" + std::to_string(desiredAi) + ";";
                     radioManager.sendRawRadioCommand(aiCmd);
-                    // Query to confirm: SET commands don't receive responses per TS-590SG protocol
+                    radioManager.sendRawRadioCommand("AI;");
+                }
+                else if (desiredAi > 0)
+                {
+                    // Periodic health check: query radio's actual AI mode to detect
+                    // silent mode changes (e.g. external software sending AI0 on
+                    // the radio's other COM port without notification to us)
                     radioManager.sendRawRadioCommand("AI;");
                 }
                 lastAiEnforceUs = nowUs;
