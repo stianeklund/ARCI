@@ -6,7 +6,7 @@ if(CONFIG_RUN_UNIT_TESTS)
             "test_cat_parser.cpp" "test_command_handlers.cpp" "test_cat_integration.cpp"
             "test_cache_behavior.cpp"
             INCLUDE_DIRS "../include" "include"
-            REQUIRES unity driver esp_timer CommonConstants SerialHandler RadioCore)
+            REQUIRES unity esp_timer CommonConstants SerialHandler RadioCore)
 
     target_link_libraries(${COMPONENT_LIB} PUBLIC "-Wl,--undefined=run_radiocat_handler_tests")
     target_link_libraries(${COMPONENT_LIB} PUBLIC "-Wl,--undefined=run_cat_parser_utils_tests")

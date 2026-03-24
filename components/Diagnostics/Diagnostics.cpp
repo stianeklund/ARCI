@@ -317,15 +317,10 @@ int Diagnostics::scanI2CBus(void* busHandle) {
     int devicesFound = 0;
 
     for (uint8_t addr = 0x03; addr < 0x78; addr++) {
-        i2c_device_config_t probe_cfg = {
-            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-            .device_address = addr,
-            .scl_speed_hz = 100000,
-            .scl_wait_us = 0,
-            .flags = {
-                .disable_ack_check = false,
-            },
-        };
+        i2c_device_config_t probe_cfg = {};
+        probe_cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+        probe_cfg.device_address = addr;
+        probe_cfg.scl_speed_hz = 100000;
 
         i2c_master_dev_handle_t probe_handle;
         esp_err_t ret = i2c_master_bus_add_device(i2cBus, &probe_cfg, &probe_handle);
@@ -359,15 +354,10 @@ void Diagnostics::scanTCA9548Channels(void* busHandle, TCA9548Handler& tca9548Ha
             vTaskDelay(pdMS_TO_TICKS(10));
 
             for (uint8_t addr = 0x03; addr < 0x78; addr++) {
-                i2c_device_config_t probe_cfg = {
-                    .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-                    .device_address = addr,
-                    .scl_speed_hz = 100000,
-                    .scl_wait_us = 0,
-                    .flags = {
-                        .disable_ack_check = false,
-                    },
-                };
+                i2c_device_config_t probe_cfg = {};
+                probe_cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+                probe_cfg.device_address = addr;
+                probe_cfg.scl_speed_hz = 100000;
 
                 i2c_master_dev_handle_t probe_handle;
                 ret = i2c_master_bus_add_device(i2cBus, &probe_cfg, &probe_handle);
@@ -411,18 +401,15 @@ void Diagnostics::runButtonTestMode(
     ESP_ERROR_CHECK(ret);
 
     // Initialize I2C bus
-    i2c_master_bus_config_t i2c_mst_config = {
-        .i2c_port = I2C_NUM_0,
-        .sda_io_num = i2cSda,
-        .scl_io_num = i2cScl,
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = 7,
-        .intr_priority = 0,
-        .trans_queue_depth = 0,
-        .flags = {
-            .enable_internal_pullup = true,
-        },
-    };
+    i2c_master_bus_config_t i2c_mst_config = {};
+    i2c_mst_config.i2c_port = I2C_NUM_0;
+    i2c_mst_config.sda_io_num = i2cSda;
+    i2c_mst_config.scl_io_num = i2cScl;
+    i2c_mst_config.clk_source = I2C_CLK_SRC_DEFAULT;
+    i2c_mst_config.glitch_ignore_cnt = 7;
+    i2c_mst_config.intr_priority = 0;
+    i2c_mst_config.trans_queue_depth = 0;
+    i2c_mst_config.flags.enable_internal_pullup = true;
 
     i2c_master_bus_handle_t i2c_bus_handle;
     ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_mst_config, &i2c_bus_handle));

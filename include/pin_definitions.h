@@ -103,15 +103,58 @@
     #define TCA9548_CHANNEL_TCA8418_2 1
     #define TCA9548_CHANNEL_PCF8575 2
 
+#elif defined(CONFIG_IDF_TARGET_ESP32P4)
+    // ESP32-P4 pin definitions
+    // NOTE: Adjust these pins to match your actual ESP32-P4 hardware layout
+    #define PIN_ENCODER_A GPIO_NUM_1
+    #define PIN_ENCODER_B GPIO_NUM_2
+
+    // UART1 pins (for radio communication)
+    #define PIN_UART1_TX GPIO_NUM_17
+    #define PIN_UART1_RX GPIO_NUM_18
+
+    // Analog Inputs
+    #define PIN_ANALOG_OUT GPIO_NUM_10
+
+    // I2C Pins
+    #define PIN_I2C_SDA GPIO_NUM_41
+    #define PIN_I2C_SCL GPIO_NUM_42
+
+    // TCA8418 Key Matrix Interrupt Pins
+    #define PIN_TCA8418_INT GPIO_NUM_16
+    #define PIN_TCA8418_INT_2 GPIO_NUM_38
+
+    // USB CDC Control Pins
+    #define PIN_USB_DTR GPIO_NUM_19
+    #define PIN_USB_RTS GPIO_NUM_20
+    #define PIN_USB_CTS GPIO_NUM_47
+
+    // Display UART pins
+    #define PIN_DISPLAY_RX GPIO_NUM_11
+    #define PIN_DISPLAY_TX GPIO_NUM_12
+
+    // LED Control (WS2812 RGB LED)
+    #define PIN_LED GPIO_NUM_8
+
+    // Multi-Knob Encoder (Direct GPIO)
+    #define PIN_MULTIKNOB_A GPIO_NUM_13
+    #define PIN_MULTIKNOB_B GPIO_NUM_14
+    #define PIN_MULTIKNOB_SW GPIO_NUM_15
+
+    // PCF8575 I2C GPIO Expander
+    #define PIN_PCF8575_INT GPIO_NUM_21
+
+    // I2C Device Addresses
+    #define TCA9548_I2C_ADDR 0x70
+    #define PCF8575_I2C_ADDR 0x20
+
+    // TCA9548 channel assignments
+    #define TCA9548_CHANNEL_TCA8418_1 0
+    #define TCA9548_CHANNEL_TCA8418_2 1
+    #define TCA9548_CHANNEL_PCF8575 2
+
 #else
     #error "Unsupported ESP32 variant. Please define pins for your specific target."
-#endif
-
-// You can also define fallback pins if needed
-#ifndef PIN_ENCODER_A
-    #warning "Using default pin definitions which may not work on your hardware"
-    #define PIN_ENCODER_A GPIO_NUM_21
-    // Define other pins with defaults...
 #endif
 
 #endif // PIN_DEFINITIONS_H

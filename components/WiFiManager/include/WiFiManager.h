@@ -1,5 +1,9 @@
 #pragma once
 
+#include "sdkconfig.h"
+
+#if CONFIG_SOC_WIFI_SUPPORTED
+
 #include <string>
 #include <atomic>
 #include "esp_wifi.h"
@@ -112,3 +116,5 @@ private:
 };
 
 } // namespace wifi
+
+#endif // CONFIG_SOC_WIFI_SUPPORTED

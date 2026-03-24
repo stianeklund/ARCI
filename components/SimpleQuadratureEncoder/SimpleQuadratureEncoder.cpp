@@ -71,10 +71,9 @@ esp_err_t SimpleQuadratureEncoder::initialize()
     // Create and enable hardware glitch filter to suppress EMI noise (especially during TX/RX transitions)
     // Note: Uses pin glitch filter (hardware-dependent window, typically 1-2 clock cycles)
     // The glitchFilterNs parameter is stored but not used with pin filter API (for future ESP-IDF versions)
-    gpio_pin_glitch_filter_config_t filter_config = {
-        .clk_src = GLITCH_FILTER_CLK_SRC_DEFAULT,
-        .gpio_num = m_pinA,
-    };
+    gpio_pin_glitch_filter_config_t filter_config = {};
+    filter_config.clk_src = GLITCH_FILTER_CLK_SRC_DEFAULT;
+    filter_config.gpio_num = m_pinA;
 
     // Create filter for pin A
     ret = gpio_new_pin_glitch_filter(&filter_config, &m_filterA);

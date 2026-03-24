@@ -198,7 +198,7 @@ RadioMacroManager::RadioMacroManager(RadioManager &radioManager)
         } else {
             // Target state for disable
             [[maybe_unused]] constexpr bool targetTransverter = false; // EX056: OFF
-            constexpr bool targetDrvOut = false; // AN P3: DRV OUT OFF
+            [[maybe_unused]] constexpr bool targetDrvOut = false; // AN P3: DRV OUT OFF
 
             // Tests expect explicit disable commands even if state already matches
             commands.emplace_back("EX05600000;"); // Disable transverter (menu 056, value 0000)

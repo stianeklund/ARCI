@@ -1,3 +1,3 @@
 idf_component_register(SRCS "AudioHandler.cpp"
                        INCLUDE_DIRS "include"
-                       REQUIRES driver usb)
+                       REQUIRES usb)

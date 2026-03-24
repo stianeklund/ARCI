@@ -82,6 +82,12 @@ adc_channel_t ADCHandler::gpioToAdcChannel(const gpio_num_t gpio) {
         case GPIO_NUM_5:  return ADC_CHANNEL_4;  // PIN_TF_SET (if used)
         default: return static_cast<adc_channel_t>(0);
     }
+#elif defined(CONFIG_IDF_TARGET_ESP32P4)
+    // ESP32-P4 mappings - adjust channels to match your hardware
+    switch (gpio) {
+        case GPIO_NUM_10: return ADC_CHANNEL_0;  // PIN_ANALOG_OUT
+        default: return static_cast<adc_channel_t>(0);
+    }
 #else
 #error "Unsupported ESP32 variant for ADC channel mapping"
 #endif

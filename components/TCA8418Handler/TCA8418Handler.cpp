@@ -57,15 +57,10 @@ bool TCA8418Handler::initialize(i2c_master_bus_handle_t i2cBusHandle) {
     }
 
     // Create device handle for TCA8418
-    i2c_device_config_t dev_cfg = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = TCA8418_I2C_ADDR,
-        .scl_speed_hz = 100000,
-        .scl_wait_us = 0,
-        .flags = {
-            .disable_ack_check = false,
-        },
-    };
+    i2c_device_config_t dev_cfg = {};
+    dev_cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+    dev_cfg.device_address = TCA8418_I2C_ADDR;
+    dev_cfg.scl_speed_hz = 100000;
 
     esp_err_t ret = i2c_master_bus_add_device(m_i2cBusHandle, &dev_cfg, &m_i2cDevHandle);
     if (ret != ESP_OK) {
@@ -92,13 +87,12 @@ bool TCA8418Handler::initialize(i2c_master_bus_handle_t i2cBusHandle) {
             ESP_LOGW(TAG, "Failed to reset GPIO%d (might be in use by system)", m_interruptPin);
         }
 
-        gpio_config_t io_conf = {
-            .pin_bit_mask = (1ULL << m_interruptPin),
-            .mode = GPIO_MODE_INPUT,
-            .pull_up_en = GPIO_PULLUP_ENABLE,
-            .pull_down_en = GPIO_PULLDOWN_DISABLE,
-            .intr_type = GPIO_INTR_DISABLE // Disable HW interrupt before configuring
-        };
+        gpio_config_t io_conf = {};
+        io_conf.pin_bit_mask = (1ULL << m_interruptPin);
+        io_conf.mode = GPIO_MODE_INPUT;
+        io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+        io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        io_conf.intr_type = GPIO_INTR_DISABLE; // Disable HW interrupt before configuring
         if (gpio_config(&io_conf) != ESP_OK) {
             ESP_LOGW(TAG, "Failed to configure interrupt pin GPIO%d, using polling mode", m_interruptPin);
             m_usePolling = true;

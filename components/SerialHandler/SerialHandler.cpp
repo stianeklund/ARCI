@@ -27,16 +27,13 @@ SerialHandler::~SerialHandler() {
 }
 
 esp_err_t SerialHandler::setupUart(const int baud_rate) {
-    const uart_config_t uart_config = {
-        .baud_rate = baud_rate,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .rx_flow_ctrl_thresh = 0,
-        .source_clk = UART_SCLK_APB,
-        .flags = {0}
-    };
+    uart_config_t uart_config = {};
+    uart_config.baud_rate = baud_rate;
+    uart_config.data_bits = UART_DATA_8_BITS;
+    uart_config.parity = UART_PARITY_DISABLE;
+    uart_config.stop_bits = UART_STOP_BITS_1;
+    uart_config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
+    uart_config.source_clk = UART_SCLK_DEFAULT;
 
 
     esp_err_t ret = uart_driver_install(m_uart_num, RX_BUF_SIZE, TX_BUF_SIZE, 20, &m_uartQueue, 0);
@@ -67,16 +64,13 @@ esp_err_t SerialHandler::setupUart(const int baud_rate) {
 }
 
 esp_err_t SerialHandler::setupUart(const int baud_rate, const int tx_pin, const int rx_pin) {
-    const uart_config_t uart_config = {
-        .baud_rate = baud_rate,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .rx_flow_ctrl_thresh = 0,
-        .source_clk = UART_SCLK_APB,
-        .flags = {0}
-    };
+    uart_config_t uart_config = {};
+    uart_config.baud_rate = baud_rate;
+    uart_config.data_bits = UART_DATA_8_BITS;
+    uart_config.parity = UART_PARITY_DISABLE;
+    uart_config.stop_bits = UART_STOP_BITS_1;
+    uart_config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
+    uart_config.source_clk = UART_SCLK_DEFAULT;
 
 
     esp_err_t ret = uart_driver_install(m_uart_num, RX_BUF_SIZE, TX_BUF_SIZE, 20, &m_uartQueue, 0);
@@ -108,16 +102,13 @@ esp_err_t SerialHandler::setupUart(const int baud_rate, const int tx_pin, const 
 }
 
 esp_err_t SerialHandler::setupUart(const int baud_rate, const int tx_pin, const int rx_pin, int rts_pin, int cts_pin) {
-    const uart_config_t uart_config = {
-        .baud_rate = baud_rate,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .rx_flow_ctrl_thresh = 0,
-        .source_clk = UART_SCLK_APB,
-        .flags = {0}
-    };
+    uart_config_t uart_config = {};
+    uart_config.baud_rate = baud_rate;
+    uart_config.data_bits = UART_DATA_8_BITS;
+    uart_config.parity = UART_PARITY_DISABLE;
+    uart_config.stop_bits = UART_STOP_BITS_1;
+    uart_config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
+    uart_config.source_clk = UART_SCLK_DEFAULT;
 
 
     esp_err_t ret = uart_driver_install(m_uart_num, RX_BUF_SIZE, TX_BUF_SIZE, 20, &m_uartQueue, 0);

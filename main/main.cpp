@@ -16,7 +16,9 @@
 #include "TCA8418Handler.h"
 #include "TCA9548Handler.h"
 #include "UsbCdc.h"
+#if CONFIG_SOC_WIFI_SUPPORTED
 #include "WiFiManager.h"
+#endif
 #include "TcpCatBridge.h"
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
@@ -36,7 +38,7 @@
 #include "esp_timer.h"
 #include "led_strip.h"
 
-static constexpr auto TAG = "RRC_Interface";
+static constexpr auto TAG = "ARCI";
 
 // Button Test Mode - Set to true to enable keycode diagnostic mode
 // In this mode, only button key codes are logged without any other functionality
@@ -96,7 +98,9 @@ namespace
 
     // --- System Services (continued) ---
     Diagnostics diagnostics(radioManager);
+#if CONFIG_SOC_WIFI_SUPPORTED
     wifi::WiFiManager wifiManager;
+#endif
 
 #ifdef CONFIG_TCP_CAT_BRIDGE_ENABLE
     std::unique_ptr<tcp_cat_bridge::TcpCatBridge> tcpCatBridge0;
@@ -153,21 +157,17 @@ void initializeLED()
     ESP_LOGI(TAG, "Initializing WS2812 RGB LED on GPIO %d", PIN_LED);
 
     // LED strip configuration
-    led_strip_config_t strip_config = {.strip_gpio_num = PIN_LED,
-                                       .max_leds = LED_STRIP_LED_COUNT,
-                                       .led_model = LED_MODEL_WS2812,
-                                       .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB,
-                                       .flags = {
-                                           .invert_out = false,
-                                       }};
+    led_strip_config_t strip_config = {};
+    strip_config.strip_gpio_num = PIN_LED;
+    strip_config.max_leds = LED_STRIP_LED_COUNT;
+    strip_config.led_model = LED_MODEL_WS2812;
+    strip_config.color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB;
 
     // RMT configuration
-    led_strip_rmt_config_t rmt_config = {.clk_src = RMT_CLK_SRC_DEFAULT,
-                                         .resolution_hz = 10 * 1000 * 1000, // 10MHz
-                                         .mem_block_symbols = 64,
-                                         .flags = {
-                                             .with_dma = false,
-                                         }};
+    led_strip_rmt_config_t rmt_config = {};
+    rmt_config.clk_src = RMT_CLK_SRC_DEFAULT;
+    rmt_config.resolution_hz = 10 * 1000 * 1000; // 10MHz
+    rmt_config.mem_block_symbols = 64;
 
     esp_err_t ret = led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip_handle);
     if (ret != ESP_OK)
@@ -244,12 +244,12 @@ void initializeNVS()
 void configureGPIO()
 {
     // Configure encoder GPIOs (TCA8418 INT configured by its handler)
-    constexpr gpio_config_t io_conf = {.pin_bit_mask =
-                                       (1ULL << PIN_ENCODER_A) | (1ULL << PIN_ENCODER_B),
-                                   .mode = GPIO_MODE_INPUT,
-                                   .pull_up_en = GPIO_PULLUP_ENABLE,
-                                   .pull_down_en = GPIO_PULLDOWN_DISABLE,
-                                   .intr_type = GPIO_INTR_DISABLE};
+    gpio_config_t io_conf = {};
+    io_conf.pin_bit_mask = (1ULL << PIN_ENCODER_A) | (1ULL << PIN_ENCODER_B);
+    io_conf.mode = GPIO_MODE_INPUT;
+    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.intr_type = GPIO_INTR_DISABLE;
     esp_err_t ret = gpio_config(&io_conf);
     if (ret != ESP_OK)
     {
@@ -261,20 +261,13 @@ i2c_master_bus_handle_t i2c_bus_handle = nullptr;
 
 void initializeI2C()
 {
-    i2c_master_bus_config_t i2c_bus_config = {
-        .i2c_port = I2C_NUM_0,
-        .sda_io_num = PIN_I2C_SDA,
-        .scl_io_num = PIN_I2C_SCL,
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = 7,
-        .intr_priority = 0,
-        .trans_queue_depth = 0,
-        .flags =
-            {
-                .enable_internal_pullup = true,
-                .allow_pd = false,
-            },
-    };
+    i2c_master_bus_config_t i2c_bus_config = {};
+    i2c_bus_config.i2c_port = I2C_NUM_0;
+    i2c_bus_config.sda_io_num = PIN_I2C_SDA;
+    i2c_bus_config.scl_io_num = PIN_I2C_SCL;
+    i2c_bus_config.clk_source = I2C_CLK_SRC_DEFAULT;
+    i2c_bus_config.glitch_ignore_cnt = 7;
+    i2c_bus_config.flags.enable_internal_pullup = true;
 
     esp_err_t ret = i2c_new_master_bus(&i2c_bus_config, &i2c_bus_handle);
     if (ret != ESP_OK)
@@ -810,6 +803,7 @@ void setup()
 #endif
     initializeSystemComponents();
 
+#if CONFIG_SOC_WIFI_SUPPORTED
     // Initialize WiFi for antenna switch functionality
     ESP_LOGI(TAG, "Initializing WiFi");
     if (wifiManager.initialize())
@@ -909,6 +903,7 @@ void setup()
     {
         ESP_LOGW(TAG, "WiFi initialization failed - antenna switch will use radio fallback");
     }
+#endif // CONFIG_SOC_WIFI_SUPPORTED
 
     if (!displayCatHandler)
     {

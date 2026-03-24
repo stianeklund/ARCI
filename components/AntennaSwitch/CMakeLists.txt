@@ -1,5 +1,5 @@
 idf_component_register(
     SRCS "AntennaSwitch.cpp" "AntennaWebSocketClient.cpp"
     INCLUDE_DIRS "include"
-    REQUIRES esp_http_client nvs_flash esp_netif esp_wifi esp_websocket_client
+    REQUIRES esp_http_client nvs_flash esp_netif esp_wifi esp_websocket_client espressif__cjson
 )

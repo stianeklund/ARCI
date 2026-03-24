@@ -1,7 +1,7 @@
 #include "CdcSerialHandler.h"
 #include "UsbCdc.h"
 #include "esp_log.h"
-#include "tusb_cdc_acm.h"
+#include "tinyusb_cdc_acm.h"
 #include "tusb.h"
 
 #include <algorithm>
@@ -216,8 +216,7 @@ std::pair<esp_err_t, std::string_view> CdcSerialHandler::getMessageView() {
                 memcpy(m_rxAccum + keep, tmp + to_copy, overflow);
                 m_rxLen = RX_ACCUM_SIZE;
             } else {
-                // Overflow larger than buffer: keep last bytes only
-                memcpy(m_rxAccum, tmp + (rx_len - RX_ACCUM_SIZE), RX_ACCUM_SIZE);
+                // Unreachable: rx_len <= sizeof(tmp) which is always < RX_ACCUM_SIZE
                 m_rxLen = RX_ACCUM_SIZE;
             }
             ESP_LOGW(TAG, "%s RX accumulator overflow: dropped %zu bytes", instanceTag(m_instance), overflow);

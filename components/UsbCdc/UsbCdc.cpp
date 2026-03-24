@@ -3,8 +3,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "tinyusb.h"
-#include "tusb_cdc_acm.h"
-#include "tusb_console.h"
+#include "tinyusb_default_config.h"
+#include "tinyusb_cdc_acm.h"
+#include "tinyusb_console.h"
 #include "tusb.h"
 #include "../../include/pin_definitions.h"
 #include "sdkconfig.h"
@@ -81,6 +82,22 @@ static void cdc_line_coding_callback(int itf, cdcacm_event_t *event) {
     }
 }
 
+// TinyUSB 2.x device event handler (replaces tud_mount_cb/tud_umount_cb)
+static void tinyusb_device_event_handler(tinyusb_event_t *event, void *arg) {
+    switch (event->id) {
+        case TINYUSB_EVENT_ATTACHED:
+            ESP_LOGI("UsbCdc", "USB device mounted");
+            UsbCdc::setDTR(true);
+            break;
+        case TINYUSB_EVENT_DETACHED:
+            ESP_LOGI("UsbCdc", "USB device unmounted");
+            UsbCdc::setDTR(false);
+            break;
+        default:
+            break;
+    }
+}
+
 esp_err_t UsbCdc::init() {
     if (m_initialized) {
         ESP_LOGW(TAG, "USB CDC already initialized");
@@ -89,15 +106,12 @@ esp_err_t UsbCdc::init() {
 
     ESP_LOGI(TAG, "Initializing USB CDC");
 
-    // Use ESP-IDF complete default configuration for dual CDC
-    constexpr tinyusb_config_t tusb_cfg = {
-        .device_descriptor = NULL,        // Use ESP-IDF default (includes IAD)
-        .string_descriptor = NULL,        // Use ESP-IDF default strings from CONFIG
-        .external_phy = false,            // No external PHY
-        .configuration_descriptor = NULL, // Use ESP-IDF default
-        .self_powered = false,            // Bus-powered device
-        .vbus_monitor_io = 0              // No VBUS monitoring
-    };
+    // Use ESP-IDF 2.x default configuration with required task settings
+    tinyusb_config_t tusb_cfg = {};
+    tusb_cfg.event_cb = tinyusb_device_event_handler;
+    tusb_cfg.task.size = TINYUSB_DEFAULT_TASK_SIZE;
+    tusb_cfg.task.priority = TINYUSB_DEFAULT_TASK_PRIO;
+    tusb_cfg.task.xCoreID = TINYUSB_DEFAULT_TASK_AFFINITY;
 
     // Install TinyUSB driver
     esp_err_t err = tinyusb_driver_install(&tusb_cfg);
@@ -108,15 +122,13 @@ esp_err_t UsbCdc::init() {
 
     // Initialize first CDC instance
     tinyusb_config_cdcacm_t acm_cfg_0 = {
-        .usb_dev = TINYUSB_USBDEV_0,
         .cdc_port = TINYUSB_CDC_ACM_0,
-        .rx_unread_buf_sz = 1024,
         .callback_rx = nullptr,  // Will set via register_callback
         .callback_rx_wanted_char = nullptr,
         .callback_line_state_changed = nullptr,
         .callback_line_coding_changed = nullptr
     };
-    err = tusb_cdc_acm_init(&acm_cfg_0);
+    err = tinyusb_cdcacm_init(&acm_cfg_0);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize CDC ACM 0: %s", esp_err_to_name(err));
         return err;
@@ -127,15 +139,13 @@ esp_err_t UsbCdc::init() {
 
     // Initialize second CDC instance
     tinyusb_config_cdcacm_t acm_cfg_1 = {
-        .usb_dev = TINYUSB_USBDEV_0,
         .cdc_port = TINYUSB_CDC_ACM_1,
-        .rx_unread_buf_sz = 1024,
         .callback_rx = nullptr,  // Will set via register_callback
         .callback_rx_wanted_char = nullptr,
         .callback_line_state_changed = nullptr,
         .callback_line_coding_changed = nullptr
     };
-    err = tusb_cdc_acm_init(&acm_cfg_1);
+    err = tinyusb_cdcacm_init(&acm_cfg_1);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize CDC ACM 1: %s", esp_err_to_name(err));
         return err;
@@ -220,7 +230,7 @@ esp_err_t UsbCdc::enableUsbLogs() {
     }
 
     ESP_LOGD(TAG, "Redirecting logs to USB CDC");
-    esp_err_t err = esp_tusb_init_console(TINYUSB_CDC_ACM_0);
+    esp_err_t err = tinyusb_console_init(TINYUSB_CDC_ACM_0);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to redirect logs to USB: %s", esp_err_to_name(err));
         return err;
@@ -236,7 +246,7 @@ esp_err_t UsbCdc::disableUsbLogs() {
     }
 
     ESP_LOGD(TAG, "Redirecting logs back to UART");
-    esp_err_t err = esp_tusb_deinit_console(TINYUSB_CDC_ACM_0);
+    esp_err_t err = tinyusb_console_deinit(TINYUSB_CDC_ACM_0);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to redirect logs back to UART: %s", esp_err_to_name(err));
         return err;
@@ -671,22 +681,3 @@ void UsbCdc::notifyWriteBackpressure(uint8_t instance) {
     }
 }
 
-// TinyUSB callbacks - required for proper CDC operation
-extern "C" {
-    
-// Invoked when device is mounted
-void tud_mount_cb(void) {
-    ESP_LOGI("UsbCdc", "USB device mounted");
-    // Set DTR active when USB device is mounted
-    UsbCdc::setDTR(true);
-}
-
-// Invoked when device is unmounted
-void tud_umount_cb(void) {
-    ESP_LOGI("UsbCdc", "USB device unmounted");
-    // Clear DTR when USB device is unmounted
-    UsbCdc::setDTR(false);
-}
-
-
-}
