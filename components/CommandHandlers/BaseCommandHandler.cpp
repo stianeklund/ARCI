@@ -162,6 +162,14 @@ namespace radio {
                 sendToUSB(usbSerial, response);
                 break;
         }
+
+        // Query served directly (e.g. from cache) — invalidate the local query tracker
+        // entry so the forwarding policy won't route subsequent radio answers (unsolicited
+        // updates, encoder changes) to this AI0 interface as spurious extra responses.
+        if (response.size() >= 2 && RadioCommand::isCatClientSource(command.source)) {
+            radioManager.getState().accessForwardState(command.source)
+                .localQueryTracker.invalidate(response.substr(0, 2));
+        }
     }
 
     void BaseCommandHandler::routeAnswerResponse(const RadioCommand &command, const std::string_view response,
