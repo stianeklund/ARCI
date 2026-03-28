@@ -516,10 +516,7 @@ namespace radio {
                     // Skip query tracking for Macro commands (don't pollute strict pairing)
                     if (command.source != CommandSource::Macro) {
                         state.queryTracker.recordQuery(key, nowUs);
-                        // Only record origin if we didn't send cached response (to avoid duplicates)
-                        if (!hasCachedValue) {
-                            radioManager.noteQueryOrigin(key, command.source, nowUs);
-                        }
+                        radioManager.noteQueryOrigin(key, command.source, nowUs, hasCachedValue);
                     }
                     if (!readParam.empty()) {
                         sendToRadio(radioSerial, buildCommand(key, readParam));

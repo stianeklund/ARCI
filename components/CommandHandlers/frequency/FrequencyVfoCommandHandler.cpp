@@ -180,7 +180,7 @@ namespace radio
                     const uint64_t timestamp = esp_timer_get_time();
                     ESP_LOGD(TAG, "FA cache served but stale - refreshing from radio");
                     rm.getState().queryTracker.recordQuery("FA", timestamp);
-                    // Don't record origin - we already sent cached response above (line 147)
+                    rm.noteQueryOrigin("FA", cmd.source, timestamp, true);
                     sendToRadio(radioSerial, cmd.originalMessage);
                 }
             }
@@ -460,7 +460,7 @@ namespace radio
                 if (respondedFromCache)
                 {
                     ESP_LOGD(TAG, "FB cache served but stale - refreshing from radio");
-                    // Don't record origin - we already sent cached response above (line 435)
+                    rm.noteQueryOrigin("FB", cmd.source, now, true);
                 }
                 else
                 {
