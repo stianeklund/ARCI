@@ -1825,15 +1825,20 @@ namespace radio
         // Note: RadioMacroManager is created separately and set via setMacroManager()
     }
 
-    void RadioManager::noteQueryOrigin(std::string_view prefix, CommandSource src, const uint64_t nowUs)
+    void RadioManager::noteQueryOrigin(std::string_view prefix, CommandSource src, const uint64_t nowUs,
+                                       const bool cacheServed)
     {
         if (prefix.size() < 2)
             return;
         const uint8_t id = originHash(prefix[0], prefix[1]);
         lastOriginTime_[id].store(nowUs, std::memory_order_relaxed);
-        lastOriginSrc_[id].store(static_cast<int>(src), std::memory_order_relaxed);
-        ESP_LOGV(RadioManager::TAG, "Recorded origin for %c%c -> %d at %llu us", prefix[0], prefix[1],
-                 static_cast<int>(src), static_cast<unsigned long long>(nowUs));
+        int srcVal = static_cast<int>(src);
+        if (cacheServed)
+            srcVal |= ORIGIN_CACHE_SERVED_BIT;
+        lastOriginSrc_[id].store(srcVal, std::memory_order_relaxed);
+        ESP_LOGV(RadioManager::TAG, "Recorded origin for %c%c -> %d%s at %llu us", prefix[0], prefix[1],
+                 static_cast<int>(src), cacheServed ? " (cache-served)" : "",
+                 static_cast<unsigned long long>(nowUs));
     }
 
     bool RadioManager::routeMatchedAnswer(std::string_view prefix, std::string_view response,
@@ -1856,8 +1861,18 @@ namespace radio
             return std::nullopt; // stale or no origin
         }
         const int srcInt = lastOriginSrc_[id].load(std::memory_order_relaxed);
-        const CommandSource src = static_cast<CommandSource>(srcInt);
-        ESP_LOGD(RadioManager::TAG, "Routing matched answer %c%c to origin=%d", prefix[0], prefix[1], srcInt);
+        const bool cacheServed = (srcInt & ORIGIN_CACHE_SERVED_BIT) != 0;
+        const CommandSource src = static_cast<CommandSource>(srcInt & 0xFF);
+        if (cacheServed)
+        {
+            // Client already received a cached response for this query.
+            // Return the source (so AI forwarding is suppressed) but don't send again.
+            ESP_LOGD(RadioManager::TAG, "Matched answer %c%c to origin=%d (cache-served, suppressing duplicate)",
+                     prefix[0], prefix[1], static_cast<int>(src));
+            return src;
+        }
+        ESP_LOGD(RadioManager::TAG, "Routing matched answer %c%c to origin=%d", prefix[0], prefix[1],
+                 static_cast<int>(src));
         sendToSource(src, response);
         return src;
     }

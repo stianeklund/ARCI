@@ -810,7 +810,10 @@ namespace radio
         // === Minimal origin-memory routing for query→answer pairing ===
     public:
         // Record the origin of a just-sent READ for a given 2-char prefix (e.g., "FA")
-        void noteQueryOrigin(std::string_view prefix, CommandSource src, uint64_t nowUs);
+        // When cacheServed=true, the origin is recorded but routeMatchedAnswerWithSource
+        // will return the source WITHOUT sending (to suppress AI forwarding duplicates
+        // when a cached response was already delivered to the client).
+        void noteQueryOrigin(std::string_view prefix, CommandSource src, uint64_t nowUs, bool cacheServed = false);
 
         // Try to route a radio Answer based on the last recorded origin for this prefix
         // Returns true if routed to a specific interface; false if no recent origin found
@@ -826,6 +829,7 @@ namespace radio
         // 2-char CAT prefixes hash directly to a fixed array (no heap allocation)
         static constexpr size_t ORIGIN_TABLE_SIZE = 128;
         static constexpr uint64_t ORIGIN_TTL_US = 2000000; // 2s window to match answer to origin
+        static constexpr int ORIGIN_CACHE_SERVED_BIT = 0x100; // Flag: cached response already sent to client
         static constexpr uint8_t originHash(char c1, char c2) {
             // Simple hash of 2-char prefix into ORIGIN_TABLE_SIZE slots
             return static_cast<uint8_t>(((static_cast<unsigned>(c1) * 31) + static_cast<unsigned>(c2)) % ORIGIN_TABLE_SIZE);
