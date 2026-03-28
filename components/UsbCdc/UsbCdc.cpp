@@ -26,8 +26,8 @@ bool UsbCdc::m_dtr_state = false;
 bool UsbCdc::m_rts_state = false;
 uint64_t UsbCdc::m_writeBlockUntilUs[2] = {0, 0};
 uint8_t UsbCdc::m_backpressureLevel[2] = {0, 0};
-bool UsbCdc::m_last_cdc_connected = false;
-bool UsbCdc::m_last_usb_mounted = false;
+bool UsbCdc::m_last_cdc_connected[2] = {false, false};
+bool UsbCdc::m_last_usb_mounted[2] = {false, false};
 UsbCdc::RxCallback UsbCdc::m_rx_callback = nullptr;
 UsbCdc::TxCallback UsbCdc::m_tx_callback = nullptr;
 uint8_t UsbCdc::m_tx_buf[2][UsbCdc::TX_BUFFER_SIZE] = {};
@@ -67,9 +67,12 @@ static void cdc_line_state_callback(int itf, cdcacm_event_t *event) {
         // If DTR is set, the host is ready to communicate
         // This is a good signal that CAT clients have opened the port
         if (dtr) {
-            ESP_LOGD("UsbCdc", "Host ready for communication (DTR asserted)");
+            const auto inst = static_cast<uint8_t>(itf);
+            ESP_LOGD("UsbCdc", "Host ready for communication on CDC%d (DTR asserted)", inst);
+            // Reset backpressure so writes resume immediately
+            UsbCdc::resetBackpressure(inst);
             // Flush any buffered data when host opens the port
-            UsbCdc::flush(static_cast<uint8_t>(itf));
+            UsbCdc::flush(inst);
         }
     }
 }
@@ -275,29 +278,38 @@ esp_err_t UsbCdc::writeData(const uint8_t* data, size_t length, uint8_t instance
     const bool connected = tud_cdc_n_connected(instance);
     const bool suspended = tud_suspended();
     
-    // Only log when connection status changes for instance 0 (avoid log spam)
-    if (instance == 0 && (connected != m_last_cdc_connected || mounted != m_last_usb_mounted)) {
-        ESP_LOGI(TAG, "CDC%d connection changed: mounted=%d, connected=%d, suspended=%d", 
+    // Track connection state changes per-instance
+    if (connected != m_last_cdc_connected[instance] || mounted != m_last_usb_mounted[instance]) {
+        ESP_LOGI(TAG, "CDC%d connection changed: mounted=%d, connected=%d, suspended=%d",
                  instance, mounted, connected, suspended);
-        
+
         // If we just disconnected, clear the TX buffer to prevent overflow buildup
-        if (!connected && mounted && m_last_cdc_connected) {
+        if (!connected && mounted && m_last_cdc_connected[instance]) {
             ESP_LOGI(TAG, "CDC%d client disconnected, clearing TX buffer to prevent overflow", instance);
             if (xSemaphoreTake(m_tx_mutex[instance], pdMS_TO_TICKS(10)) == pdTRUE) {
                 m_tx_head[instance] = 0;
                 m_tx_tail[instance] = 0;
                 xSemaphoreGive(m_tx_mutex[instance]);
             }
-            
+            // Reset backpressure so writes resume immediately when host reconnects
+            m_writeBlockUntilUs[instance] = 0;
+            m_backpressureLevel[instance] = 0;
+
             // Send a remote wakeup if suspended to notify host we have data
             if (suspended && tud_remote_wakeup()) {
                 ESP_LOGI(TAG, "Sent USB remote wakeup to host");
             }
         }
-        
+
+        // If we just connected, reset backpressure to allow writes immediately
+        if (connected && !m_last_cdc_connected[instance]) {
+            m_writeBlockUntilUs[instance] = 0;
+            m_backpressureLevel[instance] = 0;
+        }
+
         // Update state after checking for disconnection
-        m_last_cdc_connected = connected;
-        m_last_usb_mounted = mounted;
+        m_last_cdc_connected[instance] = connected;
+        m_last_usb_mounted[instance] = mounted;
     }
     
     // Require USB mounted
@@ -661,6 +673,14 @@ bool UsbCdc::shouldThrottleWrite(uint8_t instance) {
 }
 
 void UsbCdc::notifyWriteSuccess(uint8_t instance) {
+    if (instance > 1) {
+        return;
+    }
+    m_writeBlockUntilUs[instance] = 0;
+    m_backpressureLevel[instance] = 0;
+}
+
+void UsbCdc::resetBackpressure(uint8_t instance) {
     if (instance > 1) {
         return;
     }
