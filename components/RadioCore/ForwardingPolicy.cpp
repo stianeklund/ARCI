@@ -346,6 +346,10 @@ namespace radio
                 prefix, currentTime);
             if (locallyQueried)
             {
+                // Consume the tracker entry so only one response is forwarded per query.
+                // Without this, the 5s TTL window would leak unsolicited updates
+                // (e.g. encoder-driven FA changes) to AI0 interfaces.
+                sinkState.localQueryTracker.invalidate(prefix);
                 ESP_LOGD(TAG, "AI0 forwarding query response: %.*s", (int)prefix.length(), prefix.data());
                 return true;
             }

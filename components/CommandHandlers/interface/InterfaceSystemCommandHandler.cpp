@@ -231,6 +231,12 @@ namespace radio
                 ESP_LOGW(TAG, "Unexpected AI query from source: %d", (int)command.source);
                 return false;
             }
+            // AI queries are served locally (never sent to radio). Invalidate the
+            // local query tracker for TCP/Display paths that bypass respondToSource.
+            // (CDC paths are handled by respondToSource's generic invalidation.)
+            if (command.isTcp() || command.source == CommandSource::Display) {
+                state.accessForwardState(command.source).localQueryTracker.invalidate("AI");
+            }
             return true;
         }
 
