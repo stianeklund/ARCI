@@ -155,6 +155,7 @@ public:
     static bool shouldThrottleWrite(uint8_t instance);
     static void notifyWriteSuccess(uint8_t instance);
     static void notifyWriteBackpressure(uint8_t instance);
+    static void resetBackpressure(uint8_t instance);
     
 private:
     // Lightweight TX ring buffer per CDC instance to absorb short writes
@@ -175,8 +176,8 @@ private:
     static bool m_rts_state;
     static uint64_t m_writeBlockUntilUs[2];
     static uint8_t m_backpressureLevel[2];
-    static bool m_last_cdc_connected;
-    static bool m_last_usb_mounted;
+    static bool m_last_cdc_connected[2];
+    static bool m_last_usb_mounted[2];
     static RxCallback m_rx_callback;
     static TxCallback m_tx_callback;
     static bool m_require_dtr;  // if false, don't drop writes when DTR is not asserted
