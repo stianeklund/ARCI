@@ -739,6 +739,14 @@ void initializeUsbCdc()
                              static_cast<unsigned long>(dq.overflowDrops));
                 }
 
+                // Per-interface AI mode diagnostic (helps diagnose forwarding lag)
+                {
+                    const auto &s = radioManager.getState();
+                    ESP_LOGI(TAG, "AI modes: radio=%u CDC0=%u CDC1=%u TCP0=%u TCP1=%u disp=%u",
+                             s.aiMode.load(), s.usbCdc0AiMode.load(), s.usbCdc1AiMode.load(),
+                             s.tcp0AiMode.load(), s.tcp1AiMode.load(), s.displayAiMode.load());
+                }
+
                 lastProfilerLogUs = nowUs;
             }
         }

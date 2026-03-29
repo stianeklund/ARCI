@@ -175,6 +175,12 @@ int TcpCatBridge::acceptClient() {
             clients_[i].bytesTx = 0;
             clients_[i].pendingLen = 0;
 
+            // Disable Nagle's algorithm to minimize latency for small CAT frames
+            int nodelay = 1;
+            if (setsockopt(clientSock, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay)) < 0) {
+                ESP_LOGW(TAG, "Failed to set TCP_NODELAY on client %d: errno %d", i, errno);
+            }
+
             // Set client socket non-blocking
             int flags = fcntl(clientSock, F_GETFL, 0);
             fcntl(clientSock, F_SETFL, flags | O_NONBLOCK);
