@@ -121,7 +121,7 @@ class DisplayLatencyProfiler
     }
 
     // Enable/disable logging output (tracking still occurs for minimal overhead)
-    static constexpr bool LOGGING_ENABLED = false;
+    static constexpr bool LOGGING_ENABLED = true;
 
     // Log summary and reset counters. Call from low-priority task every ~10s.
     void logAndReset()
@@ -205,7 +205,7 @@ class DisplayLatencyProfiler
         if (fwdCount > 0)
         {
             const uint32_t avgProc = procStats.count > 0 ? static_cast<uint32_t>(procStats.sum / procStats.count) : 0;
-            const uint32_t avgFwd = fwdStats.count > 0 ? static_cast<uint32_t>(fwdStats.sum / procStats.count) : 0;
+            const uint32_t avgFwd = fwdStats.count > 0 ? static_cast<uint32_t>(fwdStats.sum / fwdStats.count) : 0;
             const uint32_t avgInterval =
                 intervalStats.count > 0 ? static_cast<uint32_t>(intervalStats.sum / intervalStats.count) : 0;
 
