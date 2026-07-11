@@ -326,7 +326,7 @@ namespace radio
             {
                 const uint64_t now = esp_timer_get_time();
                 const uint64_t timeSinceTuningStop = now - tuningStopTime;
-                constexpr uint64_t GRACE_PERIOD_US = 500000; // 500ms grace period
+                constexpr uint64_t GRACE_PERIOD_US = 150000; // 150ms grace period
                 if (timeSinceTuningStop < GRACE_PERIOD_US)
                 {
                     ESP_LOGD(TAG, "FA in grace period (%llu us after tuning): ignoring to prevent jump-back",
@@ -334,6 +334,9 @@ namespace radio
                     profiler.markDisplaySuppressed(DisplayLatencyProfiler::SuppressReason::GracePeriod);
                     return true; // Ignore stale responses during grace period
                 }
+                // Grace window elapsed: clear tuningStopTime so grace is one-shot per gesture
+                // rather than permanently armed (it is otherwise never reset to 0).
+                rm.getState().tuningStopTime.store(0);
             }
 
             // Check if we have a pending FA SET command from Panel
@@ -345,7 +348,7 @@ namespace radio
             if (isPending && pendingTime > 0)
             {
                 const uint64_t timeSincePending = now - pendingTime;
-                constexpr uint64_t PENDING_TIMEOUT_US = 2000000; // 2 seconds
+                constexpr uint64_t PENDING_TIMEOUT_US = 300000; // 300 ms: after this a value mismatch means the radio's true value changed (honor it), not a stale echo
 
                 if (timeSincePending < PENDING_TIMEOUT_US)
                 {
@@ -608,13 +611,16 @@ namespace radio
             {
                 const uint64_t now = esp_timer_get_time();
                 const uint64_t timeSinceTuningStop = now - tuningStopTime;
-                constexpr uint64_t GRACE_PERIOD_US = 500000; // 500ms grace period
+                constexpr uint64_t GRACE_PERIOD_US = 150000; // 150ms grace period
                 if (timeSinceTuningStop < GRACE_PERIOD_US)
                 {
                     ESP_LOGD(TAG, "FB in grace period (%llu us after tuning): ignoring to prevent jump-back",
                              timeSinceTuningStop);
                     return true; // Ignore stale responses during grace period
                 }
+                // Grace window elapsed: clear tuningStopTime so grace is one-shot per gesture
+                // rather than permanently armed (it is otherwise never reset to 0).
+                rm.getState().tuningStopTime.store(0);
             }
 
             // Check if we have a pending FB SET command from Panel
@@ -626,7 +632,7 @@ namespace radio
             if (isPending && pendingTime > 0)
             {
                 const uint64_t timeSincePending = now - pendingTime;
-                constexpr uint64_t PENDING_TIMEOUT_US = 2000000; // 2 seconds
+                constexpr uint64_t PENDING_TIMEOUT_US = 300000; // 300 ms: after this a value mismatch means the radio's true value changed (honor it), not a stale echo
 
                 if (timeSincePending < PENDING_TIMEOUT_US)
                 {
