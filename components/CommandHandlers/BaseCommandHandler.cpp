@@ -451,9 +451,24 @@ namespace radio {
                 return true;
             }
 
+            // In AI2/AI4 the radio auto-reports state changes, which refresh the cache
+            // the instant they arrive; client-triggered TTL refresh polling is then
+            // redundant for auto-reported state. Widen the effective freshness window
+            // to a safety-net TTL so cached state is served without re-polling the radio
+            // on every client read, while keeping worst-case staleness bounded. Live
+            // meters (TTL_REALTIME, e.g. SM) are NOT auto-reported, so they are excluded
+            // and keep their short TTL / normal refresh behaviour.
+            uint64_t effectiveTtlUs = ttlUs;
+            if (ttlUs != TTL_REALTIME) {
+                const uint8_t radioAiMode = state.aiMode.load();
+                if (radioAiMode == 2 || radioAiMode == 4) {
+                    effectiveTtlUs = std::max(ttlUs, AI_BROADCAST_SAFETY_TTL);
+                }
+            }
+
             const uint64_t lastUpdateUs = state.commandCache.get(key);
             const bool hasCachedValue = lastUpdateUs != 0U;
-            const bool cacheFresh = !command.bypassCache && isCacheFresh(radioManager, key, ttlUs);
+            const bool cacheFresh = !command.bypassCache && isCacheFresh(radioManager, key, effectiveTtlUs);
             const bool shouldRefresh = command.bypassCache || !cacheFresh;
 
             if (cacheFresh && hasCachedValue) {

@@ -91,22 +91,23 @@ private:
     static CommandType setOnlyCommandPrefixes(std::string_view prefix);
 
     /**
-     * @brief Determine command type based on frame content and source
-     * @param frame The CAT frame to analyze
+     * @brief Determine command type based on the (already extracted) prefix/params and source
+     * @param prefix The command prefix (2 chars, or 4 for UI meta commands)
+     * @param params The parameter substring (already stripped of prefix and terminator)
      * @param source The source of the frame
      * @return Inferred CommandType
      */
-    static CommandType determineCommandType(std::string_view frame, CommandSource source);
+    static CommandType determineCommandType(std::string_view prefix, std::string_view params, CommandSource source);
 
     /**
-     * @brief Parse parameters from a CAT frame directly into RadioCommand
+     * @brief Parse parameters into RadioCommand from the (already extracted) params substring
      * @param command The RadioCommand to populate with parameters (uses SSO inline storage)
-     * @param frame The CAT frame
+     * @param params The parameter substring (already stripped of prefix and terminator)
      * @param commandPrefix The command prefix (e.g., "FA")
      *
      * Uses RadioCommand::addParam() for zero-allocation parameter storage on most commands.
      */
-    static void parseParameters(RadioCommand& command, std::string_view frame, std::string_view commandPrefix);
+    static void parseParameters(RadioCommand& command, std::string_view params, std::string_view commandPrefix);
 
     /**
      * @brief Check if frame is a known error response
