@@ -8,7 +8,7 @@ namespace radio
 {
 
     UICommandHandler::UICommandHandler() :
-        BaseCommandHandler({"UIPC", "UIML", "UIRL", "UIRS", "UINL", "UIPI", "UIPO", "UINF", "UIIS", "UIDA", "UIRI", "UIMN", "UIBL", "UIXD", "UIPS", "UIDE", "UIKS"}, "UI Meta Commands (Panel-Display Only)")
+        BaseCommandHandler({"UIPC", "UIML", "UICG", "UIRL", "UIRS", "UINL", "UIPI", "UIPO", "UINF", "UIIS", "UIDA", "UIRI", "UIMN", "UIBL", "UIXD", "UIPS", "UIDE", "UIKS"}, "UI Meta Commands (Panel-Display Only)")
     {
     }
 
@@ -27,6 +27,10 @@ namespace radio
         if (cmd.command == "UIML")
         {
             return handleUIML(cmd, rm);
+        }
+        if (cmd.command == "UICG")
+        {
+            return handleUICG(cmd, rm);
         }
         if (cmd.command == "UIRL")
         {
@@ -187,6 +191,65 @@ namespace radio
             {
                 state.uiState.currentValue.store(static_cast<int16_t>(value));
                 ESP_LOGD(TAG, "UIML answer from display: %d", value);
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    bool UICommandHandler::handleUICG(const RadioCommand &cmd, RadioManager &rm) const
+    {
+        // UICG: CW Carrier Level UI command (CG command, 0-100%)
+        // Format: UICGnnn; where nnn is 000-100 (percent)
+        auto &state = rm.getState();
+
+        if (isQuery(cmd))
+        {
+            // A bare UICG; from the display is the trigger to enter the CW carrier UI mode,
+            // mirroring the panel PROC-button long-press. Only meaningful in CW/CW-R.
+            const int mode = state.mode.load(std::memory_order_relaxed);
+            const bool alreadyActive = state.uiState.isActive() &&
+                                       state.uiState.getActiveControl() == UIControl::CwCarrierLevel;
+
+            if ((mode == 3 || mode == 7) && !alreadyActive)
+            {
+                const int level = state.carrierLevel;
+                ESP_LOGI(TAG, "UICG query in CW - entering CW carrier UI mode (level=%d)", level);
+                rm.enterUIMode(UIControl::CwCarrierLevel, level, 0, 100, 1); // emits initial UICG
+                return true;
+            }
+
+            const int value = alreadyActive ? state.uiState.currentValue.load() : state.carrierLevel;
+            sendToDisplayOnly(formatUICG(value), rm);
+            return true;
+        }
+
+        if (isSet(cmd))
+        {
+            const int value = getIntParam(cmd, 0, -1);
+            if (!isValidCwCarrierValue(value))
+            {
+                ESP_LOGW(TAG, "Invalid UICG value: %d (must be 0-100)", value);
+                return false;
+            }
+
+            state.uiState.currentValue.store(static_cast<int16_t>(value));
+            state.uiState.lastUpdateTime.store(esp_timer_get_time());
+
+            const std::string response = formatUICG(value);
+            ESP_LOGD(TAG, "UICG set: %d, sending to display: %s", value, response.c_str());
+            sendToDisplayOnly(response, rm);
+            return true;
+        }
+
+        if (cmd.type == CommandType::Answer)
+        {
+            const int value = getIntParam(cmd, 0, -1);
+            if (isValidCwCarrierValue(value))
+            {
+                state.uiState.currentValue.store(static_cast<int16_t>(value));
+                ESP_LOGD(TAG, "UICG answer from display: %d", value);
             }
             return true;
         }
@@ -978,6 +1041,13 @@ namespace radio
         return std::string(buf);
     }
 
+    std::string UICommandHandler::formatUICG(const int value)
+    {
+        char buf[12];
+        snprintf(buf, sizeof(buf), "UICG%03d;", value);
+        return std::string(buf);
+    }
+
     std::string UICommandHandler::formatUIRL(const int value)
     {
         char buf[12];
@@ -1090,6 +1160,11 @@ namespace radio
     bool UICommandHandler::isValidCarrierValue(const int value)
     {
         return value >= 0 && value <= 20;
+    }
+
+    bool UICommandHandler::isValidCwCarrierValue(const int value)
+    {
+        return value >= 0 && value <= 100;
     }
 
     bool UICommandHandler::isValidNrLevelValue(const int value)

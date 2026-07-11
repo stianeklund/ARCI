@@ -2045,6 +2045,9 @@ namespace radio
         case UIControl::CarrierLevel:
             sendUICommand(UICommandHandler::formatUIML(initialValue));
             break;
+        case UIControl::CwCarrierLevel:
+            sendUICommand(UICommandHandler::formatUICG(initialValue));
+            break;
         case UIControl::NrLevel:
             sendUICommand(UICommandHandler::formatUIRL(initialValue));
             break;
@@ -2134,6 +2137,7 @@ namespace radio
             case UIControl::IfShift:
             case UIControl::RitXitOffset:
             case UIControl::KeyingSpeed:
+            case UIControl::CwCarrierLevel:
                 // Already applied in real-time during adjustment
                 break;
             default:
@@ -2289,6 +2293,13 @@ namespace radio
                 // Apply immediately to radio for real-time feedback
                 state_.keyingSpeed = newValue;
                 snprintf(cmdBuf, sizeof(cmdBuf), "KS%03d;", newValue);
+                dispatchMessage(*panelHandler_, cmdBuf);
+                break;
+            case UIControl::CwCarrierLevel:
+                sendUICommand(UICommandHandler::formatUICG(newValue));
+                // Apply immediately to radio for real-time feedback
+                state_.carrierLevel = newValue;
+                snprintf(cmdBuf, sizeof(cmdBuf), "CG%03d;", newValue);
                 dispatchMessage(*panelHandler_, cmdBuf);
                 break;
             default:
