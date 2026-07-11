@@ -252,7 +252,7 @@ namespace radio
         const std::string_view prefix = getCommandPrefix(response);
         if (prefix == "IF" || prefix == "FA" || prefix == "FB")
         {
-            constexpr uint64_t TUNING_DEBOUNCE_US = 300000;  // 300ms
+            constexpr uint64_t TUNING_DEBOUNCE_US = 150000;  // 150ms (post-last-edge settle; isTuning still gates during the turn)
             const bool isTuning = state.isTuning.load();
             const uint64_t lastEncoderActivity = state.lastEncoderActivityTime.load();
             const bool withinDebounce = lastEncoderActivity > 0 &&
