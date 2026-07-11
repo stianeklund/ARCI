@@ -2054,6 +2054,39 @@ void ButtonHandler::handleSpeechProcessorButton(MatrixButton &button)
         return;
     }
 
+    // CW/CW-R: repurpose PROC as CW carrier-level (CG) adjustment. The speech processor is
+    // meaningless in CW, so mirror the PROC level-popup idiom for carrier instead: long-press
+    // opens/closes the popup and the value is adjusted with the MULTI knob. A short press has
+    // no action (carrier has no on/off to toggle).
+    const int mode = m_radioManager.getState().mode.load(std::memory_order_relaxed);
+    if (mode == 3 || mode == 7)
+    {
+        const auto &cwUiState = m_radioManager.getState().uiState;
+        const bool cwPopupOpen = cwUiState.isActive() &&
+            cwUiState.getActiveControl() == radio::UIControl::CwCarrierLevel;
+
+        if (button.wasLongPressed())
+        {
+            if (cwPopupOpen)
+            {
+                ESP_LOGI(TAG, "PROC button long press (CW) - closing carrier level popup");
+                m_radioManager.exitUIMode(false);
+            }
+            else
+            {
+                // Query current CG for a fresh value, then open the carrier level popup
+                ESP_LOGD(TAG, "PROC button long press (CW) - querying current CG level");
+                m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), "CG;");
+                const int currentLevel = m_radioManager.getState().carrierLevel;
+                ESP_LOGI(TAG, "PROC button long press (CW) - entering CW carrier level UI mode (level=%d)",
+                         currentLevel);
+                m_radioManager.enterUIMode(radio::UIControl::CwCarrierLevel, currentLevel, 0, 100, 1);
+            }
+        }
+        // Short press: no action in CW. Never toggle PR here.
+        return;
+    }
+
     const auto &uiState = m_radioManager.getState().uiState;
     const auto activeCtrl = uiState.getActiveControl();
     const bool procPopupOpen = uiState.isActive() &&

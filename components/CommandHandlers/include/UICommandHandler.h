@@ -14,6 +14,7 @@ namespace radio
      * Commands handled:
      * - UIPC: Power Control UI (slider for PC command, 5-100W)
      * - UIML: Carrier/Monitor Level UI (slider for ML command, 0-20)
+     * - UICG: CW Carrier Level UI (slider for CG command, 0-100%)
      * - UIRL: NR1 Level UI (slider for RL command, 1-10)
      * - UIRS: NR2 SPAC Speed UI (slider for RL command, 0-9)
      * - UINL: Noise Blanker Level UI (slider for NL command, 1-10)
@@ -49,6 +50,7 @@ namespace radio
         // Static helper to format UI commands
         static std::string formatUIPC(int value);    // Power control: UIPC050;
         static std::string formatUIML(int value);    // Carrier level: UIML010;
+        static std::string formatUICG(int value);    // CW carrier level: UICG045;
         static std::string formatUIRL(int value);    // NR1 level: UIRL005;
         static std::string formatUIRS(int value);    // NR2 SPAC speed: UIRS005;
         static std::string formatUINL(int value);    // NB level: UINL005;
@@ -71,6 +73,7 @@ namespace radio
         // UI command handlers (never sent to radio)
         bool handleUIPC(const RadioCommand &cmd, RadioManager &rm) const;
         bool handleUIML(const RadioCommand &cmd, RadioManager &rm) const;
+        bool handleUICG(const RadioCommand &cmd, RadioManager &rm) const;
         bool handleUIRL(const RadioCommand &cmd, RadioManager &rm) const;
         bool handleUIRS(const RadioCommand &cmd, RadioManager &rm) const;
         bool handleUINL(const RadioCommand &cmd, RadioManager &rm) const;
@@ -93,6 +96,7 @@ namespace radio
         // Validation helpers
         static bool isValidPowerValue(int value);      // 5-100
         static bool isValidCarrierValue(int value);    // 0-20
+        static bool isValidCwCarrierValue(int value);  // 0-100 (CW carrier CG)
         static bool isValidNrLevelValue(int value);    // 1-10 (NR1)
         static bool isValidNr2SpeedValue(int value);   // 0-9 (NR2 SPAC)
         static bool isValidNbLevelValue(int value);    // 1-10
