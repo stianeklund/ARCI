@@ -339,6 +339,9 @@ void EncoderHandler::task(const bool movementDetected)
             m_isTuning = false;
             m_radioManager->getState().isTuning.store(false);
             m_cachedTuneVfo = -1;
+            // Gesture aborted (panel locked): free the control lease immediately so
+            // remote CAT is not locked out. Owner-scoped: no-op unless Panel owns it.
+            m_radioManager->releasePrimaryControl(radio::CommandSource::Panel);
         }
         return;
     }
@@ -435,6 +438,9 @@ void EncoderHandler::task(const bool movementDetected)
             m_isTuning = false;
             m_radioManager->getState().isTuning.store(false);
             m_cachedTuneVfo = -1;
+            // Gesture ended (idle backstop): free the control lease immediately.
+            // Owner-scoped release: no-op unless Panel currently owns it.
+            m_radioManager->releasePrimaryControl(radio::CommandSource::Panel);
             ESP_LOGD(TAG, "Local tuning stopped (idle/no delta)");
         }
         return;
@@ -494,6 +500,10 @@ void EncoderHandler::task(const bool movementDetected)
             m_radioManager->getState().isTuning.store(false);
             m_radioManager->getState().tuningStopTime.store(currentTime);
             m_cachedTuneVfo = -1;
+            // Knob stopped: free the control lease now instead of waiting for the
+            // lease to expire, so remote CAT (N1MM etc.) regains control within one
+            // encoder tick. Owner-scoped release: no-op unless Panel currently owns it.
+            m_radioManager->releasePrimaryControl(radio::CommandSource::Panel);
             ENCODER_LOGD("Local tuning stopped");
         }
     }

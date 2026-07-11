@@ -144,8 +144,10 @@ namespace radio
             return true;
         }
 
-        // Allow equal-priority takeover when the current lease is nearly expired
-        constexpr uint64_t GRACE_THRESHOLD_US = 200000ULL; // 200 ms before expiry
+        // Allow equal-priority takeover when the current lease is nearly expired.
+        // Scaled down with the shortened 250 ms lease so equal-priority USB/TCP pairs
+        // (pri 3 / pri 2) cannot ping-pong ownership for most of the lease window.
+        constexpr uint64_t GRACE_THRESHOLD_US = 40000ULL; // 40 ms before expiry
         if (priority == existingPriority && currentExpiry > currentTime &&
             (currentExpiry - currentTime) <= GRACE_THRESHOLD_US)
         {

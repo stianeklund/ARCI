@@ -701,7 +701,11 @@ namespace radio
         int getTxOwner() const { return txOwner.load(std::memory_order_relaxed); }
 
         // Control lease constants and helpers
-        static constexpr uint64_t CONTROL_LEASE_DURATION_US = 1500000ULL; // 1.5 seconds default lease window
+        // Short lease: during an active encoder turn it is refreshed every ~15 ms (live update)
+        // with the final update within 50 ms of the last edge, so 250 ms never expires mid-gesture.
+        // Gesture-end now releases the lease explicitly (EncoderHandler); this is the safety-net
+        // ceiling if a release is ever missed. Do not go below ~120 ms. Was 1.5 s.
+        static constexpr uint64_t CONTROL_LEASE_DURATION_US = 250000ULL; // 250 ms default lease window
 
         bool tryAcquireControlLease(CommandSource source, int priority, uint64_t currentTime, uint64_t leaseDurationUs);
         bool refreshControlLease(CommandSource source, uint64_t currentTime, uint64_t leaseDurationUs);
