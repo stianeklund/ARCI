@@ -218,6 +218,26 @@ void test_cache_timestamp_updated_on_remote_answer() {
     tearDown_Cache();
 }
 
+void test_frequency_cache_read_does_not_renew_authoritative_timestamp() {
+    setUp_Cache();
+
+    testRadioManager->getRemoteCATHandler().parseMessage("FA00014150000;");
+    testRadioManager->getRemoteCATHandler().parseMessage("FB00007100000;");
+    const uint64_t faTimestamp = testRadioManager->getState().commandCache.get("FA");
+    const uint64_t fbTimestamp = testRadioManager->getState().commandCache.get("FB");
+    TEST_ASSERT_TRUE(faTimestamp > 0);
+    TEST_ASSERT_TRUE(fbTimestamp > 0);
+
+    vTaskDelay(pdMS_TO_TICKS(10));
+    testRadioManager->getLocalCATHandler().parseMessage("FA;");
+    testRadioManager->getLocalCATHandler().parseMessage("FB;");
+
+    TEST_ASSERT_TRUE(faTimestamp == testRadioManager->getState().commandCache.get("FA"));
+    TEST_ASSERT_TRUE(fbTimestamp == testRadioManager->getState().commandCache.get("FB"));
+
+    tearDown_Cache();
+}
+
 // =============================================================================
 // EX Menu Cache Tests
 // =============================================================================
@@ -448,6 +468,7 @@ extern "C" void run_cache_tests(void) {
     // Cache timestamp tests
     RUN_TEST(test_cache_timestamp_updated_on_local_set_command);
     RUN_TEST(test_cache_timestamp_updated_on_remote_answer);
+    RUN_TEST(test_frequency_cache_read_does_not_renew_authoritative_timestamp);
 
     // EX menu cache tests
     RUN_TEST(test_ex_menu_cache_clear_forces_radio_query);

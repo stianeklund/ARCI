@@ -23,6 +23,7 @@
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -745,6 +746,26 @@ void initializeUsbCdc()
                     ESP_LOGI(TAG, "AI modes: radio=%u CDC0=%u CDC1=%u TCP0=%u TCP1=%u disp=%u",
                              s.aiMode.load(), s.usbCdc0AiMode.load(), s.usbCdc1AiMode.load(),
                              s.tcp0AiMode.load(), s.tcp1AiMode.load(), s.displayAiMode.load());
+
+                    const uint64_t tuningStopUs = s.tuningStopTime.load();
+                    const uint64_t pendingAUs = s.vfoAPendingTime.load();
+                    const uint64_t pendingBUs = s.vfoBPendingTime.load();
+                    const auto ageMs = [nowUs](uint64_t timestampUs) -> uint64_t {
+                        return timestampUs > 0 && nowUs >= timestampUs ? (nowUs - timestampUs) / 1000ULL : 0ULL;
+                    };
+                    ESP_LOGI(TAG,
+                             "DisplaySync: tuning=%d stopAge=%llums pendingA=%d/%llums pendingB=%d/%llums "
+                             "txFail(radio=%lu display=%lu) heapFree=%u largest=%u",
+                             s.isTuning.load(),
+                             static_cast<unsigned long long>(ageMs(tuningStopUs)),
+                             s.vfoAFrequencyPending.load(),
+                             static_cast<unsigned long long>(ageMs(pendingAUs)),
+                             s.vfoBFrequencyPending.load(),
+                             static_cast<unsigned long long>(ageMs(pendingBUs)),
+                             static_cast<unsigned long>(radioSerial.getSendFailureCount()),
+                             static_cast<unsigned long>(displaySerial.getSendFailureCount()),
+                             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_8BIT)),
+                             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
                 }
 
                 lastProfilerLogUs = nowUs;

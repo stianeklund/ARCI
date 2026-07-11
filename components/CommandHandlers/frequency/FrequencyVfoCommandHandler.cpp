@@ -145,7 +145,6 @@ namespace radio
                     const std::string response = buildCommand("FA", formatter.format(freq));
                     ESP_LOGD(TAG, "FA serving cached frequency=%llu", static_cast<unsigned long long>(freq));
                     respondToSource(cmd, response, usbSerial, rm);
-                    rm.getState().commandCache.update("FA", esp_timer_get_time());
                     respondedFromCache = true;
                 }
 
@@ -433,7 +432,6 @@ namespace radio
                     const std::string response = buildCommand("FB", formatter.format(freq));
                     ESP_LOGD(TAG, "FB serving cached frequency=%llu", static_cast<unsigned long long>(freq));
                     respondToSource(cmd, response, usbSerial, rm);
-                    rm.getState().commandCache.update("FB", esp_timer_get_time());
                     respondedFromCache = true;
                 }
 
