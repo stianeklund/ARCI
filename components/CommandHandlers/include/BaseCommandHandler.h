@@ -360,6 +360,14 @@ public:
     static constexpr uint64_t TTL_HIGH_FREQ = 450000;        // 0.45s - High-frequency polling (IF)
     static constexpr uint64_t TTL_BURST = 20000;             // 0.02s - kept for compatibility
 
+    // When the radio is in AI2/AI4 it auto-reports state changes, which refresh the
+    // cache the instant they arrive. Client-triggered TTL refresh polling is then
+    // redundant for auto-reported state, so in AI mode the effective freshness window
+    // is widened to this safety-net TTL: cached state is served without re-polling the
+    // radio, while worst-case staleness stays bounded. Does NOT apply to TTL_REALTIME
+    // meters (e.g. SM), which the radio does not auto-report.
+    static constexpr uint64_t AI_BROADCAST_SAFETY_TTL = 30000000; // 30s
+
 private:
     static constexpr size_t MAX_COMMANDS = 32; // Maximum commands per handler (ensure no truncation)
     std::string_view supportedCommands_[MAX_COMMANDS];

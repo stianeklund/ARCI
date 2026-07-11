@@ -469,16 +469,57 @@ bool StatusInfoCommandHandler::handleIF(const RadioCommand& command,
     }
     
     if (command.type == CommandType::Answer) {
+        // IF answer fields are parsed on demand from the raw frame (the parser no
+        // longer materialises them as generic params, avoiding a per-frame heap
+        // allocation). Layout per TS-590SG: 15 fixed-width fields after the 2-char
+        // "IF" prefix and before the ';' terminator.
+        const std::string_view ifFrame = command.originalMessage;
+        const std::string_view ifParams =
+            (ifFrame.size() >= 3 && ifFrame.back() == ';') ? ifFrame.substr(2, ifFrame.size() - 3)
+                                                           : std::string_view{};
+        const size_t ifFieldCount = (ifParams.size() >= 34) ? 15u : 0u;
+        const auto ifField = [ifParams](size_t idx) -> std::string_view {
+            switch (idx) {
+                case 0:  return ifParams.substr(0, 11);  // P1: frequency (11 digits)
+                case 1:  return ifParams.substr(11, 5);  // P2: 5 spaces
+                case 2:  return ifParams.substr(16, 5);  // P3: RIT/XIT offset (signed)
+                case 3:  return ifParams.substr(21, 1);  // P4: RIT status
+                case 4:  return ifParams.substr(22, 1);  // P5: XIT status
+                case 5:  return ifParams.substr(23, 1);  // P6: mem ch hundreds
+                case 6:  return ifParams.substr(24, 2);  // P7: mem ch tens+ones
+                case 7:  return ifParams.substr(26, 1);  // P8: TX/RX status
+                case 8:  return ifParams.substr(27, 1);  // P9: mode
+                case 9:  return ifParams.substr(28, 1);  // P10: VFO/Memory
+                case 10: return ifParams.substr(29, 1);  // P11: scan
+                case 11: return ifParams.substr(30, 1);  // P12: split
+                case 12: return ifParams.substr(31, 1);  // P13: tone status
+                case 13: return ifParams.substr(32, 2);  // P14: tone freq idx
+                case 14: return ifParams.substr(34, 1);  // P15: reserved
+                default: return std::string_view{};
+            }
+        };
+        // Mirror BaseCommandHandler::getStringParam/getIntParam semantics for IF fields.
+        const auto ifStr = [&](size_t idx) -> std::string {
+            return (idx < ifFieldCount) ? std::string(ifField(idx)) : std::string();
+        };
+        const auto ifInt = [&](size_t idx, int def) -> int {
+            if (idx >= ifFieldCount) return def;
+            const std::string_view sv = ifField(idx);
+            int result = 0;
+            const auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), result);
+            return (ec == std::errc{} && ptr == sv.data() + sv.size()) ? result : def;
+        };
+
         // Parse IF answer parameters and update state
-        if (command.paramSize() >= 5) {
+        if (ifFieldCount >= 5) {
             auto &state = radioManager.getState();
 
-            const int txRxState = getIntParam(command, 7, -1);  // P8: 0=RX, 1=TX
+            const int txRxState = ifInt(7, -1);  // P8: 0=RX, 1=TX
             const bool isTransmitFrame = (txRxState == 1);
-            const int reportedVfo = getIntParam(command, 9, -1); // P10: VFO/Memory selection (0=A,1=B,2=Memory)
+            const int reportedVfo = ifInt(9, -1); // P10: VFO/Memory selection (0=A,1=B,2=Memory)
 
             // P1: 11-digit frequency (skip state update while local tuning is active)
-            if (std::string freqStr = getStringParam(command, 0, ""); !freqStr.empty() && freqStr.length() >= 11) {
+            if (std::string freqStr = ifStr(0); !freqStr.empty() && freqStr.length() >= 11) {
                 uint64_t frequency = 0;
                 const auto freqParseResult = std::from_chars(freqStr.data(), freqStr.data() + freqStr.size(), frequency);
 
@@ -527,7 +568,7 @@ bool StatusInfoCommandHandler::handleIF(const RadioCommand& command,
             }
 
             // P3: RIT/XIT offset (5 chars, signed)
-            if (std::string offsetStr = getStringParam(command, 2, ""); offsetStr.length() == 5) {
+            if (std::string offsetStr = ifStr(2); offsetStr.length() == 5) {
                 int offset = 0;
                 if (offsetStr[0] == ' ') {
                     offset = std::stoi(offsetStr.substr(1));
@@ -538,31 +579,31 @@ bool StatusInfoCommandHandler::handleIF(const RadioCommand& command,
             }
             
             // P4: RIT status
-            if (std::string ritStr = getStringParam(command, 3, ""); !ritStr.empty()) {
+            if (std::string ritStr = ifStr(3); !ritStr.empty()) {
                 bool ritOn = ritStr == "1";
                 radioManager.updateRitEnabled(ritOn);
             }
             
             // P5: XIT status
-            if (std::string xitStr = getStringParam(command, 4, ""); !xitStr.empty()) {
+            if (std::string xitStr = ifStr(4); !xitStr.empty()) {
                 bool xitOn = xitStr == "1";
                 radioManager.updateXitEnabled(xitOn);
             }
         }
         
         // Process additional parameters if available (P6-P15)
-        if (command.paramSize() >= 15) {
+        if (ifFieldCount >= 15) {
             auto& state = radioManager.getState();
             
             // P6+P7: Memory channel (P6=hundreds, P7=tens+ones)
-            std::string hundredsStr = getStringParam(command, 5, "");
-            if (std::string tensOnesStr = getStringParam(command, 6, ""); !hundredsStr.empty() && !tensOnesStr.empty()) {
+            std::string hundredsStr = ifStr(5);
+            if (std::string tensOnesStr = ifStr(6); !hundredsStr.empty() && !tensOnesStr.empty()) {
                 int channel = std::stoi(hundredsStr + tensOnesStr);
                 state.memoryChannel.store(channel);
             }
             
             // P8: TX/RX status
-            if (std::string txRxStr = getStringParam(command, 7, ""); !txRxStr.empty()) {
+            if (std::string txRxStr = ifStr(7); !txRxStr.empty()) {
                 bool radioTxState = txRxStr == "1";
                 const uint64_t currentTime = esp_timer_get_time();
 
@@ -651,7 +692,7 @@ bool StatusInfoCommandHandler::handleIF(const RadioCommand& command,
             }
             
             // P9: Operating mode
-            if (std::string modeStr = getStringParam(command, 8, ""); !modeStr.empty()) {
+            if (std::string modeStr = ifStr(8); !modeStr.empty()) {
                 int mode = std::stoi(modeStr);
                 radioManager.updateMode(mode);
             }
@@ -660,26 +701,26 @@ bool StatusInfoCommandHandler::handleIF(const RadioCommand& command,
             // No additional action required here; VFO selection is handled earlier.
 
             // P11: Scan status
-            if (std::string scanStr = getStringParam(command, 10, ""); !scanStr.empty()) {
+            if (std::string scanStr = ifStr(10); !scanStr.empty()) {
                 int scanStatus = std::stoi(scanStr);
                 state.scanStatus.store(scanStatus);
             }
             
             // P12: Split status
-            if (std::string splitStr = getStringParam(command, 11, ""); !splitStr.empty()) {
+            if (std::string splitStr = ifStr(11); !splitStr.empty()) {
                 bool split = splitStr == "1";
                 radioManager.updateSplitEnabled(split);
             }
             
             // P13: Tone status
-            if (std::string toneStr = getStringParam(command, 12, ""); !toneStr.empty()) {
+            if (std::string toneStr = ifStr(12); !toneStr.empty()) {
                 int toneStatus = std::stoi(toneStr);
                 state.toneState = toneStatus;
                 state.toneStatus = toneStatus;
             }
             
             // P14: Tone frequency index
-            if (std::string toneFreqStr = getStringParam(command, 13, ""); !toneFreqStr.empty()) {
+            if (std::string toneFreqStr = ifStr(13); !toneFreqStr.empty()) {
                 int toneFreq = std::stoi(toneFreqStr);
                 state.toneFrequency = toneFreq;
             }

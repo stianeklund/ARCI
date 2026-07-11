@@ -89,15 +89,26 @@ namespace radio {
             prefix = frame.substr(0, 4);
         }
 
+        // Extract the parameter substring exactly once and thread it through the
+        // helpers below (they previously re-extracted prefix/params 2-3x per frame).
+        // isValidCAT() above guarantees the frame ends with ';', so getParameters()
+        // always takes its substr branch and the UI form matches the legacy paths.
+        std::string_view params;
+        if (prefix.length() == 4 && prefix.starts_with("UI")) {
+            params = frame.substr(4, frame.length() - 5);  // after 4-char UI prefix, before ';'
+        } else {
+            params = cat::ParserUtils::getParameters(frame);
+        }
+
         // Determine command type based on content and source
-        const CommandType type = determineCommandType(frame, source);
+        const CommandType type = determineCommandType(prefix, params, source);
 
         // Create RadioCommand with original message
         RadioCommand command(std::string(prefix), type, source, std::string(frame));
 
         // Parse parameters if present (uses SSO inline storage for zero-allocation)
         if (type == CommandType::Set || type == CommandType::Answer || prefix == "EX") {
-            parseParameters(command, frame, prefix);
+            parseParameters(command, params, prefix);
         }
 
         // Update statistics
@@ -169,17 +180,10 @@ namespace radio {
         return CommandType::Unknown;
     }
 
-    CommandType CatParser::determineCommandType(const std::string_view frame, const CommandSource source) {
-        // Extract parameters to check if frame has data
-        std::string_view prefix = cat::ParserUtils::getPrefix(frame);
-        std::string_view params = cat::ParserUtils::getParameters(frame);
-
-        // UI meta commands use 4-character prefixes (e.g., UIPC, UIXD, UIDE)
-        // Adjust prefix and params to account for extended prefix length
-        if (prefix == "UI" && frame.length() >= 5) {
-            prefix = frame.substr(0, 4);  // Extend to 4 chars: "UIDE", "UIPC", etc.
-            params = frame.substr(4, frame.length() - 5);  // Params start at char 4
-        }
+    CommandType CatParser::determineCommandType(const std::string_view prefix, const std::string_view params,
+                                                const CommandSource source) {
+        // prefix/params are pre-extracted by parseFrame (incl. the UI 4-char prefix
+        // adjustment), so no re-extraction is done here.
 
         // Query format: command with no parameters (e.g., "FA;", "UIDE;")
         // Exception: some commands are action commands that should be Set even without params
@@ -245,18 +249,10 @@ namespace radio {
         return CommandType::Answer;
     }
 
-    void CatParser::parseParameters(RadioCommand& command, const std::string_view frame,
+    void CatParser::parseParameters(RadioCommand& command, const std::string_view params,
                                      const std::string_view commandPrefix) {
-        // UI meta commands have 4-char prefix, extract params starting at position 4
-        std::string_view paramStr;
-        if (commandPrefix.starts_with("UI") && commandPrefix.length() == 4) {
-            // UI commands: extract after 4-char prefix, before semicolon
-            if (frame.length() > 5 && frame.ends_with(";")) {
-                paramStr = frame.substr(4, frame.length() - 5);
-            }
-        } else {
-            paramStr = cat::ParserUtils::getParameters(frame);
-        }
+        // params is pre-extracted by parseFrame (incl. the UI 4-char-prefix handling).
+        const std::string_view paramStr = params;
 
         if (paramStr.empty()) {
             return;
@@ -341,27 +337,12 @@ namespace radio {
                 command.addParam(paramStr);
             }
         } else if (commandPrefix == "IF") {
-            // IF: Information command - 15 parameters per TS-590SG spec
-            // Format: P1(11)P2(5)P3(5)P4(1)P5(1)P6(1)P7(2)P8(1)P9(1)P10(1)P11(1)P12(1)P13(1)P14(2)P15(1)
-            if (paramStr.length() >= 34) {
-                command.addParam(paramStr.substr(0, 11));   // P1: frequency
-                command.addParam(paramStr.substr(11, 5));   // P2: 5 spaces
-                command.addParam(paramStr.substr(16, 5));   // P3: RIT/XIT offset
-                command.addParam(paramStr.substr(21, 1));   // P4: RIT status
-                command.addParam(paramStr.substr(22, 1));   // P5: XIT status (overflow)
-                command.addParam(paramStr.substr(23, 1));   // P6: mem ch hundreds (overflow)
-                command.addParam(paramStr.substr(24, 2));   // P7: mem ch tens+ones (overflow)
-                command.addParam(paramStr.substr(26, 1));   // P8: TX/RX status (overflow)
-                command.addParam(paramStr.substr(27, 1));   // P9: mode (overflow)
-                command.addParam(paramStr.substr(28, 1));   // P10: VFO/Memory (overflow)
-                command.addParam(paramStr.substr(29, 1));   // P11: scan (overflow)
-                command.addParam(paramStr.substr(30, 1));   // P12: split (overflow)
-                command.addParam(paramStr.substr(31, 1));   // P13: tone status (overflow)
-                command.addParam(paramStr.substr(32, 2));   // P14: tone freq idx (overflow)
-                command.addParam(paramStr.substr(34, 1));   // P15: reserved (overflow)
-            } else {
-                command.addParam(paramStr);
-            }
+            // IF is parsed on demand from the raw frame in
+            // StatusInfoCommandHandler::handleIF (fixed-width 15-field layout).
+            // Materialising those 15 fields as generic params here spilled 11 of
+            // them into RadioCommand's heap overflow vector on every IF frame, so
+            // we intentionally store nothing for IF and leave the fields to the
+            // zero-allocation, on-demand parse in the handler.
         } else {
             // Default: try int first, fall back to string
             if (const int value = cat::ParserUtils::parseInt(paramStr); value >= 0) {
