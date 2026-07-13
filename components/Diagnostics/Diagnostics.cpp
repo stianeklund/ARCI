@@ -95,53 +95,40 @@ void Diagnostics::printStackStatus() const {
 }
 
 void Diagnostics::printCpuStatus() {
-    constexpr size_t bufferSize = 2048;
-    char* runTimeStatsBuffer = static_cast<char*>(heap_caps_malloc(bufferSize, MALLOC_CAP_8BIT));
-    if (!runTimeStatsBuffer) {
+    // Collect per-task runtime data via the STRUCT API (uxTaskGetSystemState),
+    // which returns a TaskStatus_t[] plus a total-runtime out-param. No text
+    // table, no strtok/sscanf parsing, and no dependence on FreeRTOS column layout.
+    const UBaseType_t taskCount = uxTaskGetNumberOfTasks();
+    auto taskStatusArray = static_cast<TaskStatus_t*>(
+        heap_caps_malloc(taskCount * sizeof(TaskStatus_t), MALLOC_CAP_8BIT));
+    if (!taskStatusArray) {
         ESP_LOGE(TAG, "Failed to allocate buffer for CPU monitoring");
         return;
     }
 
-    // Get runtime statistics
-    vTaskGetRunTimeStats(runTimeStatsBuffer);
+    uint32_t totalRuntime = 0;
+    const UBaseType_t actualTaskCount = uxTaskGetSystemState(taskStatusArray, taskCount, &totalRuntime);
 
-    // Parse the runtime stats to extract per-core information
-    uint32_t idle0Runtime = 0, idle1Runtime = 0, totalRuntime = 0;
-
-    // Make a copy for parsing since strtok modifies the buffer
-    char* parseBuffer = static_cast<char*>(heap_caps_malloc(bufferSize, MALLOC_CAP_8BIT));
-    if (!parseBuffer) {
-        heap_caps_free(runTimeStatsBuffer);
-        return;
-    }
-    strcpy(parseBuffer, runTimeStatsBuffer);
-
-    // Parse the buffer to find IDLE0 and IDLE1 runtimes
-    const char* line = strtok(parseBuffer, "\n\r");
-    while (line != nullptr) {
-        char taskName[configMAX_TASK_NAME_LEN];
-        uint32_t runtime, percent;
-
-        if (sscanf(line, "%s %lu %lu", taskName, &runtime, &percent) == 3 ||
-            sscanf(line, "%s %lu %lu%%", taskName, &runtime, &percent) == 3) {
-            if (strcmp(taskName, "IDLE0") == 0) {
-                idle0Runtime = runtime;
-            } else if (strcmp(taskName, "IDLE1") == 0) {
-                idle1Runtime = runtime;
-            }
-            totalRuntime += runtime;
+    // Extract idle-task runtimes directly from the struct array
+    uint32_t idle0Runtime = 0, idle1Runtime = 0;
+    for (UBaseType_t i = 0; i < actualTaskCount; i++) {
+        const char* taskName = taskStatusArray[i].pcTaskName;
+        if (strcmp(taskName, "IDLE0") == 0) {
+            idle0Runtime = taskStatusArray[i].ulRunTimeCounter;
+        } else if (strcmp(taskName, "IDLE1") == 0) {
+            idle1Runtime = taskStatusArray[i].ulRunTimeCounter;
         }
-        line = strtok(nullptr, "\n\r");
     }
-
-    heap_caps_free(parseBuffer);
 
     // Calculate deltas (handles wraparound automatically)
     const uint32_t deltaIdle0 = idle0Runtime - m_lastIdle0Runtime;
     const uint32_t deltaIdle1 = idle1Runtime - m_lastIdle1Runtime;
     const uint32_t deltaTotal = totalRuntime - m_lastTotalTime;
 
-    // Calculate per-core usage percentages from deltas
+    // NOTE: On dual-core, totalRuntime is the combined runtime across BOTH cores,
+    // while deltaIdle0/deltaIdle1 are single-core idle deltas. Dividing a single-core
+    // idle delta by the combined total under-reports idle (and over-reports busy) per
+    // core. This is a known pre-existing math quirk, left unchanged here.
     if (deltaTotal > 0 && m_lastTotalTime > 0) {
         const float idle0Percent = static_cast<float>(deltaIdle0) / deltaTotal * 100.0f;
         const float idle1Percent = static_cast<float>(deltaIdle1) / deltaTotal * 100.0f;
@@ -159,67 +146,27 @@ void Diagnostics::printCpuStatus() {
         ESP_LOGI(TAG, "Task Name        | Core | CPU%% | Priority | Stack Free");
         ESP_LOGI(TAG, "-----------------|------|------|----------|----------");
 
-        const UBaseType_t taskCount = uxTaskGetNumberOfTasks();
-        auto taskStatusArray = static_cast<TaskStatus_t*>(
-            heap_caps_malloc(taskCount * sizeof(TaskStatus_t), MALLOC_CAP_8BIT));
+        for (UBaseType_t i = 0; i < actualTaskCount; i++) {
+            const char* name = taskStatusArray[i].pcTaskName;
+            const uint32_t runtime = taskStatusArray[i].ulRunTimeCounter;
+            const float percentFloat = totalRuntime > 0
+                ? (static_cast<float>(runtime) * 100.0f) / static_cast<float>(totalRuntime)
+                : 0.0f;
 
-        if (taskStatusArray) {
-            const UBaseType_t actualTaskCount = uxTaskGetSystemState(taskStatusArray, taskCount, nullptr);
+            // Skip IDLE tasks and show tasks with measurable activity
+            if (strncmp(name, "IDLE", 4) != 0 && (percentFloat > 0.0f || runtime > 1000)) {
+                const char* coreStr = "?";
+                const BaseType_t coreAffinity = xTaskGetCoreID(taskStatusArray[i].xHandle);
+                if (coreAffinity == 0) coreStr = "0";
+                else if (coreAffinity == 1) coreStr = "1";
+                else coreStr = "B";
 
-            // Re-get runtime stats for task parsing
-            vTaskGetRunTimeStats(runTimeStatsBuffer);
-            parseBuffer = static_cast<char*>(heap_caps_malloc(bufferSize, MALLOC_CAP_8BIT));
-            if (parseBuffer) {
-                strcpy(parseBuffer, runTimeStatsBuffer);
-                line = strtok(parseBuffer, "\n\r");
+                const UBaseType_t priority = taskStatusArray[i].uxCurrentPriority;
+                const uint32_t stackFree = taskStatusArray[i].usStackHighWaterMark * sizeof(StackType_t);
 
-                while (line != nullptr) {
-                    char taskName[configMAX_TASK_NAME_LEN];
-                    uint32_t runtime, percent;
-
-                    int parsedFields = sscanf(line, "%s %lu %lu", taskName, &runtime, &percent);
-                    if (parsedFields == 2) {
-                        percent = totalRuntime > 0 ? (runtime * 100) / totalRuntime : 0;
-                        parsedFields = 3;
-                    } else if (parsedFields != 3) {
-                        parsedFields = sscanf(line, "%s %lu %lu%%", taskName, &runtime, &percent);
-                    }
-
-                    if (parsedFields >= 2) {
-                        const float percentFloat = totalRuntime > 0
-                            ? (static_cast<float>(runtime) * 100.0f) / static_cast<float>(totalRuntime)
-                            : 0.0f;
-
-                        // Skip IDLE tasks and show tasks with measurable activity
-                        if (strncmp(taskName, "IDLE", 4) != 0 && (percentFloat > 0.0f || runtime > 1000)) {
-                            const char* coreStr = "?";
-                            uint32_t stackFree = 0;
-                            UBaseType_t priority = 0;
-
-                            // Find task in system state
-                            for (UBaseType_t i = 0; i < actualTaskCount; i++) {
-                                if (strcmp(taskStatusArray[i].pcTaskName, taskName) == 0) {
-                                    const TaskHandle_t taskHandle = taskStatusArray[i].xHandle;
-                                    priority = taskStatusArray[i].uxCurrentPriority;
-                                    stackFree = taskStatusArray[i].usStackHighWaterMark * sizeof(StackType_t);
-
-                                    const BaseType_t coreAffinity = xTaskGetCoreID(taskHandle);
-                                    if (coreAffinity == 0) coreStr = "0";
-                                    else if (coreAffinity == 1) coreStr = "1";
-                                    else coreStr = "B";
-                                    break;
-                                }
-                            }
-
-                            ESP_LOGI(TAG, "%-16s | %-4s | %3.1f%% | %8lu | %8lu",
-                                     taskName, coreStr, percentFloat, priority, stackFree);
-                        }
-                    }
-                    line = strtok(nullptr, "\n\r");
-                }
-                heap_caps_free(parseBuffer);
+                ESP_LOGI(TAG, "%-16s | %-4s | %3.1f%% | %8lu | %8lu",
+                         name, coreStr, percentFloat, priority, stackFree);
             }
-            heap_caps_free(taskStatusArray);
         }
     }
 
@@ -232,7 +179,7 @@ void Diagnostics::printCpuStatus() {
              esp_get_free_heap_size() / 1024, esp_get_minimum_free_heap_size() / 1024);
     ESP_LOGI(TAG, "==========================================");
 
-    heap_caps_free(runTimeStatsBuffer);
+    heap_caps_free(taskStatusArray);
 }
 
 void Diagnostics::start() {
