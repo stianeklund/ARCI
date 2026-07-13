@@ -212,22 +212,32 @@ namespace radio
             {
             case CommandSource::UsbCdc0:
                 responseMode = state.usbCdc0AiMode.load();
+                ESP_LOGI(TAG, "AI query from %s -> AI%d;", RadioCommand::sourceName(command.source).data(),
+                         responseMode);
                 respondToSource(command, formatAIResponse(responseMode), usbSerial, radioManager);
                 break;
             case CommandSource::UsbCdc1:
                 responseMode = state.usbCdc1AiMode.load();
+                ESP_LOGI(TAG, "AI query from %s -> AI%d;", RadioCommand::sourceName(command.source).data(),
+                         responseMode);
                 respondToSource(command, formatAIResponse(responseMode), usbSerial, radioManager);
                 break;
             case CommandSource::Tcp0:
                 responseMode = state.tcp0AiMode.load();
+                ESP_LOGI(TAG, "AI query from %s -> AI%d;", RadioCommand::sourceName(command.source).data(),
+                         responseMode);
                 radioManager.sendToSource(CommandSource::Tcp0, formatAIResponse(responseMode));
                 break;
             case CommandSource::Tcp1:
                 responseMode = state.tcp1AiMode.load();
+                ESP_LOGI(TAG, "AI query from %s -> AI%d;", RadioCommand::sourceName(command.source).data(),
+                         responseMode);
                 radioManager.sendToSource(CommandSource::Tcp1, formatAIResponse(responseMode));
                 break;
             case CommandSource::Display:
                 responseMode = state.displayAiMode.load();
+                ESP_LOGI(TAG, "AI query from %s -> AI%d;", RadioCommand::sourceName(command.source).data(),
+                         responseMode);
                 radioManager.sendToDisplay(formatAIResponse(responseMode));
                 break;
             default:
@@ -252,6 +262,8 @@ namespace radio
                 return false;
             }
 
+            ESP_LOGI(TAG, "AI SET from %s: %s -> client mode AI%d;",
+                     RadioCommand::sourceName(command.source).data(), command.originalMessage.c_str(), mode);
             updateClientAIMode(command.source, mode, radioSerial, radioManager);
             return true;
         }
@@ -273,21 +285,13 @@ namespace radio
                     ESP_LOGW(TAG, "📻 Radio AI answer: AI%d; (✗ expected AI%d - radio may be rejecting mode)",
                              mode, expectedMode);
                 }
-                // Route radio's actual AI mode to USB/TCP clients (they need to know
-                // the real radio state), but send per-interface preference to display.
-                // The display should reflect its own AI preference (displayAiMode),
-                // not the radio's raw mode which may have been changed by external
-                // software on another COM port. The enforcement loop will restore the
-                // radio to the desired mode; forwarding a transient AI0 to the display
-                // would confuse its state tracking.
-                routeAnswerResponse(command, formatAIResponse(mode), usbSerial, radioManager);
-                const int displayMode = state.displayAiMode.load();
-                if (mode != displayMode)
-                {
-                    ESP_LOGI(TAG, "📻 Sending display its AI preference AI%d; (radio reported AI%d)",
-                             displayMode, mode);
-                    radioManager.sendToDisplay(formatAIResponse(displayMode));
-                }
+                // The physical radio AI mode is ARCI's internal collector state. It is
+                // not a response to any external CAT interface: external AI; queries
+                // are answered from that interface's virtual preference above, while
+                // the main task keeps the physical radio at AI2/AI4. Never route this
+                // acknowledgement through the generic answer router, where a stale
+                // query origin or an AI-enabled client could expose it as AI2/AI4.
+                ESP_LOGD(TAG, "📻 Radio AI answer is internal-only: AI%d;", mode);
             }
             else
             {
