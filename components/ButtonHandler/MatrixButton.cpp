@@ -16,29 +16,33 @@ MatrixButton::MatrixButton(const TCA8418Handler::MatrixKey key, const uint32_t d
 }
 
 void MatrixButton::updateState(const bool pressed) {
+    updateState(pressed, esp_timer_get_time() / 1000);
+}
+
+void MatrixButton::updateState(const bool pressed, const int64_t pressTimeMs) {
     // TCA8418 logic: pressed=false means button down, pressed=true means button up
     // Button class logic: true means pressed, false means released
     // So we need to invert the TCA8418 state
 
     const bool buttonPressed = !pressed;
-    
+
     // Only update if state actually changed
     if (pressed != m_lastTcaState) {
         m_lastTcaState = pressed;
-        
-        ESP_LOGD(TAG, "MatrixButton state change: TCA pressed=%s -> buttonPressed=%s", 
+
+        ESP_LOGD(TAG, "MatrixButton state change: TCA pressed=%s -> buttonPressed=%s",
                  pressed ? "true" : "false", buttonPressed ? "true" : "false");
-        
+
         // Use Button's new event-driven methods
         if (buttonPressed) {
-            m_button.handlePress();
+            m_button.handlePress(pressTimeMs);
             ESP_LOGD(TAG, "Called handlePress()");
         } else {
             m_button.handleRelease();
             ESP_LOGD(TAG, "Called handleRelease()");
         }
     }
-    
+
     // Always call update to handle timing logic (for long press detection)
     m_button.update();
 }

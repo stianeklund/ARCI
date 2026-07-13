@@ -19,6 +19,14 @@ public:
      * @param pressed The raw pressed state from TCA8418 (false = pressed, true = released)
      */
     void updateState(bool pressed);
+
+    /**
+     * @brief Update the button state using a caller-supplied press instant
+     * @param pressed The raw pressed state from TCA8418 (false = pressed, true = released)
+     * @param pressTimeMs Timestamp (ms) of the physical key event. Used so a queued
+     *        event records the true press instant instead of the drain time.
+     */
+    void updateState(bool pressed, int64_t pressTimeMs);
     
     // Delegate to Button class methods
     void update();             // Update timing logic (for long press detection)

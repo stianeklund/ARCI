@@ -24,10 +24,6 @@ public:
         : ButtonHandler(radioManager, macroManager, nvsManager) {
     }
 
-    // Expose protected/private methods for testing
-    using ButtonHandler::togglePowerState;
-    using ButtonHandler::setSplitFrequency;
-    
     // Test helpers for trigger methods
     void testTriggerSplitButton() { triggerSplitButton(); }
     void testTriggerTransverterMacroButton() { triggerTransverterMacroButton(); }
@@ -551,9 +547,10 @@ void test_band_button_frequency_aware() {
     ESP_LOGI("TEST", "Starting test_band_button_frequency_aware");
     clearMessages();
     
-    // triggerBandUpButton() uses slot-based cycling starting from bandUpSlotIndex=0
-    // Each call increments the slot: 0->1, 1->2, 2->3, etc., wrapping at 10->0
-    // Frequency doesn't affect the band selection in triggerBandUpButton()
+    // triggerBandUpButton() cycles from RadioState.bandNumber (starts at 0), which the
+    // BU command handler increments on each press: 0->1, 1->2, 2->3, ..., wrapping at 10->0.
+    // With the mock serial no FA/FB answer is fed back, so band selection stays driven by
+    // the BU handler rather than the queried frequency.
     
     struct SlotCycleTest {
         int cycle;
@@ -569,12 +566,12 @@ void test_band_button_frequency_aware() {
         {4, 5, "Fifth call: slot 4 -> 5"}
     };
     
-    // Test slot-based band cycling (frequency is irrelevant)
-    ESP_LOGI("TEST", "Testing slot-based band cycling");
+    // Test bandNumber-based band cycling (mock feeds back no FA/FB answer)
+    ESP_LOGI("TEST", "Testing bandNumber-based band cycling");
     for (const auto& test : tests) {
         ESP_LOGI("TEST", "%s", test.description);
-        
-        // Set some frequency (doesn't matter for slot-based cycling)
+
+        // Set some frequency (no FA/FB answer is fed back, so it does not affect bandNumber)
         radioManager->updateVfoAFrequency(14200000);
         
         // Simulate band button short press (BU command)
