@@ -22,7 +22,8 @@ Three implementation waves were completed after this audit. Status per finding:
 | ✅ Fixed (P1 wave) | H4 66 shared fields atomicized; M2 fused tag+timestamp tracker (release/acquire); H6 macros → `macro_async` worker, PS0/transverter sync → one-shot tasks, no `vTaskDelay` under `dispatchMutex_` anywhere; M1 `DispatchOutcome` + `?;` on timeout + retry-once in radio/display tasks; H7 button event queue (single ownership); H8 encoder wake ISR armed + peek-then-commit pulse accounting; M5 NVS handle RAII; M6 deferred power-off saves |
 | ✅ Fixed (P2 wave) | H9 WiFi backoff reconnect; M4 TCP pending-TX buffer; M9 opt-in auth token + accept rate-limit + bind addr; M10 `stop()` join handshake; M11 all metrics coherent/wired (fictional `feedbackLoopsPrevented` deleted); M14 WDT panic + drain feeds; M15 stuck-INT watchdog, stack-bytes constant, PCF8575 bounded wait, init-order callback races (TCA8418 via main.cpp reorder, PCF8575 via release/acquire `m_callbackReady`); M16 fail-fast creation; L7 fd revalidation; serial-queue test suite revived (+H1 regression test); dead code deleted (main.cpp, RadioCore, ButtonHandler, `readMultipleRegisters`, two-part `sendMessage` chain, CDC `onFrameCallback_`); L2 stack monitor wired with real sizes |
 | ✅ Fixed (P3 wave) | M7 CDC TX serialized (drain+enqueue under one lock, residue-ordering guard, atomic backpressure); M8 UART 64-byte overflow discard + fragment resync-through-terminator; M12 MacroStorage cache mutex (NVS off-lock); M13 `ParamValue::wasTruncated()`; `bandDownSlotIndex` bug fixed via shared `bandNumber` (F-button-3 steps N→N-1); `sendCommandSequence` propagates dispatch failures; VOX end-to-end (button reads `voxEnabled`; `handleVX` now writes it on set/answer); encoder gesture-end idle nuance + `tuningStopTime`; direct `CatParser::parseFrame`/`determineCommandType` tests added (Set/Read/Answer, EX 7v8, PS); vacuous CatParser tests given real assertions; stray `nul`/`README.md~` deleted |
-| ⬜ Open (Medium) | M3 TOCTOU toggles (no longer UB after H4, but lost-update button toggles remain — needs semantic toggle-in-handler) |
+| ✅ Fixed (M3) | Button toggle TOCTOU closed via `RadioManager::dispatchToggle(handler, ToggleTarget)` — read+invert+dispatch held as one critical section under `dispatchMutex_`; 8 boolean targets (PR/RA/PA/RT/XT/VX/AC/AN) routed through it, plus `toggleSplit`/`toggleDataMode` hardened with the same lock discipline; 9 deterministic tests (per-target inversion + a live-state/no-stale-read regression). Multi-state cycles (AGC `GC`, NB `NB`) deliberately deferred — they need a `dispatchCycleLocked` sibling, tracked below |
+| ⬜ Open (Medium) | AGC/NB multi-state cycle buttons carry the same lost-update window as M3 did; need a `dispatchCycleLocked` (read-advance-dispatch under the lock) analogous to `dispatchToggle` |
 | ⬜ Open (Low/hygiene) | Boot latency (10 s WiFi block + 3 s CDC sleep); Diagnostics runtime-stats text parsing; ADCHandler idle 50 Hz no-op task; `SerialHandler` destructor task-delete; CDC >256 B / TCP >128 B frame truncation without terminator |
 | ⬜ Open (Tests) | Vacuous `TEST_ASSERT_TRUE(true)` / `TEST_IGNORE` guards in CommandHandlers suite (~12+16); zero coverage for NvsManager/WiFiManager/Diagnostics; inert per-component `test/CMakeLists.txt` files (vestigial — `unit_test` is the real runner) |
 
@@ -237,7 +238,7 @@ timestamp", frequency visibly reverts mid-tuning. **Fix:** fuse tag+timestamp
 into one 64-bit atomic (16-bit tag + 48-bit µs) or per-slot seqlock;
 release/acquire publication; route encoder cache write-backs through dispatch.
 
-### M3. TOCTOU toggle pattern in every ButtonTask toggle (GPT #4-adjacent — confirmed)
+### M3. TOCTOU toggle pattern in every ButtonTask toggle (GPT #4-adjacent — confirmed) — ✅ FIXED
 
 Read cached state (no lock) → invert → dispatch: attenuator
 (`ButtonHandler.cpp:2198`), preamp (`:2222`), processor (`:358`), AGC (`:398`),
@@ -245,6 +246,26 @@ NB (`:414,460`), antenna (`:2601`), TX-ATU (`:2643`), split
 (`RadioManager.cpp:1427`). A concurrent CAT client toggle makes the button
 press a visible no-op or the wrong direction. **Fix:** semantic toggle
 resolved inside the handler under the dispatch lock.
+
+**Resolution.** Added `RadioManager::dispatchToggle(CATHandler&, ToggleTarget)`
+(`RadioManager.cpp`): acquires `dispatchMutex_` (2 s `try_lock_for`, same budget
+as `dispatchMessageEx`), reads the current cached value for the target, and
+dispatches the inverted absolute frame while still holding the lock — so the
+read and the dispatch are one critical section, mutually excluded against every
+other CAT ingress path (remote sets, radio answers, macro playback). The 8
+boolean targets (`PR`, `RA`, `PA`, `RT`, `XT`, `VX`, `AC`, `AN`) now route
+through it from `ButtonHandler.cpp`; the manual read/invert/`snprintf` kernels
+were deleted. `toggleSplit` and `toggleDataMode` — same bug, already
+`RadioManager` methods — were hardened with the identical lock-held read+dispatch.
+Covered by 9 deterministic tests in `test_button_handler.cpp` (per-target
+inversion from both starting values + a live-state regression proving the toggle
+reads the *updated* cache, not a stale pre-read). Verified with xtensa
+`-fsyntax-only` on both changed sources.
+
+**Deliberately out of scope:** the AGC (`GC`) and NB (`NB`) *cycle* buttons —
+they advance through multiple states rather than flipping a boolean, so they
+need a `dispatchCycleLocked` sibling (read current → advance → dispatch, under
+the lock). Tracked as the remaining Open (Medium) row in the status table above.
 
 ### M4. TCP partial-send silently drops the frame tail → permanent client desync (NEW)
 

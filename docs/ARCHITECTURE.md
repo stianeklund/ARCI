@@ -217,10 +217,13 @@ UI/feature components (ButtonHandler, EncoderHandler, etc.) should not embed CAT
 
 **High-level helpers (preferred):**
 
+- `RadioManager::dispatchToggle(handler, ToggleTarget)` — atomically flip a boolean radio setting (Processor/Attenuator/Preamp/Rit/Xit/Vox/TxAtu/Antenna). Reads the current cached value and dispatches the inverted absolute frame **while holding `dispatchMutex_`**, so the read+dispatch is one critical section. UI code must use this instead of doing its own `getState()`→invert→`PR%d;`, which races a concurrent CAT set (the "button press does nothing / wrong direction" bug). `toggleSplit`/`toggleDataMode` apply the same lock discipline internally.
 - `RadioManager::enableSplit(copyVfo=true)`, `RadioManager::disableSplit()`, `RadioManager::toggleSplit(copyVfo=true)`
 - `RadioManager::copyVfoAToB()`, `setRxOnA/B()`, `setTxOnA/B()`
 - `RadioManager::getLocalCATHandler().parseMessage()` for direct local command injection
 - `RadioManager::getRemoteCATHandler().parseMessage()` for processing radio responses
+
+> **Note — multi-state cycles.** AGC (`GC`) and noise blanker (`NB`) are cycles, not booleans, so they are not covered by `dispatchToggle`. They still carry the same read-then-dispatch window and should move to a future `dispatchCycleLocked` helper (read current → advance → dispatch, under the lock).
 
 **Direct handler access (when needed):**
 - `radioManager.getLocalCATHandler().parseMessage("FA00014150000;")` for local commands

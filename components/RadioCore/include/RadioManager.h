@@ -43,6 +43,21 @@ namespace radio
         LockTimeout  // Could not acquire dispatchMutex_ within the timeout; not processed
     };
 
+    // Targets for atomic button toggles (M3): the read-current-and-invert is
+    // resolved under dispatchMutex_ so a concurrent CAT set cannot make the press
+    // a no-op or flip the wrong direction.
+    enum class ToggleTarget
+    {
+        Processor,   // PR
+        Attenuator,  // RA
+        Preamp,      // PA
+        Rit,         // RT
+        Xit,         // XT
+        Vox,         // VX
+        TxAtu,       // AC (TX-AT in/thru; RX path mirrors TX)
+        Antenna,     // AN (main antenna P1 only; P2/P3 = 9 = no change)
+    };
+
     /**
      * @brief Central manager for all radio state and command processing
      *
@@ -438,6 +453,12 @@ namespace radio
         // unhandled command, so callers can surface a defined CAT error ("?;") or
         // retry instead of silently dropping the message.
         DispatchOutcome dispatchMessageEx(CATHandler &handler, std::string_view message) const;
+
+        // Atomically toggle a boolean radio setting: reads the current cached value and
+        // dispatches the inverted absolute command while holding dispatchMutex_, so the
+        // read and dispatch are one critical section (fixes M3 TOCTOU). Returns the
+        // dispatch outcome; LockTimeout if the lock could not be acquired in time.
+        DispatchOutcome dispatchToggle(CATHandler &handler, ToggleTarget target) const;
 
         // Mode access methods for command handlers
         /**

@@ -26,7 +26,6 @@ static const char *const agcNames[]  = {"OFF", "FAST", "SLOW", "AUTO"};
 static const char *const nrNames[]   = {"OFF", "NR1", "NR2"};
 static const char *const vfoNames[]  = {"VFO A", "VFO B", "Memory"};
 static const int         voxDelays[] = {150, 300, 500, 1000};
-static const char *const antNames[]  = {"ANT1", "ANT2"};
 
 namespace
 {
@@ -368,14 +367,9 @@ void ButtonHandler::triggerSpeechProcessorButton()
     ESP_LOGI(TAG, "Speech Processor trigger: DATA mode -> %s", newDataMode ? "ON" : "OFF");
 
     // Also simulate short press behavior: toggle Speech Processor (PR)
-    bool currentPR = m_radioManager.getState().processor;
-    int newPR = currentPR ? 0 : 1; // Toggle between 0 (OFF) and 1 (ON)
-
-    char prCommand[8];
-    std::snprintf(prCommand, sizeof(prCommand), "PR%d;", newPR);
-    m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), prCommand);
-
-    ESP_LOGI(TAG, "Speech Processor trigger: PR %s -> %s", currentPR ? "ON" : "OFF", newPR ? "ON" : "OFF");
+    m_radioManager.dispatchToggle(m_radioManager.getPanelCATHandler(),
+                                  radio::ToggleTarget::Processor);
+    ESP_LOGI(TAG, "Speech Processor trigger: PR toggled");
 }
 
 void ButtonHandler::trigger_A_equals_B_button()
@@ -1925,18 +1919,12 @@ void ButtonHandler::handleRitButton(MatrixButton &button)
     // Handle short press - always toggle RIT on/off
     if (button.wasShortReleased())
     {
-        bool currentRIT = m_radioManager.isRitEnabled();
-        int newRIT = currentRIT ? 0 : 1;
-
-        char rtCommand[8];
-        std::snprintf(rtCommand, sizeof(rtCommand), "RT%d;", newRIT);
-        m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), rtCommand);
-
+        m_radioManager.dispatchToggle(m_radioManager.getPanelCATHandler(),
+                                      radio::ToggleTarget::Rit);
         // Query RT; to confirm RIT state from radio
         ESP_LOGI(TAG, "RIT button short press - querying RT; for current state");
         m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), "RT;");
-
-        ESP_LOGI(TAG, "RIT button short press: %s -> %s", currentRIT ? "ON" : "OFF", newRIT ? "ON" : "OFF");
+        ESP_LOGI(TAG, "RIT button short press: RT toggled");
     }
 }
 
@@ -1994,18 +1982,11 @@ void ButtonHandler::handleXitButton(MatrixButton &button)
     // Handle short press - always toggle XIT on/off
     if (button.wasShortReleased())
     {
-        bool currentXIT = m_radioManager.isXitEnabled();
-        int newXIT = currentXIT ? 0 : 1;
-
-        char xtCommand[8];
-        std::snprintf(xtCommand, sizeof(xtCommand), "XT%d;", newXIT);
-        m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), xtCommand);
-
-        // Query XT; to confirm XIT state from radio
+        m_radioManager.dispatchToggle(m_radioManager.getPanelCATHandler(),
+                                      radio::ToggleTarget::Xit);
         ESP_LOGI(TAG, "XIT button short press - querying XT; for current state");
         m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), "XT;");
-
-        ESP_LOGI(TAG, "XIT button short press: %s -> %s", currentXIT ? "ON" : "OFF", newXIT ? "ON" : "OFF");
+        ESP_LOGI(TAG, "XIT button short press: XT toggled");
     }
 }
 
@@ -2228,14 +2209,9 @@ void ButtonHandler::handleSpeechProcessorButton(MatrixButton &button)
         // Normal short press - toggle Speech Processor (PR command)
         ESP_LOGI(TAG, "Speech Processor button short press - toggling PR");
 
-        bool currentPR = m_radioManager.getState().processor;
-        int newPR = currentPR ? 0 : 1; // Toggle between 0 (OFF) and 1 (ON)
-
-        char prCommand[8];
-        std::snprintf(prCommand, sizeof(prCommand), "PR%d;", newPR);
-        m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), prCommand);
-
-        ESP_LOGI(TAG, "Speech Processor: %s -> %s", currentPR ? "ON" : "OFF", newPR ? "ON" : "OFF");
+        m_radioManager.dispatchToggle(m_radioManager.getPanelCATHandler(),
+                                      radio::ToggleTarget::Processor);
+        ESP_LOGI(TAG, "Speech Processor button short press: PR toggled");
     }
 }
 
@@ -2251,15 +2227,9 @@ void ButtonHandler::handleRfAttenuatorButton()
         return;
     }
 
-    bool currentRA = m_radioManager.getState().attenuator;
-    int newRA = currentRA ? 0 : 1; // Toggle between 0 (OFF) and 1 (ON)
-
-    // RA command format: RA<P1><P1>; where P1P1 is 00 (OFF) or 01 (ON)
-    char raCommand[8];
-    std::snprintf(raCommand, sizeof(raCommand), "RA0%d;", newRA);
-    m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), raCommand);
-
-    ESP_LOGI(TAG, "RF Attenuator button pressed (0x27): %s -> %s", currentRA ? "ON" : "OFF", newRA ? "ON" : "OFF");
+    m_radioManager.dispatchToggle(m_radioManager.getPanelCATHandler(),
+                                  radio::ToggleTarget::Attenuator);
+    ESP_LOGI(TAG, "RF Attenuator button pressed (0x27): RA toggled");
 }
 
 
@@ -2275,14 +2245,9 @@ void ButtonHandler::handlePreampButton()
         return;
     }
 
-    const bool currentPreamp = m_radioManager.getState().preAmplifier;
-    const bool newPreamp = !currentPreamp;
-
-    char paCommand[8];
-    std::snprintf(paCommand, sizeof(paCommand), "PA%d;", newPreamp ? 1 : 0);
-    m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), paCommand);
-
-    ESP_LOGI(TAG, "Preamp button (0x04): %s -> %s", currentPreamp ? "ON" : "OFF", newPreamp ? "ON" : "OFF");
+    m_radioManager.dispatchToggle(m_radioManager.getPanelCATHandler(),
+                                  radio::ToggleTarget::Preamp);
+    ESP_LOGI(TAG, "Preamp button (0x04): PA toggled");
 }
 
 void ButtonHandler::handleClearButton()
@@ -2633,38 +2598,18 @@ void ButtonHandler::handleVoxButton(MatrixButton &button)
         // Short press - toggle VOX on/off
         ESP_LOGI(TAG, "VOX button short press detected - toggling VOX");
 
-        // voxEnabled in RadioState is the shared source of truth, so the toggle target
-        // tracks CAT-initiated VX changes instead of a private static that would drift.
-        // Write it back for immediate coherence after dispatching the command.
-        // NOTE: full CAT sync also requires the VX command/answer handler to store
-        // voxEnabled; that handler lives outside this file's scope.
-        auto &state = m_radioManager.getState();
-        const bool newVoxState = !state.voxEnabled.load(std::memory_order_relaxed);
-        int voxMode = newVoxState ? 1 : 0; // 0=OFF, 1=ON
-
-        // Send VX command to toggle VOX
-        char vxCommand[8];
-        std::snprintf(vxCommand, sizeof(vxCommand), "VX%d;", voxMode);
-        m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), vxCommand);
-        state.voxEnabled.store(newVoxState, std::memory_order_relaxed);
-
-        ESP_LOGI(TAG, "VOX button short press: VOX %s", newVoxState ? "ON" : "OFF");
+        m_radioManager.dispatchToggle(m_radioManager.getPanelCATHandler(),
+                                      radio::ToggleTarget::Vox);
+        ESP_LOGI(TAG, "VOX button short press: VX toggled");
     }
 }
 
 void ButtonHandler::fallbackToRadioAntennaSwitch()
 {
     // Fallback to radio's built-in antenna switching (ANT1/ANT2)
-    int currentAnt = m_radioManager.getState().mainAntenna;
-    int newAnt = (currentAnt == 0) ? 1 : 0; // Toggle between ANT1 (0) and ANT2 (1)
-
-    // Use AN command: AN<main_ant><rx_ant><drv_out>;
-    // Keep RX antenna and DRV unchanged (9), only change main antenna
-    char anCommand[8];
-    std::snprintf(anCommand, sizeof(anCommand), "AN%d99;", newAnt);
-    m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), anCommand);
-
-    ESP_LOGI(TAG, "Radio antenna fallback: %s -> %s", antNames[currentAnt], antNames[newAnt]);
+    m_radioManager.dispatchToggle(m_radioManager.getPanelCATHandler(),
+                                  radio::ToggleTarget::Antenna);
+    ESP_LOGI(TAG, "Radio antenna fallback: AN main antenna toggled");
 }
 
 void ButtonHandler::handleAntennaTunerButton(MatrixButton &button)
@@ -2697,15 +2642,9 @@ void ButtonHandler::handleAntennaTunerButton(MatrixButton &button)
         // Short press - toggle antenna tuner on/off
         ESP_LOGI(TAG, "Antenna Tuner button short press detected");
 
-        bool currentTxAT = m_radioManager.getState().txAtIn;
-        int newTxAT = currentTxAT ? 0 : 1; // Toggle TX-AT between 0 (THRU) and 1 (IN)
-
-        // AC<RX><TX>0; - RX path follows TX path, no tuning
-        char acCommand[8];
-        std::snprintf(acCommand, sizeof(acCommand), "AC%d%d0;", newTxAT, newTxAT);
-        m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), acCommand);
-
-        ESP_LOGI(TAG, "Antenna Tuner button short press: %s -> %s", currentTxAT ? "ON" : "OFF", newTxAT ? "ON" : "OFF");
+        m_radioManager.dispatchToggle(m_radioManager.getPanelCATHandler(),
+                                      radio::ToggleTarget::TxAtu);
+        ESP_LOGI(TAG, "Antenna Tuner button short press: AC (TX-AT) toggled");
     }
 }
 

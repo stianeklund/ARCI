@@ -69,3 +69,4 @@ void ButtonHandler::handleModeButton()
 
 - Uses Button class instances for debounced press/release/long-press detection
 - Actions performed via RadioManager helpers and RadioMacroManager
+- **Boolean toggles are atomic.** Buttons that flip an on/off radio setting (speech processor, RF attenuator, preamp, RIT, XIT, VOX, antenna, TX-ATU) call `RadioManager::dispatchToggle(handler, ToggleTarget)` rather than reading state and inverting locally. `dispatchToggle` resolves the read+invert+dispatch as a single critical section under the dispatch lock, so a concurrent CAT client (or radio answer) cannot make the press a no-op or flip the wrong way. Long-press/absolute actions (e.g. `AC111;` start-tuning) and multi-state cycles (AGC, noise blanker) are not toggles and keep their own logic in this component.

@@ -862,6 +862,57 @@ namespace radio
         return result ? DispatchOutcome::Handled : DispatchOutcome::Unhandled;
     }
 
+    DispatchOutcome RadioManager::dispatchToggle(CATHandler &handler, ToggleTarget target) const
+    {
+        // Hold the dispatch lock across the state read AND the dispatch so no
+        // concurrent CAT set can interleave (M3). Recursive mutex: dispatchMessageEx
+        // below re-acquires it (count 2).
+        if (!dispatchMutex_.try_lock_for(pdMS_TO_TICKS(2000)))
+        {
+            ESP_LOGE(TAG, "dispatchToggle timeout - dispatch lock held >2s (target %d)",
+                     static_cast<int>(target));
+            return DispatchOutcome::LockTimeout;
+        }
+        RtosUniqueLock<RtosRecursiveMutex> lock(dispatchMutex_, std::adopt_lock);
+
+        char cmd[12];
+        switch (target)
+        {
+        case ToggleTarget::Processor:
+            std::snprintf(cmd, sizeof(cmd), "PR%d;", state_.processor.load() ? 0 : 1);
+            break;
+        case ToggleTarget::Attenuator:
+            // RA format is RA<P1><P1>; -> RA00; / RA01;
+            std::snprintf(cmd, sizeof(cmd), "RA0%d;", state_.attenuator.load() ? 0 : 1);
+            break;
+        case ToggleTarget::Preamp:
+            std::snprintf(cmd, sizeof(cmd), "PA%d;", state_.preAmplifier.load() ? 0 : 1);
+            break;
+        case ToggleTarget::Rit:
+            std::snprintf(cmd, sizeof(cmd), "RT%d;", state_.ritOn.load() ? 0 : 1);
+            break;
+        case ToggleTarget::Xit:
+            std::snprintf(cmd, sizeof(cmd), "XT%d;", state_.xitOn.load() ? 0 : 1);
+            break;
+        case ToggleTarget::Vox:
+            std::snprintf(cmd, sizeof(cmd), "VX%d;", state_.voxEnabled.load() ? 0 : 1);
+            break;
+        case ToggleTarget::TxAtu:
+        {
+            // AC<RX><TX>0; RX path follows TX path, no tuning start.
+            const int v = state_.txAtIn.load() ? 0 : 1;
+            std::snprintf(cmd, sizeof(cmd), "AC%d%d0;", v, v);
+            break;
+        }
+        case ToggleTarget::Antenna:
+            // AN<main><rx><drv>; change main only, 9 = no change for the rest.
+            std::snprintf(cmd, sizeof(cmd), "AN%d99;", state_.mainAntenna.load() == 0 ? 1 : 0);
+            break;
+        }
+
+        return dispatchMessageEx(handler, cmd);
+    }
+
 
     void RadioManager::sendRadioCommand(const std::string_view command) const
     {
@@ -1413,6 +1464,15 @@ namespace radio
 
     void RadioManager::toggleSplit(const bool copyVfoBeforeEnable) const
     {
+        // Hold the dispatch lock across the split-mode read and the enable/disable
+        // sequence so a concurrent FR/FT set cannot flip us mid-decision (M3).
+        if (!dispatchMutex_.try_lock_for(pdMS_TO_TICKS(2000)))
+        {
+            ESP_LOGE(TAG, "toggleSplit timeout - dispatch lock held >2s");
+            return;
+        }
+        RtosUniqueLock<RtosRecursiveMutex> lock(dispatchMutex_, std::adopt_lock);
+
         if (state_.isInSplitMode())
         {
             disableSplit();
@@ -1432,6 +1492,12 @@ namespace radio
 
     void RadioManager::toggleDataMode() const
     {
+        if (!dispatchMutex_.try_lock_for(pdMS_TO_TICKS(2000)))
+        {
+            ESP_LOGE(TAG, "toggleDataMode timeout - dispatch lock held >2s");
+            return;
+        }
+        RtosUniqueLock<RtosRecursiveMutex> lock(dispatchMutex_, std::adopt_lock);
         const int8_t current = state_.dataMode.load();
         const std::string daCommand = "DA" + std::to_string(current ^ 1) + ";";
         (void)dispatchMessage(*localHandler_, daCommand);
