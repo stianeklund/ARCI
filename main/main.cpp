@@ -630,17 +630,16 @@ void initializeUsbCdc()
                 radioManager.updateBandFromVfoA();
             }
 
-            // Enforce radio AI mode only if any client still wants AI updates
+            // Keep the physical radio in collector mode. Client AI preferences are
+            // virtual and are applied independently by ForwardingPolicy.
             const uint64_t nowUs = esp_timer_get_time();
             if (nowUs - lastAiEnforceUs >= radio::BaseCommandHandler::TTL_STATUS)
             { // align with STATUS TTL
-                const uint8_t desiredAi =
-                    std::max({state.usbCdc0AiMode.load(), state.usbCdc1AiMode.load(),
-                              state.tcp0AiMode.load(), state.tcp1AiMode.load(),
-                              state.displayAiMode.load()});
+                const uint8_t desiredAi = static_cast<uint8_t>(
+                    radio::InterfaceSystemCommandHandler::calculateRadioAIMode(state));
                 const uint8_t reportedAi = state.aiMode.load();
 
-                if (desiredAi > 0 && reportedAi != desiredAi)
+                if (reportedAi != desiredAi)
                 {
                     ESP_LOGI(TAG, "AI enforcement: desired=%u, reported=%u — sending AI%u; to radio", desiredAi,
                              reportedAi, desiredAi);
@@ -648,7 +647,7 @@ void initializeUsbCdc()
                     radioManager.sendRawRadioCommand(aiCmd);
                     radioManager.sendRawRadioCommand("AI;");
                 }
-                else if (desiredAi > 0)
+                else
                 {
                     // Periodic health check: query radio's actual AI mode to detect
                     // silent mode changes (e.g. external software sending AI0 on

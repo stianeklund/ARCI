@@ -43,9 +43,6 @@ namespace radio {
         {"RA", "RA;"},     // RF attenuator 
         {"PA", "PA;"},     // Pre-amplifier
         
-        // AI mode
-        {"AI", "AI;"},     // Auto Information mode
-        
         // Band and step commands
         {"BS", "BS;"},     // Band select
         {"SN", "SN;"},     // Step size
@@ -118,6 +115,51 @@ namespace radio {
         }
 
         return true;
+    }
+
+    /**
+     * @brief Check whether a local SET-shaped command is actually a parameterized READ.
+     *
+     * The CAT grammar uses the presence of parameters to classify most local frames as
+     * SET commands. A small number of commands use parameters to select the item being
+     * read, so those commands still need a per-interface pending-query entry. Keep this
+     * exception list tied to the documented wire formats instead of treating every SET
+     * (including AI0;) as a query.
+     */
+    static bool isParameterizedRead(const RadioCommand &command) {
+        if (command.type != CommandType::Set || !command.isCatClient()) {
+            return false;
+        }
+
+        const std::string_view frame = command.originalMessage;
+        if (frame.size() < 3 || frame.back() != ';' || frame.substr(0, 2) != command.command) {
+            return false;
+        }
+
+        const std::string_view params = frame.substr(2, frame.size() - 3);
+        if (command.command == "MR") {
+            return params.size() == 4; // P1 + three-character memory channel
+        }
+        if (command.command == "EQ") {
+            return params.size() == 2; // P1 + P2; three parameters are a SET
+        }
+        if (command.command == "SQ") {
+            return params.size() == 1; // P1; P1 + three-digit level is a SET
+        }
+        if (command.command == "SS") {
+            return params.size() == 2; // P1 + P2; P3 frequency makes it a SET
+        }
+        if (command.command == "SU") {
+            return params.size() == 1; // P1; the remaining fields are a SET
+        }
+        if (command.command == "AS") {
+            return params.size() == 3; // P1 + two-digit channel; full entry is a SET
+        }
+        if (command.command == "EX") {
+            return params.size() == 7 && params.substr(3) == "0000"; // EX[menu]0000;
+        }
+
+        return false;
     }
 
     CommandDispatcher::CommandDispatcher() {
@@ -216,9 +258,11 @@ namespace radio {
                       command.source == CommandSource::Tcp0 ? "TCP0" : "TCP1"),
                      command.originalMessage.c_str());
 
-            // Record per-interface query so ForwardingPolicy can distinguish
+            // Record per-interface queries so ForwardingPolicy can distinguish
             // "this interface queried IF" from "the display queried IF" in AI0 mode.
-            if (command.type == CommandType::Read || command.type == CommandType::Set) {
+            // Only the explicit parameterized-read forms are allowed through the SET
+            // exception; ordinary setters such as AI0; must not create a pending query.
+            if (command.type == CommandType::Read || isParameterizedRead(command)) {
                 radioManager.getState().accessForwardState(command.source)
                     .localQueryTracker.recordQuery(command.command, esp_timer_get_time());
             }

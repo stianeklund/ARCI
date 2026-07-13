@@ -91,7 +91,10 @@ namespace radio
         return false;
     }
 
-    // Helper function to calculate radio AI mode from all client preferences
+    // Calculate the physical-radio collector mode from all client preferences.
+    // ARCI caches unsolicited radio updates, so the collector must remain enabled
+    // even when every external CAT interface asks for AI0. AI4 still wins when any
+    // interface explicitly requests the backup-information mode.
     int InterfaceSystemCommandHandler::calculateRadioAIMode(const RadioState &state)
     {
         const int cdc0 = state.usbCdc0AiMode.load();
@@ -99,7 +102,7 @@ namespace radio
         const int tcp0 = state.tcp0AiMode.load();
         const int tcp1 = state.tcp1AiMode.load();
         const int display = state.displayAiMode.load();
-        return (cdc0 == 0 && cdc1 == 0 && tcp0 == 0 && tcp1 == 0 && display == 0) ? 0 : std::max({cdc0, cdc1, tcp0, tcp1, display});
+        return std::max(AI_ON, std::max({cdc0, cdc1, tcp0, tcp1, display}));
     }
 
     void InterfaceSystemCommandHandler::logAiCoordinationSnapshot(const RadioState &state)
