@@ -30,6 +30,7 @@
 #include "nvs_flash.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <string>
 #include <string_view>
 #include "../components/CommandHandlers/include/BaseCommandHandler.h"
@@ -48,7 +49,6 @@ static constexpr bool BUTTON_TEST_MODE = false;
 // WS2812 RGB LED configuration
 static constexpr size_t LED_STRIP_LED_COUNT = 1; // Only 1 LED on DevKit
 led_strip_handle_t led_strip_handle = nullptr;
-static constexpr bool DEBUG = false;
 
 // --- Threading and Synchronization ---
 // Semaphores for event-driven wakeups for each task
@@ -111,9 +111,6 @@ namespace
     std::unique_ptr<radio::CATHandler> tcp1CatHandler;
     #endif
 #endif
-
-    // --- Debug State ---
-    std::string lastRadioCommand;  // For loop prevention debugging
 } // namespace
 
 extern "C" {
@@ -123,35 +120,6 @@ void setup(void);
 void run_all_tests(void);
 #endif
 }
-
-#ifdef DEBUG
-void debugPrintMsg(std::string_view localMsg, std::string_view remoteMsg)
-{
-    if constexpr (!DEBUG)
-        return;
-
-    if (localMsg.length() > 3)
-    {
-        usbSerial.sendMessage("COM0 Data Received: " + std::string(localMsg));
-    }
-
-    if (localMsg.length() <= 3 && localMsg[2] == ';')
-    {
-        usbSerial.sendMessage("COM0 Request: " + std::string(localMsg) + " len: " + std::to_string(localMsg.length()));
-    }
-
-    if (remoteMsg.length() > 3)
-    {
-        usbSerial.sendMessage("COM1 Data Received: " + std::string(remoteMsg));
-    }
-
-    if (remoteMsg.length() <= 3 && remoteMsg[2] == ';')
-    {
-        usbSerial.sendMessage("COM1 Request: " + std::string(remoteMsg) +
-                              " len: " + std::to_string(remoteMsg.length()));
-    }
-}
-#endif
 
 void initializeLED()
 {
@@ -230,18 +198,6 @@ void updateLEDStatus()
 }
 
 
-void initializeNVS()
-{
-    ESP_LOGI(TAG, "Initializing NVS");
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
-    {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
-}
-
 void configureGPIO()
 {
     // Configure encoder GPIOs (TCA8418 INT configured by its handler)
@@ -294,26 +250,24 @@ void initializeTCA8418()
     // Diagnostic channel scan (DEBUG level)
     Diagnostics::scanTCA9548Channels(i2c_bus_handle, tca9548Handler);
 
-    // Initialize TCA8418 #1 (main buttons) on channel 0
+    // Initialize TCA8418 #1 (main buttons) on channel 0.
+    // Register key callbacks BEFORE initialize(): initialize() starts the key
+    // task and enables interrupts, and that task reads the callback map. Populating
+    // it first avoids a concurrent map read/insert (UB) at boot. setKeyCallback is a
+    // plain map insert and needs no initialized device.
     tca8418Handler.setMuxChannel(&tca9548Handler, TCA9548_CHANNEL_TCA8418_1);
+    buttonHandler.setupTCA8418KeyMappings(&tca8418Handler);
     if (!tca8418Handler.initialize(i2c_bus_handle))
     {
         ESP_LOGE(TAG, "Failed to initialize TCA8418 #1, matrix keys will not work");
     }
-    else
-    {
-        buttonHandler.setupTCA8418KeyMappings(&tca8418Handler);
-    }
 
-    // Initialize TCA8418 #2 (F1-F6 macros) on channel 1
+    // Initialize TCA8418 #2 (F1-F6 macros) on channel 1 (same callbacks-before-init order)
     tca8418Handler2.setMuxChannel(&tca9548Handler, TCA9548_CHANNEL_TCA8418_2);
+    buttonHandler.setupF1F6KeyMappings(&tca8418Handler2);
     if (!tca8418Handler2.initialize(i2c_bus_handle))
     {
         ESP_LOGE(TAG, "Failed to initialize TCA8418 #2, F1-F6 macro keys will not work");
-    }
-    else
-    {
-        buttonHandler.setupF1F6KeyMappings(&tca8418Handler2);
     }
 
     // Initialize PCF8575 (I2C encoders) on channel 2
@@ -402,6 +356,9 @@ void initializeUsbCdc()
             // Event-driven: callback fired, drain all available data
             while (true)
             {
+                // Feed the WDT inside the drain loop so a sustained flood can't
+                // starve the top-of-loop reset and trip the watchdog spuriously.
+                esp_task_wdt_reset();
                 const auto messageResult = usbSerial.getMessageView();
                 if (messageResult.first != ESP_OK || messageResult.second.empty())
                 {
@@ -409,8 +366,13 @@ void initializeUsbCdc()
                 }
                 ESP_LOGV(TAG, "USB message received: %.*s", static_cast<int>(messageResult.second.length()),
                          messageResult.second.data());
-                // dispatchMessage internally uses dispatchMutex_ for serialization - no global mutex needed
-                (void)radioManager.dispatchMessage(radioManager.getLocalCATHandler(), messageResult.second);
+                // dispatchMessage internally uses dispatchMutex_ for serialization - no global mutex needed.
+                // On lock timeout, reply "?;" so the host sees a defined CAT error instead of silence.
+                if (radioManager.dispatchMessageEx(radioManager.getLocalCATHandler(), messageResult.second) ==
+                    radio::DispatchOutcome::LockTimeout)
+                {
+                    usbSerial.sendMessage("?;");
+                }
 
                 // Periodic stack watermark monitoring
                 if (++messageCount % STACK_CHECK_INTERVAL == 0)
@@ -449,6 +411,9 @@ void initializeUsbCdc()
             // Event-driven: callback fired, drain all available data (quiet logs)
             while (true)
             {
+                // Feed the WDT inside the drain loop so a sustained flood can't
+                // starve the top-of-loop reset and trip the watchdog spuriously.
+                esp_task_wdt_reset();
                 const auto messageResult = usb2Serial.getMessageView();
                 if (messageResult.first != ESP_OK || messageResult.second.empty())
                 {
@@ -456,10 +421,15 @@ void initializeUsbCdc()
                 }
                 ESP_LOGV(TAG, "USB2 message received: %.*s", static_cast<int>(messageResult.second.length()),
                          messageResult.second.data());
-                // dispatchMessage internally uses dispatchMutex_ for serialization - no global mutex needed
+                // dispatchMessage internally uses dispatchMutex_ for serialization - no global mutex needed.
+                // On lock timeout, reply "?;" so the host sees a defined CAT error instead of silence.
                 if (usb2CatHandler)
                 {
-                    (void)radioManager.dispatchMessage(*usb2CatHandler, messageResult.second);
+                    if (radioManager.dispatchMessageEx(*usb2CatHandler, messageResult.second) ==
+                        radio::DispatchOutcome::LockTimeout)
+                    {
+                        usb2Serial.sendMessage("?;");
+                    }
                 }
 
                 // Periodic stack watermark monitoring
@@ -494,6 +464,9 @@ void initializeUsbCdc()
         {
             while (radioSerial.hasMessage())
             {
+                // Feed the WDT inside the drain loop so a sustained flood can't
+                // starve the top-of-loop reset and trip the watchdog spuriously.
+                esp_task_wdt_reset();
                 const auto messageResult = radioSerial.getMessageView();
                 if (messageResult.first != ESP_OK || messageResult.second.empty())
                 {
@@ -503,9 +476,26 @@ void initializeUsbCdc()
                 ESP_LOGV(TAG, "📻 Radio: '%.*s'", static_cast<int>(messageResult.second.length()),
                          messageResult.second.data());
 
-                // Dispatch to command handlers
-                const bool wasHandled =
-                    radioManager.dispatchMessage(radioManager.getRemoteCATHandler(), messageResult.second);
+                // Dispatch to command handlers. Unlike client interfaces, a dropped radio
+                // answer means our cached state silently misses an update, so retry once
+                // on lock timeout before falling back to raw forwarding.
+                // (messageResult.second stays valid across the delay: getMessageView copies
+                // into a consumer-owned buffer that is only overwritten on the next call.)
+                auto outcome =
+                    radioManager.dispatchMessageEx(radioManager.getRemoteCATHandler(), messageResult.second);
+                if (outcome == radio::DispatchOutcome::LockTimeout)
+                {
+                    vTaskDelay(pdMS_TO_TICKS(15));
+                    outcome =
+                        radioManager.dispatchMessageEx(radioManager.getRemoteCATHandler(), messageResult.second);
+                    if (outcome == radio::DispatchOutcome::LockTimeout)
+                    {
+                        ESP_LOGW(TAG, "⚠️ Radio answer not state-processed (dispatch lock timeout), forwarding raw: "
+                                      "%.*s",
+                                 static_cast<int>(messageResult.second.length()), messageResult.second.data());
+                    }
+                }
+                const bool wasHandled = (outcome == radio::DispatchOutcome::Handled);
 
                 // Forward to USB if not handled by a command handler
                 if (!wasHandled && radioManager.shouldForwardToUSB(messageResult.second))
@@ -557,6 +547,9 @@ void initializeUsbCdc()
         {
             while (displaySerial.hasMessage())
             {
+                // Feed the WDT inside the drain loop so a sustained flood can't
+                // starve the top-of-loop reset and trip the watchdog spuriously.
+                esp_task_wdt_reset();
                 const auto [fst, snd] = displaySerial.getMessageView();
                 if (fst != ESP_OK || snd.empty())
                 {
@@ -591,10 +584,24 @@ void initializeUsbCdc()
                     }
                 }
 
-                // dispatchMessage internally uses dispatchMutex_ for serialization - no global mutex needed
+                // dispatchMessage internally uses dispatchMutex_ for serialization - no global mutex needed.
+                // Display messages have no raw-forward fallback; retry once on lock timeout,
+                // then log a WARNING so the drop is visible instead of silent.
+                // (snd stays valid across the delay: getMessageView copies into a
+                // consumer-owned buffer only overwritten on the next call.)
                 if (displayCatHandler)
                 {
-                    (void)radioManager.dispatchMessage(*displayCatHandler, snd);
+                    auto outcome = radioManager.dispatchMessageEx(*displayCatHandler, snd);
+                    if (outcome == radio::DispatchOutcome::LockTimeout)
+                    {
+                        vTaskDelay(pdMS_TO_TICKS(15));
+                        outcome = radioManager.dispatchMessageEx(*displayCatHandler, snd);
+                        if (outcome == radio::DispatchOutcome::LockTimeout)
+                        {
+                            ESP_LOGW(TAG, "⚠️ Display message not processed (dispatch lock timeout): %.*s",
+                                     static_cast<int>(snd.length()), snd.data());
+                        }
+                    }
                 }
             }
         }
@@ -794,14 +801,33 @@ void initializeUsbCdc()
     }
 }
 
+// Boot-time resource creation is non-recoverable: heap exhaustion here leaves a
+// half-alive system. A clear panic beats silent misbehaviour, so abort loudly.
+static void abortIfNull(const void *handle, const char *what)
+{
+    if (handle == nullptr)
+    {
+        ESP_LOGE(TAG, "Boot failure: %s creation failed (out of heap) - aborting", what);
+        abort();
+    }
+}
+
+static void createTaskOrAbort(TaskFunction_t fn, const char *name, uint32_t stackWords, void *arg,
+                              UBaseType_t priority, TaskHandle_t *handle)
+{
+    if (xTaskCreate(fn, name, stackWords, arg, priority, handle) != pdPASS)
+    {
+        ESP_LOGE(TAG, "Boot failure: task '%s' creation failed (out of heap) - aborting", name);
+        abort();
+    }
+}
+
 void setup()
 {
     ESP_LOGI(TAG, "Starting setup");
 
-    // Connect RadioMacroManager to RadioManager (must be done at runtime, not at file scope)
-    radioManager.setMacroManager(&radioMacroManager);
-
     // Register NvsManager with RadioManager for boot-time EX menu save
+    // (RadioMacroManager is wired to RadioManager in initializeSystemComponents())
     radioManager.setNvsManager(&nvsManager);
 
     // Reduce TinyUSB CDC ACM flush warnings to VERBOSE level
@@ -841,7 +867,7 @@ void setup()
 
         // Wait for WiFi connection before starting TCP bridge
         ESP_LOGI(TAG, "Waiting for WiFi connection...");
-        if (wifiManager.waitForConnection(10000)) {
+        if (wifiManager.waitForConnection(CONFIG_WIFI_CONNECTION_TIMEOUT_MS)) {
             ESP_LOGI(TAG, "WiFi connected! IP: %s", wifiManager.getIpAddress().c_str());
 
 #ifdef CONFIG_TCP_CAT_BRIDGE_ENABLE
@@ -867,7 +893,12 @@ void setup()
                         {
                             return;
                         }
-                        radioManager.dispatchMessage(*tcp0CatHandler, frame);
+                        // On lock timeout, reply "?;" to the TCP client instead of dropping silently.
+                        if (radioManager.dispatchMessageEx(*tcp0CatHandler, frame) ==
+                            radio::DispatchOutcome::LockTimeout)
+                        {
+                            radioManager.sendToSource(radio::CommandSource::Tcp0, "?;");
+                        }
                     });
             }
 
@@ -906,7 +937,12 @@ void setup()
                         {
                             return;
                         }
-                        radioManager.dispatchMessage(*tcp1CatHandler, frame);
+                        // On lock timeout, reply "?;" to the TCP client instead of dropping silently.
+                        if (radioManager.dispatchMessageEx(*tcp1CatHandler, frame) ==
+                            radio::DispatchOutcome::LockTimeout)
+                        {
+                            radioManager.sendToSource(radio::CommandSource::Tcp1, "?;");
+                        }
                     });
             }
 
@@ -964,6 +1000,10 @@ void setup()
     g_usb2MessageReadySem = xSemaphoreCreateBinary(); // Second CDC instance
     g_radioMessageReadySem = xSemaphoreCreateBinary();
     g_displayMessageReadySem = xSemaphoreCreateBinary();
+    abortIfNull(g_usbMessageReadySem, "g_usbMessageReadySem");
+    abortIfNull(g_usb2MessageReadySem, "g_usb2MessageReadySem");
+    abortIfNull(g_radioMessageReadySem, "g_radioMessageReadySem");
+    abortIfNull(g_displayMessageReadySem, "g_displayMessageReadySem");
 
     // Register callbacks to signal the correct semaphores
     radioSerial.setOnFrameCallback([]() { xSemaphoreGive(g_radioMessageReadySem); });
@@ -1031,11 +1071,11 @@ void app_main()
     diagnostics.start();
 
     // Create tasks
-    xTaskCreate(usb_task, "usb_task", 8192, NULL, 10, &g_usbTaskHandle);
-    xTaskCreate(usb2_task, "usb2_task", 8192, NULL, 10, &g_usb2TaskHandle);
-    xTaskCreate(radio_task, "radio_task", 8192, NULL, 8, &g_radioTaskHandle);
-    xTaskCreate(display_task, "display_task", 6144, NULL, 8, &g_displayTaskHandle);
-    xTaskCreate(main_task, "main_task", 4096, NULL, 5, &g_mainTaskHandle);
+    createTaskOrAbort(usb_task, "usb_task", 8192, NULL, 10, &g_usbTaskHandle);
+    createTaskOrAbort(usb2_task, "usb2_task", 8192, NULL, 10, &g_usb2TaskHandle);
+    createTaskOrAbort(radio_task, "radio_task", 8192, NULL, 8, &g_radioTaskHandle);
+    createTaskOrAbort(display_task, "display_task", 6144, NULL, 8, &g_displayTaskHandle);
+    createTaskOrAbort(main_task, "main_task", 4096, NULL, 5, &g_mainTaskHandle);
 
     // Configure diagnostics to monitor task stacks
     diagnostics.setTaskHandles(g_usbTaskHandle, g_usb2TaskHandle, g_radioTaskHandle, g_displayTaskHandle,
