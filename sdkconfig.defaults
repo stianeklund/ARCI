@@ -19,8 +19,14 @@ CONFIG_TINYUSB_DESC_CDC_STRING="ARCI CAT Interface"
 # WiFi Hostname Configuration
 CONFIG_WIFI_HOSTNAME="arci"
 
+# Auto-reconnect with exponential backoff on runtime AP loss
+CONFIG_WIFI_AUTO_RECONNECT=y
+
 # Log level settings
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Task watchdog must panic (reboot) on timeout, not just log
+CONFIG_ESP_TASK_WDT_PANIC=y
 
 # Main task stack size - increased for unit tests with RadioManager
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

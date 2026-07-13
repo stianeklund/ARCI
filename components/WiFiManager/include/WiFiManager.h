@@ -6,10 +6,12 @@
 
 #include <string>
 #include <atomic>
+#include <cstdint>
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "esp_event.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 
@@ -105,12 +107,25 @@ private:
     bool initialized_;
     bool sntpInitialized_ = false;
     int retryCount_;
-    
-    static void wifiEventHandler(void* arg, esp_event_base_t eventBase, 
+
+#ifdef CONFIG_WIFI_AUTO_RECONNECT
+    // Runtime auto-reconnect: once the immediate retry budget is spent, keep
+    // retrying from a one-shot timer with exponential backoff so a lost AP
+    // recovers without a power cycle. Bounds are in milliseconds.
+    static constexpr uint32_t RECONNECT_BACKOFF_MIN_MS = 5000;
+    static constexpr uint32_t RECONNECT_BACKOFF_MAX_MS = 60000;
+    esp_timer_handle_t reconnectTimer_ = nullptr;
+    uint32_t reconnectBackoffMs_ = RECONNECT_BACKOFF_MIN_MS;
+
+    void scheduleReconnect();
+    static void reconnectTimerCallback(void* arg);
+#endif
+
+    static void wifiEventHandler(void* arg, esp_event_base_t eventBase,
                                 int32_t eventId, void* eventData);
-    static void ipEventHandler(void* arg, esp_event_base_t eventBase, 
+    static void ipEventHandler(void* arg, esp_event_base_t eventBase,
                               int32_t eventId, void* eventData);
-    
+
     void handleWifiEvent(esp_event_base_t eventBase, int32_t eventId, void* eventData);
     void cleanup();
 };
