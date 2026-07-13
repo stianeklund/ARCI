@@ -6,6 +6,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
+#include <cstdlib>
 #include <cstring>
 
 Diagnostics::Diagnostics(radio::RadioManager& radioManager)
@@ -17,17 +18,19 @@ void Diagnostics::setTaskHandles(TaskHandle_t usbTask, TaskHandle_t usb2Task,
     m_monitoredTasks.clear();
     m_monitoredTasks.reserve(5);
     
+    // Stack sizes must match the xTaskCreate() calls in main.cpp, otherwise
+    // stackUsedBytes = stackSize - highWaterMark underflows (UBaseType_t is unsigned).
     if (usbTask) {
-        m_monitoredTasks.push_back({usbTask, "usb_task", 4096});
+        m_monitoredTasks.push_back({usbTask, "usb_task", 8192});
     }
     if (usb2Task) {
-        m_monitoredTasks.push_back({usb2Task, "usb2_task", 4096});
+        m_monitoredTasks.push_back({usb2Task, "usb2_task", 8192});
     }
     if (radioTask) {
-        m_monitoredTasks.push_back({radioTask, "radio_task", 4096});
+        m_monitoredTasks.push_back({radioTask, "radio_task", 8192});
     }
     if (displayTask) {
-        m_monitoredTasks.push_back({displayTask, "display_task", 4096});
+        m_monitoredTasks.push_back({displayTask, "display_task", 6144});
     }
     if (mainTask) {
         m_monitoredTasks.push_back({mainTask, "main_task", 4096});
@@ -233,7 +236,11 @@ void Diagnostics::printCpuStatus() {
 }
 
 void Diagnostics::start() {
-    xTaskCreate(taskWrapper, "DiagnosticsTask", 4096, this, 3, &m_taskHandle); // Low priority background task
+    // Low priority background task. Boot-time creation failure is unrecoverable.
+    if (xTaskCreate(taskWrapper, "DiagnosticsTask", 4096, this, 3, &m_taskHandle) != pdPASS) {
+        ESP_LOGE(TAG, "Boot failure: DiagnosticsTask creation failed (out of heap) - aborting");
+        abort();
+    }
 }
 
 // ReSharper disable once CppDFAUnreachableFunctionCall
@@ -248,23 +255,44 @@ void Diagnostics::task() {
         // Memory monitoring
         printMemoryStatus();
 
-        auto [totalCommandsProcessed, localCommandsProcessed, remoteCommandsProcessed, readCommandsProcessed,
-            setCommandsProcessed, feedbackLoopsPrevented] = m_radioManager.getStatistics();
+        // Per-task stack high-water monitoring
+        printStackStatus();
+
+        auto [totalCommandsProcessed, localCommandsProcessed, remoteCommandsProcessed] =
+            m_radioManager.getStatistics();
         auto dispatcherStats = m_radioManager.getCommandDispatcher().getStatistics();
 
         ESP_LOGI(TAG, "--- RadioManager Stats ---");
-        ESP_LOGI(TAG, "Total Commands Processed: %zu", totalCommandsProcessed);
-        ESP_LOGI(TAG, "Local Commands: %zu", localCommandsProcessed);
-        ESP_LOGI(TAG, "Remote Commands: %zu", remoteCommandsProcessed);
-        ESP_LOGI(TAG, "Read Commands: %zu", readCommandsProcessed);
-        ESP_LOGI(TAG, "Set Commands: %zu", setCommandsProcessed);
-        ESP_LOGI(TAG, "Feedback Loops Prevented: %zu", feedbackLoopsPrevented);
+        ESP_LOGI(TAG, "Total Commands Processed: %lu", static_cast<unsigned long>(totalCommandsProcessed));
+        ESP_LOGI(TAG, "Local Commands: %lu", static_cast<unsigned long>(localCommandsProcessed));
+        ESP_LOGI(TAG, "Remote Commands: %lu", static_cast<unsigned long>(remoteCommandsProcessed));
+
+        // CAT parser statistics (summed across all per-source parsers)
+        const auto sumParser = [this]() {
+            radio::UnifiedCATStatistics s;
+            for (const radio::CATHandler* h : {
+                     &m_radioManager.getLocalCATHandler(), &m_radioManager.getRemoteCATHandler(),
+                     &m_radioManager.getPanelCATHandler(), &m_radioManager.getMacroCATHandler()}) {
+                const auto& p = h->getParserStatistics();
+                s.totalMessagesParsed += p.totalMessagesParsed;
+                s.setCommands += p.setCommands;
+                s.readCommands += p.readCommands;
+                s.answerCommands += p.answerCommands;
+                s.parseErrors += p.parseErrors;
+                s.unknownCommands += p.unknownCommands;
+            }
+            return s;
+        }();
+        ESP_LOGI(TAG, "--- CAT Parser Stats ---");
+        ESP_LOGI(TAG, "Messages: %zu, Set: %zu, Read: %zu, Answer: %zu, ParseErr: %zu, Unknown: %zu",
+                 sumParser.totalMessagesParsed, sumParser.setCommands, sumParser.readCommands,
+                 sumParser.answerCommands, sumParser.parseErrors, sumParser.unknownCommands);
 
         ESP_LOGI(TAG, "--- CommandDispatcher Stats ---");
-        ESP_LOGI(TAG, "Commands Dispatched: %zu", dispatcherStats.totalCommandsDispatched);
-        ESP_LOGI(TAG, "Commands Handled: %zu", dispatcherStats.commandsHandled);
-        ESP_LOGI(TAG, "Commands Unhandled: %zu", dispatcherStats.commandsUnhandled);
-        ESP_LOGI(TAG, "Handler Errors: %zu", dispatcherStats.handlerErrors);
+        ESP_LOGI(TAG, "Commands Dispatched: %lu", static_cast<unsigned long>(dispatcherStats.totalCommandsDispatched.load()));
+        ESP_LOGI(TAG, "Commands Handled: %lu", static_cast<unsigned long>(dispatcherStats.commandsHandled.load()));
+        ESP_LOGI(TAG, "Commands Unhandled: %lu", static_cast<unsigned long>(dispatcherStats.commandsUnhandled.load()));
+        ESP_LOGI(TAG, "Handler Errors: %lu", static_cast<unsigned long>(dispatcherStats.handlerErrors.load()));
 
         // Error response diagnostics
         if (dispatcherStats.totalErrorResponses > 0) {
