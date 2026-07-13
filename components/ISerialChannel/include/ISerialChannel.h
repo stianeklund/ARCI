@@ -25,7 +25,7 @@
  *
  * Methods:
  * - Message querying: hasMessage(), getMessage(), getMessageView()
- * - Message sending: sendMessage() (single and dual variants)
+ * - Message sending: sendMessage()
  * - Diagnostics: getSendFailureCount()
  * - Events: setOnFrameCallback()
  *
@@ -68,16 +68,6 @@ public:
      * @note Thread-safe in most implementations
      */
     virtual esp_err_t sendMessage(std::string_view message) = 0;
-
-    /**
-     * @brief Send two messages atomically (concatenated)
-     * @param message1 First message
-     * @param message2 Second message
-     * @return ESP_OK if both sent successfully, error code otherwise
-     * @note Useful for multi-command sequences that must not be interleaved
-     * @note Implementations may concatenate or send sequentially
-     */
-    virtual esp_err_t sendMessage(std::string_view message1, std::string_view message2) = 0;
 
     /**
      * @brief Get count of send failures since initialization

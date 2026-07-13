@@ -69,6 +69,7 @@ esp_err_t CdcSerialHandler::sendMessage(const std::string_view message) {
     const size_t required = message.length();
     if (UsbCdc::shouldThrottleWrite(m_instance)) {
         ESP_LOGV(TAG, "%s write throttled due to prior backpressure", instanceTag(m_instance));
+        sendFailures_.fetch_add(1, std::memory_order_relaxed);
         return ESP_ERR_NO_MEM;
     }
     size_t available = UsbCdc::availableForWrite(m_instance);
@@ -80,6 +81,7 @@ esp_err_t CdcSerialHandler::sendMessage(const std::string_view message) {
         ESP_LOGW(TAG, "%s backpressure: dropping %zu-byte frame (avail=%zu)",
                  instanceTag(m_instance), required, available);
         UsbCdc::notifyWriteBackpressure(m_instance);
+        sendFailures_.fetch_add(1, std::memory_order_relaxed);
         return ESP_ERR_NO_MEM;
     }
 
@@ -96,54 +98,7 @@ esp_err_t CdcSerialHandler::sendMessage(const std::string_view message) {
         }
     } else {
         UsbCdc::notifyWriteBackpressure(m_instance);
-    }
-    return result;
-}
-
-esp_err_t CdcSerialHandler::sendMessage(const std::string_view message1, const std::string_view message2) {
-    if (message1.empty() && message2.empty()) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    // Calculate total length
-    const size_t totalLength = message1.length() + message2.length();
-
-    // Create a temporary buffer to combine messages
-    std::string combined;
-    combined.reserve(totalLength);
-    combined.append(message1);
-    combined.append(message2);
-
-    ESP_LOGV(TAG, "%s send: %.*s", instanceTag(m_instance), static_cast<int>(combined.length()), combined.data());
-
-    const size_t required = combined.length();
-    if (UsbCdc::shouldThrottleWrite(m_instance)) {
-        ESP_LOGV(TAG, "%s write throttled due to prior backpressure", instanceTag(m_instance));
-        return ESP_ERR_NO_MEM;
-    }
-    size_t available = UsbCdc::availableForWrite(m_instance);
-    if (available < required) {
-        UsbCdc::flush(m_instance);
-        available = UsbCdc::availableForWrite(m_instance);
-    }
-    if (available < required) {
-        ESP_LOGW(TAG, "%s backpressure: dropping %zu-byte frame (avail=%zu)",
-                 instanceTag(m_instance), required, available);
-        UsbCdc::notifyWriteBackpressure(m_instance);
-        return ESP_ERR_NO_MEM;
-    }
-
-    const esp_err_t result = UsbCdc::writeData(reinterpret_cast<const uint8_t*>(combined.data()), combined.length(), m_instance);
-    if (!combined.empty() && (combined.back() == ';' || combined.back() == '\n' || combined.back() == '\r')) {
-        UsbCdc::flush(m_instance);
-    }
-    if (result == ESP_OK) {
-        UsbCdc::notifyWriteSuccess(m_instance);
-        if (!combined.empty()) {
-            UsbCdc::notifyTxMirrored(m_instance, reinterpret_cast<const uint8_t*>(combined.data()), combined.length());
-        }
-    } else {
-        UsbCdc::notifyWriteBackpressure(m_instance);
+        sendFailures_.fetch_add(1, std::memory_order_relaxed);
     }
     return result;
 }

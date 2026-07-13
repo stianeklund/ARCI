@@ -50,15 +50,6 @@ esp_err_t MockSerialHandler::sendMessage(std::string_view message) {
     return ESP_OK;
 }
 
-esp_err_t MockSerialHandler::sendMessage(std::string_view message1, std::string_view message2) {
-    std::string combined;
-    combined.reserve(message1.length() + message2.length());
-    combined.append(message1);
-    combined.append(message2);
-    sentMessages.emplace_back(combined);
-    return ESP_OK;
-}
-
 void MockSerialHandler::queueReceivedMessage(std::string_view message) {
     m_receivedMessages.emplace_back(message);
 }

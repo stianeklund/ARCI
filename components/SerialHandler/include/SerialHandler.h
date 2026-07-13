@@ -7,7 +7,9 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "rtos_mutex.h"
 #include <atomic>
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <functional>
@@ -28,7 +30,6 @@ public:
     std::pair<esp_err_t, std::string> getMessage() override;
     std::pair<esp_err_t, std::string_view> getMessageView() override;
     esp_err_t sendMessage(std::string_view message) override;
-    esp_err_t sendMessage(std::string_view message1, std::string_view message2) override;
     uint32_t getSendFailureCount() const override { return sendFailures_.load(); }
     void setOnFrameCallback(std::function<void()> cb) override { onFrameCallback_ = std::move(cb); }
 
@@ -51,6 +52,13 @@ private:
     size_t m_tail{0};
     size_t m_count{0};
     mutable portMUX_TYPE m_queueSpinlock;  // Protects m_head, m_tail, m_count, m_queue access
+
+    // Scratch buffer holding the most recently dequeued frame. getMessageView()
+    // copies the ring slot into this buffer under m_queueSpinlock before advancing
+    // m_head, so the returned view stays valid after the slot is released back to
+    // the producer. Owned by the single consumer task; not shared across tasks.
+    char m_dequeueBuffer[MAX_MESSAGE_LENGTH + 1]{};
+
     TaskHandle_t m_uartTaskHandle;
     QueueHandle_t m_uartQueue;
     static constexpr char END_MARKER = ';';
@@ -63,13 +71,28 @@ private:
 
     void recordSendFailure(esp_err_t error, const char* reason, size_t attemptedLen, esp_log_level_t level);
 
+    // Copies the last-sent-frame snapshot under m_txMutex into the caller's buffer
+    // (must be at least MAX_MESSAGE_LENGTH + 1 bytes, always NUL-terminated).
+    // Returns the frame length. Lets the RX diagnostics log without racing TX writers.
+    size_t snapshotLastSentFrame(char (&out)[MAX_MESSAGE_LENGTH + 1]) const;
+
     // Optional callback to signal higher-level code that a frame is ready
     std::function<void()> onFrameCallback_{};
 
     std::atomic<uint32_t> sendFailures_{0};
 
-    // Debug tracking for last frame sent (used for correlating radio errors)
-    std::string lastSentFrame_;
+    // Serializes concurrent sendMessage() callers: guards the TX buffer
+    // free-space check, the uart_write_bytes sequence, and the lastSentFrame_
+    // snapshot below. Independent of m_queueSpinlock (RX side) — no code path
+    // holds both at once.
+    mutable RtosMutex m_txMutex;
+
+    // Debug tracking for last frame sent (used for correlating radio errors).
+    // Fixed-size buffer instead of std::string to avoid a heap-corruption race:
+    // written under m_txMutex by TX tasks, snapshot-copied under m_txMutex by the
+    // uartEventTask diagnostics before logging.
+    char lastSentFrame_[MAX_MESSAGE_LENGTH + 1]{};
+    size_t lastSentFrameLen_{0};
     std::atomic<uint64_t> lastSentTimestampUs_{0};
 
     // --- Queue health diagnostics (atomic, zero overhead in hot path) ---

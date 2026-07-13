@@ -21,12 +21,13 @@ public:
 
     // ISerialChannel interface implementation
     esp_err_t sendMessage(std::string_view message) override;
-    esp_err_t sendMessage(std::string_view message1, std::string_view message2) override;
     std::pair<esp_err_t, std::string> getMessage() override;
     std::pair<esp_err_t, std::string_view> getMessageView() override;
     [[nodiscard]] bool hasMessage() const override;
     uint32_t getSendFailureCount() const override { return sendFailures_.load(); }
-    void setOnFrameCallback(std::function<void()> cb) override { onFrameCallback_ = std::move(cb); }
+    // CDC RX wake is delivered via UsbCdc::setRxCallback, not this ISerialChannel hook,
+    // so the frame callback is intentionally unused for CDC channels.
+    void setOnFrameCallback(std::function<void()>) override {}
 
 protected:
     uint8_t getInstance() const { return m_instance; }
@@ -39,5 +40,4 @@ private:
     uint8_t m_instance;
     mutable uint8_t m_frameBuffer[FRAME_BUFFER_SIZE] = {};
     std::atomic<uint32_t> sendFailures_{0};
-    std::function<void()> onFrameCallback_{};
 };

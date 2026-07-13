@@ -183,7 +183,16 @@ std::pair<esp_err_t, std::string_view> SerialHandler::getMessageView() {
 
     auto &[data, len, timestamp] = m_queue[m_head];
     const int64_t msgAge = esp_timer_get_time() - timestamp;
-    std::string_view view{data, len};
+
+    // Copy the frame into a per-instance scratch buffer BEFORE releasing the slot.
+    // Returning a view over the ring slot itself is unsafe: once m_head advances the
+    // producer may overwrite that slot (worst case: queue full -> next frame lands
+    // in it) while the consumer is still parsing. The copy (<=64 bytes) is cheap and
+    // matches the CdcSerialHandler m_frameBuffer pattern.
+    const size_t copyLen = len > MAX_MESSAGE_LENGTH ? MAX_MESSAGE_LENGTH : len;
+    memcpy(m_dequeueBuffer, data, copyLen);
+    m_dequeueBuffer[copyLen] = '\0';
+    const std::string_view view{m_dequeueBuffer, copyLen};
 
     // CAT protocol sanitization moved to CatParser layer (see ParserUtils::sanitizeFrame)
     // SerialHandler now remains protocol-agnostic - it only handles framing (';' delimiter)
@@ -235,6 +244,14 @@ void SerialHandler::recordSendFailure(esp_err_t error,
     }
 }
 
+size_t SerialHandler::snapshotLastSentFrame(char (&out)[MAX_MESSAGE_LENGTH + 1]) const {
+    RtosLockGuard<RtosMutex> txLock(m_txMutex);
+    const size_t n = lastSentFrameLen_ > MAX_MESSAGE_LENGTH ? MAX_MESSAGE_LENGTH : lastSentFrameLen_;
+    memcpy(out, lastSentFrame_, n);
+    out[n] = '\0';
+    return n;
+}
+
 esp_err_t SerialHandler::sendMessage(const std::string_view message) {
     const bool needs_terminator = message.empty() || message.back() != END_MARKER;
     const size_t total_len = message.length() + (needs_terminator ? 1 : 0);
@@ -282,6 +299,11 @@ esp_err_t SerialHandler::sendMessage(const std::string_view message) {
             }
         }
     }
+
+    // Serialize concurrent senders: the free-space check, the write sequence, and
+    // the lastSentFrame_ snapshot must be atomic w.r.t. other TX tasks. Held via
+    // RAII across every return path below. Never taken together with m_queueSpinlock.
+    RtosLockGuard<RtosMutex> txLock(m_txMutex);
 
     // Check if TX buffer has space before writing to prevent blocking
     size_t tx_buffer_free = 0;
@@ -332,113 +354,14 @@ esp_err_t SerialHandler::sendMessage(const std::string_view message) {
 
     ESP_LOGV(TAG, "uart_write_bytes successful. Wrote %d bytes.", written);
     if (m_uart_num == UART_NUM_1) {
-        lastSentFrame_.assign(message.begin(), message.end());
-        if (needs_terminator) {
-            lastSentFrame_.push_back(END_MARKER);
+        // Snapshot the frame under m_txMutex (still held) into the fixed buffer.
+        size_t n = std::min(message.length(), MAX_MESSAGE_LENGTH);
+        memcpy(lastSentFrame_, message.data(), n);
+        if (needs_terminator && n < MAX_MESSAGE_LENGTH) {
+            lastSentFrame_[n++] = END_MARKER;
         }
-        lastSentTimestampUs_.store(esp_timer_get_time(), std::memory_order_relaxed);
-    }
-    return ESP_OK;
-}
-
-esp_err_t SerialHandler::sendMessage(const std::string_view message1, const std::string_view message2) {
-    const bool ends_with_term = (
-        (!message2.empty() && message2.back() == END_MARKER) ||
-        (message2.empty() && !message1.empty() && message1.back() == END_MARKER)
-    );
-
-    const bool needs_terminator = !ends_with_term;
-
-    const size_t total_len = message1.length() + message2.length() + (needs_terminator ? 1 : 0);
-
-    if (total_len > TX_BUF_SIZE) {
-        recordSendFailure(ESP_ERR_INVALID_SIZE,
-                          "payload too large",
-                          total_len,
-                          ESP_LOG_ERROR);
-        return ESP_ERR_INVALID_SIZE;
-    }
-
-    // Check if TX buffer has space before writing to prevent blocking
-    size_t tx_buffer_free = 0;
-    esp_err_t space_check = uart_get_tx_buffer_free_size(m_uart_num, &tx_buffer_free);
-    if (space_check != ESP_OK) {
-        recordSendFailure(space_check,
-                          "tx buffer query failed",
-                          total_len,
-                          ESP_LOG_ERROR);
-        return space_check;
-    }
-
-    const size_t required_space = total_len;
-    if (tx_buffer_free < required_space) {
-        recordSendFailure(ESP_ERR_NO_MEM,
-                          "tx buffer full",
-                          required_space,
-                          ESP_LOG_WARN);
-        return ESP_ERR_NO_MEM;
-    }
-
-    if (m_uart_num == UART_NUM_1) {
-        unsigned char first = 0;
-        if (!message1.empty()) {
-            first = static_cast<unsigned char>(message1.front());
-        } else if (!message2.empty()) {
-            first = static_cast<unsigned char>(message2.front());
-        }
-        if (first != 0 && !(first >= 'A' && first <= 'Z')) {
-            ESP_LOGE(TAG, "UART%d TX anomaly: leading byte 0x%02X for frame parts '%.*s' + '%.*s'",
-                     m_uart_num,
-                     first,
-                     static_cast<int>(message1.length()), message1.data(),
-                     static_cast<int>(message2.length()), message2.data());
-        }
-    }
-
-    int written = 0;
-    if (!message1.empty()) {
-        const int bw = uart_write_bytes(m_uart_num, message1.data(), message1.length());
-        if (bw != static_cast<int>(message1.length())) {
-            recordSendFailure(ESP_FAIL,
-                              "uart write failed (part1)",
-                              message1.length(),
-                              ESP_LOG_ERROR);
-            return ESP_FAIL;
-        }
-        written += bw;
-    }
-    if (!message2.empty()) {
-        const int bw = uart_write_bytes(m_uart_num, message2.data(), message2.length());
-        if (bw != static_cast<int>(message2.length())) {
-            recordSendFailure(ESP_FAIL,
-                              "uart write failed (part2)",
-                              message2.length(),
-                              ESP_LOG_ERROR);
-            return ESP_FAIL;
-        }
-        written += bw;
-    }
-
-    if (needs_terminator) {
-        constexpr char term = END_MARKER;
-        const int bw = uart_write_bytes(m_uart_num, &term, 1);
-        if (bw != 1) {
-            recordSendFailure(ESP_FAIL,
-                              "uart write failed (terminator)",
-                              1,
-                              ESP_LOG_ERROR);
-            return ESP_FAIL;
-        }
-        written += bw;
-    }
-
-    ESP_LOGV(TAG, "uart_write_bytes successful. Wrote %d bytes.", written);
-    if (m_uart_num == UART_NUM_1) {
-        lastSentFrame_.assign(message1.data(), message1.size());
-        lastSentFrame_.append(message2.data(), message2.size());
-        if (needs_terminator) {
-            lastSentFrame_.push_back(END_MARKER);
-        }
+        lastSentFrame_[n] = '\0';
+        lastSentFrameLen_ = n;
         lastSentTimestampUs_.store(esp_timer_get_time(), std::memory_order_relaxed);
     }
     return ESP_OK;
@@ -470,10 +393,12 @@ void SerialHandler::processReceivedData(const uint8_t *data, const size_t len) {
         if (hasEOError) {
             ESP_LOGI(TAG, "UART%d RX ERROR: '%s'", m_uart_num, rxStr.c_str());
             if (m_uart_num == UART_NUM_1) {
+                char lastTx[MAX_MESSAGE_LENGTH + 1];
+                snapshotLastSentFrame(lastTx);
                 const uint64_t lastTs = lastSentTimestampUs_.load(std::memory_order_relaxed);
                 const double deltaMs = lastTs ? (esp_timer_get_time() - lastTs) / 1000.0 : -1.0;
                 ESP_LOGI(TAG, "UART%d last TX before error: '%s' (%.1f ms ago)",
-                         m_uart_num, lastSentFrame_.c_str(), deltaMs);
+                         m_uart_num, lastTx, deltaMs);
             }
             if (esp_log_level_get(TAG) >= ESP_LOG_VERBOSE) {
                 printf("UART%d RX HEX:", m_uart_num);
@@ -519,11 +444,15 @@ void SerialHandler::processReceivedData(const uint8_t *data, const size_t len) {
                          followingCmd.empty() ? "(none)" : followingCmd.c_str());
             }
             ESP_LOGW(TAG, "UART%d RX: '%s'", m_uart_num, rxStr.c_str());
-            if (m_uart_num == UART_NUM_1 && !lastSentFrame_.empty()) {
-                const uint64_t lastTs = lastSentTimestampUs_.load(std::memory_order_relaxed);
-                const double deltaMs = lastTs ? (esp_timer_get_time() - lastTs) / 1000.0 : -1.0;
-                ESP_LOGI(TAG, "UART%d last TX: '%s' (%.1f ms ago)",
-                         m_uart_num, lastSentFrame_.c_str(), deltaMs);
+            if (m_uart_num == UART_NUM_1) {
+                char lastTx[MAX_MESSAGE_LENGTH + 1];
+                const size_t lastTxLen = snapshotLastSentFrame(lastTx);
+                if (lastTxLen > 0) {
+                    const uint64_t lastTs = lastSentTimestampUs_.load(std::memory_order_relaxed);
+                    const double deltaMs = lastTs ? (esp_timer_get_time() - lastTs) / 1000.0 : -1.0;
+                    ESP_LOGI(TAG, "UART%d last TX: '%s' (%.1f ms ago)",
+                             m_uart_num, lastTx, deltaMs);
+                }
             }
         } else if (esp_log_level_get(TAG) >= ESP_LOG_DEBUG) {
             ESP_LOGD(TAG, "UART%d RX: '%s'", m_uart_num, rxStr.c_str());
@@ -547,6 +476,7 @@ void SerialHandler::processReceivedData(const uint8_t *data, const size_t len) {
         }
 
         // Append to accumulator if space remains
+        bool appended = false;
         if (m_accum_len < MAX_MESSAGE_LENGTH) {
             // On Radio UART, valid CAT responses start with uppercase letter or '?'
             // Reject lowercase/garbage start chars that would just fill the accumulator
@@ -555,10 +485,22 @@ void SerialHandler::processReceivedData(const uint8_t *data, const size_t len) {
                 continue;
             }
             m_accum[m_accum_len++] = inChar;
+            appended = true;
         }
 
         // If end marker, attempt to process accumulated data
         if (inChar == END_MARKER) {
+            if (!appended) {
+                // The accumulator was already at MAX_MESSAGE_LENGTH, so this
+                // terminator could not be stored. The bytes collected so far form
+                // an over-length, terminator-less frame - far longer than any valid
+                // CAT command. Discard the whole thing so the next ';' resynchronizes
+                // a fresh frame. Never queue a frame that doesn't end in ';'.
+                ESP_LOGW(TAG, "UART %d: Frame exceeds %zu bytes without terminator, discarding overflow",
+                         m_uart_num, MAX_MESSAGE_LENGTH);
+                m_accum_len = 0;
+                continue;
+            }
             if (m_accum_len <= 1) {
                 // Only ';' in buffer - this is likely a wakeup command or framing artifact
                 ESP_LOGD(TAG, "UART %d: Standalone semicolon (wakeup/framing)", m_uart_num);
@@ -598,20 +540,15 @@ void SerialHandler::processReceivedData(const uint8_t *data, const size_t len) {
             }
 
             if (!found_valid_cmd) {
-                // No valid command found, this is likely a fragment
-                // Don't clear accumulator - keep collecting data
-                ESP_LOGD(TAG, "UART %d: Fragment detected, keeping in buffer: '%.*s' (len=%zu)",
+                // No valid command start precedes this ';'. The accumulated bytes
+                // are a malformed fragment (line noise or a mid-frame splice). Drop
+                // the whole fragment through this terminator so the next frame starts
+                // clean on a real boundary. Retaining the remnant and shifting by an
+                // arbitrary offset lets later bytes splice onto mid-frame data, which
+                // the two-letter heuristic can then bless as a bogus command.
+                ESP_LOGD(TAG, "UART %d: No valid command before ';', discarding fragment: '%.*s' (len=%zu)",
                          m_uart_num, static_cast<int>(m_accum_len), m_accum, m_accum_len);
-
-                // But if accumulator is getting too full with fragments, clear oldest data
-                if (m_accum_len > MAX_MESSAGE_LENGTH / 2) {
-                    // Shift buffer to keep newer data
-                    size_t shift_amount = m_accum_len / 3;
-                    memmove(m_accum, m_accum + shift_amount, m_accum_len - shift_amount);
-                    m_accum_len -= shift_amount;
-                    ESP_LOGD(TAG, "UART %d: Shifted buffer by %zu bytes to prevent overflow",
-                            m_uart_num, shift_amount);
-                }
+                m_accum_len = 0;
                 continue;
             }
 

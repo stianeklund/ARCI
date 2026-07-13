@@ -24,7 +24,6 @@ public:
     std::pair<esp_err_t, std::string> getMessage() override;
     std::pair<esp_err_t, std::string_view> getMessageView() override;
     esp_err_t sendMessage(std::string_view message) override;
-    esp_err_t sendMessage(std::string_view message1, std::string_view message2) override;
     uint32_t getSendFailureCount() const override { return sendFailures_.load(); }
     void setOnFrameCallback(std::function<void()> cb) override { onFrameCallback_ = std::move(cb); }
     

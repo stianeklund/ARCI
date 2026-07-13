@@ -27,11 +27,6 @@ The `SerialHandler` class provides an interface for managing UART (Universal Asy
   - `const std::string_view message`: The message to be sent.
   - Returns: An `esp_err_t` error code indicating the success or failure of sending.
 
-- **sendMessage(std::string_view message1, std::string_view message2)**: Combines two messages and sends them as a single message.
-  - `std::string_view message1`: The first part of the message.
-  - `std::string_view message2`: The second part of the message.
-  - Returns: An `esp_err_t` error code indicating the success or failure of sending.
-
 ### Receive Functions
 
 - **hasMessage() const**: Checks if there is a complete message ready to be processed.
