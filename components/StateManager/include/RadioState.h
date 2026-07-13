@@ -37,11 +37,28 @@ namespace radio
     class CommandTimestampTracker
     {
     private:
+        // Tag and timestamp are fused into a single 64-bit word so a slot is always
+        // published and observed atomically. This removes tag/timestamp cross-pairing
+        // (reader matching a new tag but reading an old timestamp), two-writer
+        // interleaving on an empty slot, and lost invalidates. High 16 bits = the
+        // verification tag (0 = empty slot); low 48 bits = microsecond timestamp
+        // (2^48 us ~= 8.9 years of uptime, far beyond any esp_timer runtime).
+        static constexpr int kTagShift = 48;
+        static constexpr uint64_t kTimestampMask = (static_cast<uint64_t>(1) << kTagShift) - 1;
+        static_assert(kTagShift + 16 == 64, "tag(16 bits) + timestamp(48 bits) must fill the 64-bit word");
+        static_assert(kTimestampMask == 0x0000FFFFFFFFFFFFULL, "48-bit timestamp mask");
+
         struct Slot
         {
-            std::atomic<uint16_t> tag{0};       // verification hash (0 = empty)
-            std::atomic<uint64_t> timestamp{0}; // the cached timestamp
+            std::atomic<uint64_t> value{0}; // high 16 bits: tag (0 = empty), low 48 bits: timestamp us
         };
+
+        static constexpr uint64_t packSlot(const uint16_t tag, const uint64_t timestamp)
+        {
+            return (static_cast<uint64_t>(tag) << kTagShift) | (timestamp & kTimestampMask);
+        }
+        static constexpr uint16_t slotTag(const uint64_t word) { return static_cast<uint16_t>(word >> kTagShift); }
+        static constexpr uint64_t slotTimestamp(const uint64_t word) { return word & kTimestampMask; }
 
         static constexpr size_t TABLE_SIZE = 256;
         static constexpr size_t MAX_PROBES = 8;
@@ -87,22 +104,21 @@ namespace radio
         {
             const size_t base = computeTableIndex(command);
             const uint16_t t = computeTag(command);
+            const uint64_t fused = packSlot(t, timestamp);
 
             for (size_t i = 0; i < MAX_PROBES; ++i)
             {
                 auto &slot = slots_[(base + i) % TABLE_SIZE];
-                const uint16_t existing = slot.tag.load(std::memory_order_relaxed);
+                const uint16_t existing = slotTag(slot.value.load(std::memory_order_acquire));
                 if (existing == t || existing == 0)
                 {
-                    slot.tag.store(t, std::memory_order_relaxed);
-                    slot.timestamp.store(timestamp, std::memory_order_relaxed);
+                    // Single atomic publish: tag and timestamp can never be torn apart.
+                    slot.value.store(fused, std::memory_order_release);
                     return;
                 }
             }
             // Table full in probe window — overwrite last probed slot
-            auto &slot = slots_[(base + MAX_PROBES - 1) % TABLE_SIZE];
-            slot.tag.store(t, std::memory_order_relaxed);
-            slot.timestamp.store(timestamp, std::memory_order_relaxed);
+            slots_[(base + MAX_PROBES - 1) % TABLE_SIZE].value.store(fused, std::memory_order_release);
         }
 
         uint64_t get(std::string_view command) const
@@ -112,11 +128,12 @@ namespace radio
 
             for (size_t i = 0; i < MAX_PROBES; ++i)
             {
-                const auto &slot = slots_[(base + i) % TABLE_SIZE];
-                const uint16_t existing = slot.tag.load(std::memory_order_relaxed);
+                // Single atomic load: tag and timestamp are inherently paired.
+                const uint64_t word = slots_[(base + i) % TABLE_SIZE].value.load(std::memory_order_acquire);
+                const uint16_t existing = slotTag(word);
                 if (existing == t)
                 {
-                    return slot.timestamp.load(std::memory_order_relaxed);
+                    return slotTimestamp(word);
                 }
                 if (existing == 0)
                 {
@@ -136,8 +153,7 @@ namespace radio
         {
             for (auto &slot : slots_)
             {
-                slot.tag.store(0, std::memory_order_relaxed);
-                slot.timestamp.store(0, std::memory_order_relaxed);
+                slot.value.store(0, std::memory_order_relaxed);
             }
         }
 
@@ -149,10 +165,13 @@ namespace radio
             for (size_t i = 0; i < MAX_PROBES; ++i)
             {
                 auto &slot = slots_[(base + i) % TABLE_SIZE];
-                const uint16_t existing = slot.tag.load(std::memory_order_relaxed);
+                const uint16_t existing = slotTag(slot.value.load(std::memory_order_acquire));
                 if (existing == t)
                 {
-                    slot.timestamp.store(0, std::memory_order_relaxed);
+                    // Keep the tag (slot stays claimed for probing), clear the timestamp
+                    // so get() returns 0 and isFresh() reports stale — same semantics as
+                    // the previous separate timestamp.store(0), but as one atomic word.
+                    slot.value.store(packSlot(t, 0), std::memory_order_release);
                     return;
                 }
                 if (existing == 0)
@@ -338,28 +357,29 @@ namespace radio
         mutable RtosMutex controlLeaseMutex; // Mutex for lease arbitration
 
         // === SHARED STATE: Accessed from multiple tasks (Button/Encoder/Macro/Dispatch) ===
-        // These fields MUST be atomic to prevent data races and torn reads
+        // These fields are atomic to prevent data races and torn reads: command handlers
+        // write them under the dispatch mutex, while ButtonHandler/EncoderHandler/
+        // MultiEncoderHandler/RadioManager UI paths read and write them outside it.
+        // All are <=4-byte scalars, so atomic access is lock-free and free on Xtensa.
 
         // Band and antenna state (accessed by ButtonHandler, EncoderHandler, MacroManager)
-        std::atomic<int> bandNumber{0}; // Current band number
-        int bandDownSlotIndex{0}; // Band down slot index for BD command
-        int bandUpSlotIndex{0}; // Band up slot index for BU command
-        uint8_t mainAntenna{0}; // Main antenna (0=ANT1, 1=ANT2)
+        std::atomic<int> bandNumber{0}; // Current band number (0-10); shared source of truth for band up/down buttons
+        std::atomic<uint8_t> mainAntenna{0}; // Main antenna (0=ANT1, 1=ANT2)
         std::atomic<bool> transverter{false}; // Transverter mode
         std::atomic<bool> transverterOffsetEnabled{false}; // Controls whether to translate FA/FB/IF for display/USB using XO offset
         std::atomic<bool> transverterOffsetPlus{true}; // Transverter offset direction (true=plus, false=minus)
         std::atomic<uint64_t> transverterOffsetHz{0}; // Transverter offset frequency in Hz
 
         // Transverter-related menu settings (accessed by MacroManager for state comparison)
-        int drvConnectorMode{0}; // EX085: DRV connector output function (0=DRO, 1=ANT)
+        std::atomic<int> drvConnectorMode{0}; // EX085: DRV connector output function (0=DRO, 1=ANT)
         std::atomic<int> hfLinearAmpControl{0}; // EX059: HF linear amplifier control (should be 3 for transverter)
         std::atomic<int> vhfLinearAmpControl{0}; // EX060: 50 MHz linear amplifier control (should be 3 for transverter)
         std::atomic<bool> rxAnt{false}; // RX antenna setting
         std::atomic<bool> drvOut{false}; // Drive output setting
-        bool attenuator{false}; // Attenuator on/off
-        bool rxAtIn{false}; // RX ATU in/thru
-        bool txAtIn{false}; // TX ATU in/thru
-        bool atTuning{false}; // ATU tuning active
+        std::atomic<bool> attenuator{false}; // Attenuator on/off
+        std::atomic<bool> rxAtIn{false}; // RX ATU in/thru
+        std::atomic<bool> txAtIn{false}; // TX ATU in/thru
+        std::atomic<bool> atTuning{false}; // ATU tuning active
 
         // Memory and channel (atomic for thread safety)
         std::atomic<uint16_t> memoryChannel{0}; // Current memory channel
@@ -373,74 +393,74 @@ namespace radio
         std::atomic<uint64_t> rfGainAdjustTime{0}; // When RF gain adjustment started
         std::atomic<uint64_t> afGainAdjustTime{0}; // When AF gain adjustment started
 
-        // Other audio/processing settings (infrequent access, no atomic needed)
-        int sideTone{0}; // Side tone setting
-        int processor{0}; // Processor setting
-        int dataFilter{0}; // Data filter setting
-        int microphoneGain{0}; // Microphone gain
-        int txMonitorLevel{0}; // TX Monitor level
-        int voxGain{0}; // VOX gain level
-        int speechProcessorInLevel{0}; // Speech Processor input level
-        int speechProcessorOutLevel{0}; // Speech Processor output level
+        // Other audio/processing settings (shared: written under dispatch, read/written by UI paths)
+        std::atomic<int> sideTone{0}; // Side tone setting
+        std::atomic<int> processor{0}; // Processor setting
+        std::atomic<int> dataFilter{0}; // Data filter setting
+        std::atomic<int> microphoneGain{0}; // Microphone gain
+        std::atomic<int> txMonitorLevel{0}; // TX Monitor level
+        std::atomic<int> voxGain{0}; // VOX gain level
+        std::atomic<int> speechProcessorInLevel{0}; // Speech Processor input level
+        std::atomic<int> speechProcessorOutLevel{0}; // Speech Processor output level
 
-        // Tone and squelch settings (infrequent)
-        uint8_t toneStatus{0}; // Tone status
-        uint8_t toneFrequency{0}; // Tone frequency
-        int8_t beatCancelMode{0}; // Beat Cancel mode (0=OFF, 1=BC1, 2=BC2)
-        int manualNotchFrequency{0}; // Manual notch frequency
-        int toneState{0}; // Tone state
+        // Tone and squelch settings
+        std::atomic<uint8_t> toneStatus{0}; // Tone status
+        std::atomic<uint8_t> toneFrequency{0}; // Tone frequency
+        std::atomic<int8_t> beatCancelMode{0}; // Beat Cancel mode (0=OFF, 1=BC1, 2=BC2)
+        std::atomic<int> manualNotchFrequency{0}; // Manual notch frequency
+        std::atomic<int> toneState{0}; // Tone state
 
-        // Flags (some need atomic for cross-task access)
-        bool busy{false}; // Busy status
-        bool cwTune{false}; // CW Tune status
-        bool morseDecoder{false}; // Morse code decoder status
-        bool fineTune{false}; // Fine Tune status
-        bool filterCutSelectHighNotLow{true}; // Toggle for filter cut adjustment (true=high cut, false=low cut)
+        // Flags (atomic for cross-task access)
+        std::atomic<bool> busy{false}; // Busy status
+        std::atomic<bool> cwTune{false}; // CW Tune status
+        std::atomic<bool> morseDecoder{false}; // Morse code decoder status
+        std::atomic<bool> fineTune{false}; // Fine Tune status
+        std::atomic<bool> filterCutSelectHighNotLow{true}; // Toggle for filter cut adjustment (true=high cut, false=low cut)
         std::atomic<bool> panelLock{false}; // Panel lock status (accessed by ButtonHandler)
-        bool preAmplifier{false}; // Pre-amplifier
-        bool tfSet{false}; // TF-Set status
-        bool voxEnabled{false}; // VOX enabled status
-        bool quickMemoryEnabled{false}; // Quick memory enabled
-        uint8_t quickMemoryChannel{0}; // Quick memory channel 0-9
+        std::atomic<bool> preAmplifier{false}; // Pre-amplifier
+        std::atomic<bool> tfSet{false}; // TF-Set status
+        std::atomic<bool> voxEnabled{false}; // VOX enabled status
+        std::atomic<bool> quickMemoryEnabled{false}; // Quick memory enabled
+        std::atomic<uint8_t> quickMemoryChannel{0}; // Quick memory channel 0-9
 
-        // Various settings (infrequent access)
-        int morseDecoderThreshold{0}; // Morse code decoder threshold
-        int carrierLevel{0}; // Carrier level
-        int txEqualizer{0}; // TX Equalizer
-        int rxEqualizer{0}; // RX Equalizer
-        int ifFilter{0}; // IF Filter
-        int dspFilterBandwidth{0}; // DSP filter bandwidth (FW command for CW/FSK/FM)
-        int fmNarrowMode{0}; // FM narrow mode (0=Normal, 1=Narrow)
-        int agcMode{0}; // AGC mode (0=OFF, 1=Slow, 2=Fast, 3=Restore)
-        int previousAgcMode{2}; // Previous non-OFF AGC mode for GC3 restore (default: Fast)
-        int agcTimeConstant{0}; // AGC time constant
-        int keyingSpeed{0}; // Keying speed
-        int vgs1Target{0}; // VGS-1 target
-        int vgs1Status{0}; // VGS-1 status
-        int vgs1Time{0}; // VGS-1 time
-        int noiseBlanker{0}; // Noise Blanker
-        int noiseBlankerLevel{0}; // Noise Blanker level
-        int noiseReductionMode{0}; // Noise Reduction mode (0=OFF, 1=NR1, 2=NR2)
-        int nr1Level{5};           // NR1 level (1-10, default 5)
-        int nr2Speed{5};           // NR2 SPAC speed (0-9, default 5 = 12ms)
-        int notchFilterMode{0}; // Notch Filter mode
-        int notchFilterBandwidth{0}; // Notch Filter bandwidth
-        int playbackChannel{0}; // Playback channel
-        std::array<int, 3> playbackQueue{}; // Playback queue (removed atomic - not thread-critical)
-        int transmitPower{5}; // Transmit power (default 5W, minimum legal value)
-        uint64_t autoModeFrequency{0}; // Auto mode frequency (removed atomic)
-        int meterFunction{1}; // Meter function (1=SWR, 2=COMP, 3=ALC)
-        int meterSmRaw{0}; // S-meter reading from SM command (0-30, or 0000-9999 raw format)
-        int meterSwr{0}; // SWR meter value
-        int meterComp{0}; // COMP meter value
-        int meterAlc{0}; // ALC meter value
-        int cwBreakInDelay{0}; // CW break-in delay
-        int receiveHighCut{0}; // Receive high-cut
-        int receiveLowCut{0}; // Receive low-cut
-        int txTunePower{0}; // TX Tune power
-        int menuBank{0}; // Menu bank (0=A, 1=B)
-        int modeKey{0}; // Mode key
-        int visualScanStatus{0}; // Visual Scan status (0=OFF, 1=ON, 2=Pause)
+        // Various settings (atomic: written under dispatch, read/written by Button/Encoder/UI paths)
+        std::atomic<int> morseDecoderThreshold{0}; // Morse code decoder threshold
+        std::atomic<int> carrierLevel{0}; // Carrier level
+        std::atomic<int> txEqualizer{0}; // TX Equalizer
+        std::atomic<int> rxEqualizer{0}; // RX Equalizer
+        std::atomic<int> ifFilter{0}; // IF Filter
+        std::atomic<int> dspFilterBandwidth{0}; // DSP filter bandwidth (FW command for CW/FSK/FM)
+        std::atomic<int> fmNarrowMode{0}; // FM narrow mode (0=Normal, 1=Narrow)
+        std::atomic<int> agcMode{0}; // AGC mode (0=OFF, 1=Slow, 2=Fast, 3=Restore)
+        std::atomic<int> previousAgcMode{2}; // Previous non-OFF AGC mode for GC3 restore (default: Fast)
+        std::atomic<int> agcTimeConstant{0}; // AGC time constant
+        std::atomic<int> keyingSpeed{0}; // Keying speed
+        std::atomic<int> vgs1Target{0}; // VGS-1 target
+        std::atomic<int> vgs1Status{0}; // VGS-1 status
+        std::atomic<int> vgs1Time{0}; // VGS-1 time
+        std::atomic<int> noiseBlanker{0}; // Noise Blanker
+        std::atomic<int> noiseBlankerLevel{0}; // Noise Blanker level
+        std::atomic<int> noiseReductionMode{0}; // Noise Reduction mode (0=OFF, 1=NR1, 2=NR2)
+        std::atomic<int> nr1Level{5};           // NR1 level (1-10, default 5)
+        std::atomic<int> nr2Speed{5};           // NR2 SPAC speed (0-9, default 5 = 12ms)
+        std::atomic<int> notchFilterMode{0}; // Notch Filter mode
+        std::atomic<int> notchFilterBandwidth{0}; // Notch Filter bandwidth
+        std::atomic<int> playbackChannel{0}; // Playback channel
+        std::array<int, 3> playbackQueue{}; // Playback queue (dispatch-only; array, not thread-critical)
+        std::atomic<int> transmitPower{5}; // Transmit power (default 5W, minimum legal value)
+        uint64_t autoModeFrequency{0}; // Auto mode frequency (dispatch-only scratch, not shared)
+        std::atomic<int> meterFunction{1}; // Meter function (1=SWR, 2=COMP, 3=ALC)
+        std::atomic<int> meterSmRaw{0}; // S-meter reading from SM command (0-30, or 0000-9999 raw format)
+        std::atomic<int> meterSwr{0}; // SWR meter value
+        std::atomic<int> meterComp{0}; // COMP meter value
+        std::atomic<int> meterAlc{0}; // ALC meter value
+        std::atomic<int> cwBreakInDelay{0}; // CW break-in delay
+        std::atomic<int> receiveHighCut{0}; // Receive high-cut
+        std::atomic<int> receiveLowCut{0}; // Receive low-cut
+        std::atomic<int> txTunePower{0}; // TX Tune power
+        std::atomic<int> menuBank{0}; // Menu bank (0=A, 1=B)
+        std::atomic<int> modeKey{0}; // Mode key
+        std::atomic<int> visualScanStatus{0}; // Visual Scan status (0=OFF, 1=ON, 2=Pause)
 
         std::array<char, 16> firmwareVersion{}; // Firmware version (fixed-size, e.g., "1.09")
 
