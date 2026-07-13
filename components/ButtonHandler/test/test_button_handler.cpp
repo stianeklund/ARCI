@@ -27,8 +27,6 @@ public:
     // Test helpers for trigger methods
     void testTriggerSplitButton() { triggerSplitButton(); }
     void testTriggerTransverterMacroButton() { triggerTransverterMacroButton(); }
-    void testTriggerFunctionButton1() { triggerFunctionButton1(); }
-    void testTriggerFunctionButton2() { triggerFunctionButton2(); }
 };
 
 static std::unique_ptr<MockSerialHandler> mockRadioSerial;
@@ -619,6 +617,233 @@ void test_band_button_frequency_aware() {
     ESP_LOGI("TEST", "test_band_button_frequency_aware completed successfully");
 }
 
+// ---------------------------------------------------------------------------
+// M3: atomic button toggles via RadioManager::dispatchToggle
+//
+// dispatchToggle reads the CURRENT cached state for a target under the dispatch
+// lock and emits the INVERTED absolute CAT frame. These tests prove the emitted
+// value reflects live state at dispatch time (not a stale pre-read). The tests
+// drive dispatchToggle directly through the same panel handler the buttons use,
+// which is the cleanest way to observe the guarantee at its source.
+//
+// Capture: reuses the shared mockRadioSerial->sentMessages buffer and the same
+// find-loop pattern used elsewhere in this file (see test_band_button_frequency_aware).
+// ---------------------------------------------------------------------------
+static bool radioSentFrame(const char *frame) {
+    for (const auto &msg : mockRadioSerial->sentMessages) {
+        if (msg == frame) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void test_dispatch_toggle_processor_inverts_state() {
+    // Processor is an int (0/1); seed 0 -> expect PR1;, seed 1 -> expect PR0;.
+    radioManager->getState().processor.store(0);
+    clearMessages();
+    radioManager->dispatchToggle(radioManager->getPanelCATHandler(), radio::ToggleTarget::Processor);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("PR1;"), "Expected PR1; when processor seeded 0");
+
+    radioManager->getState().processor.store(1);
+    clearMessages();
+    radioManager->dispatchToggle(radioManager->getPanelCATHandler(), radio::ToggleTarget::Processor);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("PR0;"), "Expected PR0; when processor seeded 1");
+}
+
+void test_dispatch_toggle_attenuator_inverts_state() {
+    // RA format RA0<v>; -> seed false -> RA01;, seed true -> RA00;.
+    radioManager->getState().attenuator.store(false);
+    clearMessages();
+    radioManager->dispatchToggle(radioManager->getPanelCATHandler(), radio::ToggleTarget::Attenuator);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("RA01;"), "Expected RA01; when attenuator seeded false");
+
+    radioManager->getState().attenuator.store(true);
+    clearMessages();
+    radioManager->dispatchToggle(radioManager->getPanelCATHandler(), radio::ToggleTarget::Attenuator);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("RA00;"), "Expected RA00; when attenuator seeded true");
+}
+
+void test_dispatch_toggle_preamp_inverts_state() {
+    radioManager->getState().preAmplifier.store(false);
+    clearMessages();
+    radioManager->dispatchToggle(radioManager->getPanelCATHandler(), radio::ToggleTarget::Preamp);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("PA1;"), "Expected PA1; when preAmplifier seeded false");
+
+    radioManager->getState().preAmplifier.store(true);
+    clearMessages();
+    radioManager->dispatchToggle(radioManager->getPanelCATHandler(), radio::ToggleTarget::Preamp);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("PA0;"), "Expected PA0; when preAmplifier seeded true");
+}
+
+void test_dispatch_toggle_rit_inverts_state() {
+    radioManager->getState().ritOn.store(false);
+    clearMessages();
+    radioManager->dispatchToggle(radioManager->getPanelCATHandler(), radio::ToggleTarget::Rit);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("RT1;"), "Expected RT1; when ritOn seeded false");
+
+    radioManager->getState().ritOn.store(true);
+    clearMessages();
+    radioManager->dispatchToggle(radioManager->getPanelCATHandler(), radio::ToggleTarget::Rit);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("RT0;"), "Expected RT0; when ritOn seeded true");
+}
+
+void test_dispatch_toggle_xit_inverts_state() {
+    radioManager->getState().xitOn.store(false);
+    clearMessages();
+    radioManager->dispatchToggle(radioManager->getPanelCATHandler(), radio::ToggleTarget::Xit);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("XT1;"), "Expected XT1; when xitOn seeded false");
+
+    radioManager->getState().xitOn.store(true);
+    clearMessages();
+    radioManager->dispatchToggle(radioManager->getPanelCATHandler(), radio::ToggleTarget::Xit);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("XT0;"), "Expected XT0; when xitOn seeded true");
+}
+
+void test_dispatch_toggle_vox_inverts_state() {
+    radioManager->getState().voxEnabled.store(false);
+    clearMessages();
+    radioManager->dispatchToggle(radioManager->getPanelCATHandler(), radio::ToggleTarget::Vox);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("VX1;"), "Expected VX1; when voxEnabled seeded false");
+
+    radioManager->getState().voxEnabled.store(true);
+    clearMessages();
+    radioManager->dispatchToggle(radioManager->getPanelCATHandler(), radio::ToggleTarget::Vox);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("VX0;"), "Expected VX0; when voxEnabled seeded true");
+}
+
+void test_dispatch_toggle_txatu_inverts_state() {
+    // AC<v><v>0; -> seed false -> AC110;, seed true -> AC000;.
+    radioManager->getState().txAtIn.store(false);
+    clearMessages();
+    radioManager->dispatchToggle(radioManager->getPanelCATHandler(), radio::ToggleTarget::TxAtu);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("AC110;"), "Expected AC110; when txAtIn seeded false");
+
+    radioManager->getState().txAtIn.store(true);
+    clearMessages();
+    radioManager->dispatchToggle(radioManager->getPanelCATHandler(), radio::ToggleTarget::TxAtu);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("AC000;"), "Expected AC000; when txAtIn seeded true");
+}
+
+void test_dispatch_toggle_antenna_inverts_state() {
+    // AN<main>99; -> seed mainAntenna 0 -> AN199;, seed 1 -> AN099;.
+    radioManager->getState().mainAntenna.store(0);
+    clearMessages();
+    radioManager->dispatchToggle(radioManager->getPanelCATHandler(), radio::ToggleTarget::Antenna);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("AN199;"), "Expected AN199; when mainAntenna seeded 0");
+
+    radioManager->getState().mainAntenna.store(1);
+    clearMessages();
+    radioManager->dispatchToggle(radioManager->getPanelCATHandler(), radio::ToggleTarget::Antenna);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("AN099;"), "Expected AN099; when mainAntenna seeded 1");
+}
+
+// Regression (TOCTOU): the read must reflect state UPDATED after seeding, not the
+// original value. Seed processor=0, push a PR1; SET through the SAME dispatch path
+// (updating cached state to 1), THEN toggle: it must invert the UPDATED 1 -> PR0;,
+// not the stale 0 -> PR1;. A read cached too early would emit PR1; and fail here.
+void test_dispatch_toggle_reads_live_state_not_stale() {
+    radioManager->getState().processor.store(0);
+    // Update cached state to 1 via a normal absolute SET through the panel handler.
+    radioManager->getPanelCATHandler().parseMessage("PR1;");
+    TEST_ASSERT_EQUAL(1, radioManager->getState().processor.load());
+
+    clearMessages();
+    radioManager->dispatchToggle(radioManager->getPanelCATHandler(), radio::ToggleTarget::Processor);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("PR0;"),
+                             "dispatchToggle must invert the UPDATED state (1 -> PR0;), not the stale 0");
+    TEST_ASSERT_FALSE_MESSAGE(radioSentFrame("PR1;"),
+                              "dispatchToggle must not emit PR1; from a stale pre-read of processor=0");
+}
+
+// ---------------------------------------------------------------------------
+// M3: multi-state button cycles via RadioManager::dispatchCycleLocked
+//
+// dispatchCycleLocked reads the CURRENT cached value for a target under the
+// dispatch lock and emits the ADVANCED absolute CAT frame. Mirrors the
+// dispatchToggle tests above: seed the field via .store(...), clearMessages(),
+// dispatch through the shared panel handler, assert the advanced frame.
+// ---------------------------------------------------------------------------
+void test_dispatch_cycle_nr_advances() {
+    // NR<(v+1)%3>; -> 0 -> NR1;, 1 -> NR2;, 2 -> NR0;.
+    radioManager->getState().noiseReductionMode.store(0);
+    clearMessages();
+    radioManager->dispatchCycleLocked(radioManager->getPanelCATHandler(), radio::CycleTarget::NoiseReduction);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("NR1;"), "Expected NR1; when noiseReductionMode seeded 0");
+
+    radioManager->getState().noiseReductionMode.store(1);
+    clearMessages();
+    radioManager->dispatchCycleLocked(radioManager->getPanelCATHandler(), radio::CycleTarget::NoiseReduction);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("NR2;"), "Expected NR2; when noiseReductionMode seeded 1");
+
+    radioManager->getState().noiseReductionMode.store(2);
+    clearMessages();
+    radioManager->dispatchCycleLocked(radioManager->getPanelCATHandler(), radio::CycleTarget::NoiseReduction);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("NR0;"), "Expected NR0; when noiseReductionMode seeded 2 (wraps to OFF)");
+}
+
+void test_dispatch_cycle_nb_advances() {
+    // NB<(v+1)%4>; -> 0 -> NB1;, 1 -> NB2;, 2 -> NB3;, 3 -> NB0;.
+    radioManager->getState().noiseBlanker.store(0);
+    clearMessages();
+    radioManager->dispatchCycleLocked(radioManager->getPanelCATHandler(), radio::CycleTarget::NoiseBlanker);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("NB1;"), "Expected NB1; when noiseBlanker seeded 0");
+
+    radioManager->getState().noiseBlanker.store(1);
+    clearMessages();
+    radioManager->dispatchCycleLocked(radioManager->getPanelCATHandler(), radio::CycleTarget::NoiseBlanker);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("NB2;"), "Expected NB2; when noiseBlanker seeded 1");
+
+    radioManager->getState().noiseBlanker.store(2);
+    clearMessages();
+    radioManager->dispatchCycleLocked(radioManager->getPanelCATHandler(), radio::CycleTarget::NoiseBlanker);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("NB3;"), "Expected NB3; when noiseBlanker seeded 2");
+
+    radioManager->getState().noiseBlanker.store(3);
+    clearMessages();
+    radioManager->dispatchCycleLocked(radioManager->getPanelCATHandler(), radio::CycleTarget::NoiseBlanker);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("NB0;"), "Expected NB0; when noiseBlanker seeded 3 (wraps to OFF)");
+}
+
+void test_dispatch_cycle_nb_active_skips_off() {
+    // NoiseBlankerActive: NB<(v%3)+1>; wraps NB1->NB2->NB3->NB1 without hitting OFF.
+    radioManager->getState().noiseBlanker.store(3);
+    clearMessages();
+    radioManager->dispatchCycleLocked(radioManager->getPanelCATHandler(), radio::CycleTarget::NoiseBlankerActive);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("NB1;"), "Expected NB1; when noiseBlanker seeded 3 (wrap without OFF)");
+
+    radioManager->getState().noiseBlanker.store(0);
+    clearMessages();
+    radioManager->dispatchCycleLocked(radioManager->getPanelCATHandler(), radio::CycleTarget::NoiseBlankerActive);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("NB1;"), "Expected NB1; when noiseBlanker seeded 0");
+}
+
+void test_dispatch_cycle_nb_clamps_invalid_state() {
+    // Out-of-range cached value clamps to 0, then advances -> NB1;.
+    radioManager->getState().noiseBlanker.store(99);
+    clearMessages();
+    radioManager->dispatchCycleLocked(radioManager->getPanelCATHandler(), radio::CycleTarget::NoiseBlanker);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("NB1;"), "Expected NB1; when noiseBlanker seeded 99 (clamped to 0 then advanced)");
+}
+
+// Regression (TOCTOU): the read must reflect state UPDATED after seeding, not the
+// original value. Seed noiseBlanker=0, push an NB2; SET through the SAME dispatch
+// path (updating cached state to 2), THEN cycle: it must advance the UPDATED 2 ->
+// NB3;, not the stale 0 -> NB1;.
+void test_dispatch_cycle_reads_live_state_not_stale() {
+    radioManager->getState().noiseBlanker.store(0);
+    // Update cached state to 2 via a normal absolute SET through the panel handler.
+    radioManager->getPanelCATHandler().parseMessage("NB2;");
+    TEST_ASSERT_EQUAL(2, radioManager->getState().noiseBlanker.load());
+
+    clearMessages();
+    radioManager->dispatchCycleLocked(radioManager->getPanelCATHandler(), radio::CycleTarget::NoiseBlanker);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("NB3;"),
+                             "dispatchCycleLocked must advance the UPDATED state (2 -> NB3;), not the stale 0");
+    TEST_ASSERT_FALSE_MESSAGE(radioSentFrame("NB1;"),
+                              "dispatchCycleLocked must not emit NB1; from a stale pre-read of noiseBlanker=0");
+}
+
 extern "C" void run_button_handler_tests(void) {
     buttonHandlerSetUp();
     ESP_LOGI("ButtonHandlerTests", "RUNNING TESTS..");
@@ -644,6 +869,24 @@ extern "C" void run_button_handler_tests(void) {
     // State Transition Tests
     RUN_TEST(test_transverter_state_transitions);
     RUN_TEST(test_tf_set_button_state_persistence);
+
+    // M3: atomic toggle (dispatchToggle) inverts live cached state
+    RUN_TEST(test_dispatch_toggle_processor_inverts_state);
+    RUN_TEST(test_dispatch_toggle_attenuator_inverts_state);
+    RUN_TEST(test_dispatch_toggle_preamp_inverts_state);
+    RUN_TEST(test_dispatch_toggle_rit_inverts_state);
+    RUN_TEST(test_dispatch_toggle_xit_inverts_state);
+    RUN_TEST(test_dispatch_toggle_vox_inverts_state);
+    RUN_TEST(test_dispatch_toggle_txatu_inverts_state);
+    RUN_TEST(test_dispatch_toggle_antenna_inverts_state);
+    RUN_TEST(test_dispatch_toggle_reads_live_state_not_stale);
+
+    // M3: multi-state cycle (dispatchCycleLocked) advances live cached state
+    RUN_TEST(test_dispatch_cycle_nr_advances);
+    RUN_TEST(test_dispatch_cycle_nb_advances);
+    RUN_TEST(test_dispatch_cycle_nb_active_skips_off);
+    RUN_TEST(test_dispatch_cycle_nb_clamps_invalid_state);
+    RUN_TEST(test_dispatch_cycle_reads_live_state_not_stale);
     buttonHandlerTearDown();
 }
 

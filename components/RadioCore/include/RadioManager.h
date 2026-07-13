@@ -43,6 +43,31 @@ namespace radio
         LockTimeout  // Could not acquire dispatchMutex_ within the timeout; not processed
     };
 
+    // Targets for atomic button toggles (M3): the read-current-and-invert is
+    // resolved under dispatchMutex_ so a concurrent CAT set cannot make the press
+    // a no-op or flip the wrong direction.
+    enum class ToggleTarget
+    {
+        Processor,   // PR
+        Attenuator,  // RA
+        Preamp,      // PA
+        Rit,         // RT
+        Xit,         // XT
+        Vox,         // VX
+        TxAtu,       // AC (TX-AT in/thru; RX path mirrors TX)
+        Antenna,     // AN (main antenna P1 only; P2/P3 = 9 = no change)
+    };
+
+    // Targets for atomic multi-state button cycles (M3 follow-up): read-current-and-
+    // advance is resolved under dispatchMutex_, same guarantee as ToggleTarget but for
+    // settings that step through >2 states instead of flipping a boolean.
+    enum class CycleTarget
+    {
+        NoiseReduction,      // NR: OFF -> NR1 -> NR2 -> OFF        (state_.noiseReductionMode)
+        NoiseBlanker,        // NB: OFF -> NB1 -> NB2 -> NB3 -> OFF (state_.noiseBlanker)
+        NoiseBlankerActive,  // NB: NB1 -> NB2 -> NB3 -> NB1 (skip OFF; used while the NB level popup is open)
+    };
+
     /**
      * @brief Central manager for all radio state and command processing
      *
@@ -438,6 +463,18 @@ namespace radio
         // unhandled command, so callers can surface a defined CAT error ("?;") or
         // retry instead of silently dropping the message.
         DispatchOutcome dispatchMessageEx(CATHandler &handler, std::string_view message) const;
+
+        // Atomically toggle a boolean radio setting: reads the current cached value and
+        // dispatches the inverted absolute command while holding dispatchMutex_, so the
+        // read and dispatch are one critical section (fixes M3 TOCTOU). Returns the
+        // dispatch outcome; LockTimeout if the lock could not be acquired in time.
+        DispatchOutcome dispatchToggle(CATHandler &handler, ToggleTarget target) const;
+
+        // Atomically advance a multi-state radio setting to its next value: reads the
+        // current cached value and dispatches the advanced absolute command while holding
+        // dispatchMutex_, so read+dispatch is one critical section (M3). Returns the
+        // dispatch outcome; LockTimeout if the lock could not be acquired in time.
+        DispatchOutcome dispatchCycleLocked(CATHandler &handler, CycleTarget target) const;
 
         // Mode access methods for command handlers
         /**

@@ -21,12 +21,8 @@ const char *bandNames[] = {"1.8MHz", "3.5MHz", "7MHz",  "10MHz", "14MHz", "18MHz
 // instead of being rebuilt on the stack every button press.
 static const char *const modeNames[] = {"Invalid", "LSB", "USB", "CW", "FM", "AM", "FSK", "CW-R", "Invalid", "FSK-R"};
 static const int8_t      validModes[] = {1, 2, 3, 4, 5, 6, 7, 9};
-static const char *const nbNames[]   = {"OFF", "NB1", "NB2", "NB3"};
-static const char *const agcNames[]  = {"OFF", "FAST", "SLOW", "AUTO"};
-static const char *const nrNames[]   = {"OFF", "NR1", "NR2"};
 static const char *const vfoNames[]  = {"VFO A", "VFO B", "Memory"};
 static const int         voxDelays[] = {150, 300, 500, 1000};
-static const char *const antNames[]  = {"ANT1", "ANT2"};
 
 namespace
 {
@@ -368,14 +364,9 @@ void ButtonHandler::triggerSpeechProcessorButton()
     ESP_LOGI(TAG, "Speech Processor trigger: DATA mode -> %s", newDataMode ? "ON" : "OFF");
 
     // Also simulate short press behavior: toggle Speech Processor (PR)
-    bool currentPR = m_radioManager.getState().processor;
-    int newPR = currentPR ? 0 : 1; // Toggle between 0 (OFF) and 1 (ON)
-
-    char prCommand[8];
-    std::snprintf(prCommand, sizeof(prCommand), "PR%d;", newPR);
-    m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), prCommand);
-
-    ESP_LOGI(TAG, "Speech Processor trigger: PR %s -> %s", currentPR ? "ON" : "OFF", newPR ? "ON" : "OFF");
+    m_radioManager.dispatchToggle(m_radioManager.getPanelCATHandler(),
+                                  radio::ToggleTarget::Processor);
+    ESP_LOGI(TAG, "Speech Processor trigger: PR toggled");
 }
 
 void ButtonHandler::trigger_A_equals_B_button()
@@ -393,47 +384,6 @@ void ButtonHandler::trigger_A_equals_B_button()
 }
 
 // Function button triggers - used by TCA8418 key mappings
-void ButtonHandler::triggerFunctionButton1()
-{
-    if (!m_radioManager.getState().keepAlive.load())
-        return;
-
-    // Check panel lock state - block button when locked
-    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
-    {
-        ESP_LOGD(TAG, "Function Button 1 blocked - panel is LOCKED");
-        return;
-    }
-
-    m_radioManager.recordButtonActivity();
-
-    // Toggle AGC - query current state first, then toggle
-    int currentAgc = m_radioManager.getState().agcMode;
-    int newAgc = (currentAgc == 1) ? 2 : 1; // Toggle between FAST (1) and SLOW (2)
-
-    char gtCommand[8];
-    std::snprintf(gtCommand, sizeof(gtCommand), "GT%d;", newAgc);
-    m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), gtCommand);
-
-    ESP_LOGI(TAG, "Function Button 1 pressed: AGC from %s to %s", agcNames[currentAgc], agcNames[newAgc]);
-}
-
-void ButtonHandler::triggerFunctionButton2()
-{
-    if (!m_radioManager.getState().keepAlive.load())
-        return;
-
-    // Toggle Noise Blanker - query current state first, then toggle
-    int currentNB = m_radioManager.getState().noiseBlanker;
-    int newNB = (currentNB + 1) % 3; // Cycle through 0, 1, 2
-
-    char nlCommand[8];
-    std::snprintf(nlCommand, sizeof(nlCommand), "NL%d;", newNB);
-    m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), nlCommand);
-
-    ESP_LOGI(TAG, "Function Button 2 pressed: Noise Blanker from %s to %s", nbNames[currentNB], nbNames[newNB]);
-}
-
 void ButtonHandler::triggerFunctionButton3()
 {
     if (!m_radioManager.getState().keepAlive.load())
@@ -467,24 +417,6 @@ void ButtonHandler::triggerFunctionButton3()
 
     // Invalidate frequency cache and request fresh FA/FB from radio
     m_radioManager.requestFrequencyUpdate();
-}
-
-void ButtonHandler::triggerFunctionButton4()
-{
-    if (!m_radioManager.getState().keepAlive.load())
-        return;
-
-    // Toggle between noise blanker variants: OFF (0) -> NB1 (1) -> NB2 (2) -> NB3 (3) -> OFF (0)
-    int currentNB = m_radioManager.getState().noiseBlanker;
-    int nextNB = (currentNB + 1) % 3; // Cycle through 0, 1, 2
-
-    // Use NL command for noise blanker
-    char nlCommand[8];
-    std::snprintf(nlCommand, sizeof(nlCommand), "NL%d;", nextNB);
-    m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), nlCommand);
-
-    ESP_LOGI(TAG, "Function Button 4 pressed: Toggling Noise Blanker from %s to %s", nbNames[currentNB],
-             nbNames[nextNB]);
 }
 
 void ButtonHandler::triggerFunctionButton5()
@@ -1860,15 +1792,10 @@ void ButtonHandler::handleNoiseReductionButton(MatrixButton &button)
             return;
         }
 
-        // Normal short press when popup closed - cycle NR mode
-        int currentNR = m_radioManager.getState().noiseReductionMode;
-        int newNR = (currentNR + 1) % 3; // Cycle through 0 (OFF), 1 (NR1), 2 (NR2)
-
-        char nrCommand[8];
-        std::snprintf(nrCommand, sizeof(nrCommand), "NR%d;", newNR);
-        m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), nrCommand);
-
-        ESP_LOGI(TAG, "NR button short press: %s -> %s", nrNames[currentNR], nrNames[newNR]);
+        // Normal short press when popup closed - cycle NR mode (OFF->NR1->NR2->OFF)
+        m_radioManager.dispatchCycleLocked(m_radioManager.getPanelCATHandler(),
+                                           radio::CycleTarget::NoiseReduction);
+        ESP_LOGI(TAG, "NR button short press: cycled NR mode");
     }
 }
 
@@ -1925,18 +1852,12 @@ void ButtonHandler::handleRitButton(MatrixButton &button)
     // Handle short press - always toggle RIT on/off
     if (button.wasShortReleased())
     {
-        bool currentRIT = m_radioManager.isRitEnabled();
-        int newRIT = currentRIT ? 0 : 1;
-
-        char rtCommand[8];
-        std::snprintf(rtCommand, sizeof(rtCommand), "RT%d;", newRIT);
-        m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), rtCommand);
-
+        m_radioManager.dispatchToggle(m_radioManager.getPanelCATHandler(),
+                                      radio::ToggleTarget::Rit);
         // Query RT; to confirm RIT state from radio
         ESP_LOGI(TAG, "RIT button short press - querying RT; for current state");
         m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), "RT;");
-
-        ESP_LOGI(TAG, "RIT button short press: %s -> %s", currentRIT ? "ON" : "OFF", newRIT ? "ON" : "OFF");
+        ESP_LOGI(TAG, "RIT button short press: RT toggled");
     }
 }
 
@@ -1994,18 +1915,11 @@ void ButtonHandler::handleXitButton(MatrixButton &button)
     // Handle short press - always toggle XIT on/off
     if (button.wasShortReleased())
     {
-        bool currentXIT = m_radioManager.isXitEnabled();
-        int newXIT = currentXIT ? 0 : 1;
-
-        char xtCommand[8];
-        std::snprintf(xtCommand, sizeof(xtCommand), "XT%d;", newXIT);
-        m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), xtCommand);
-
-        // Query XT; to confirm XIT state from radio
+        m_radioManager.dispatchToggle(m_radioManager.getPanelCATHandler(),
+                                      radio::ToggleTarget::Xit);
         ESP_LOGI(TAG, "XIT button short press - querying XT; for current state");
         m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), "XT;");
-
-        ESP_LOGI(TAG, "XIT button short press: %s -> %s", currentXIT ? "ON" : "OFF", newXIT ? "ON" : "OFF");
+        ESP_LOGI(TAG, "XIT button short press: XT toggled");
     }
 }
 
@@ -2059,17 +1973,10 @@ void ButtonHandler::handleNoiseBlankerButton(MatrixButton &button)
     {
         if (nbPopupOpen)
         {
-            // Cycle NB modes (NB1→NB2→NB3→NB1) while popup is open
-            int currentNB = m_radioManager.getState().noiseBlanker;
-            // Cycle 1→2→3→1 (staying within active modes, not going to OFF)
-            int newNB = (currentNB % 3) + 1;
-
-            ESP_LOGI(TAG, "NB button short press - cycling mode: %s -> %s (popup stays open)",
-                     nbNames[currentNB], nbNames[newNB]);
-
-            char nbCommand[8];
-            std::snprintf(nbCommand, sizeof(nbCommand), "NB%d;", newNB);
-            m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), nbCommand);
+            // Cycle NB modes (NB1->NB2->NB3->NB1) while popup is open (never OFF)
+            m_radioManager.dispatchCycleLocked(m_radioManager.getPanelCATHandler(),
+                                               radio::CycleTarget::NoiseBlankerActive);
+            ESP_LOGI(TAG, "NB button short press - cycled active mode (popup stays open)");
 
             // Re-enter UI mode to refresh popup (level stays the same)
             int currentLevel = m_radioManager.getState().noiseBlankerLevel;
@@ -2079,21 +1986,10 @@ void ButtonHandler::handleNoiseBlankerButton(MatrixButton &button)
             return;
         }
 
-        // Normal short press when popup closed - cycle NB mode
-        int currentNB = m_radioManager.getState().noiseBlanker;
-        // Bounds check to prevent array out-of-bounds crash
-        if (currentNB < 0 || currentNB > 3)
-        {
-            ESP_LOGW(TAG, "NB button: Invalid state %d, treating as OFF", currentNB);
-            currentNB = 0;
-        }
-        int newNB = (currentNB + 1) % 4; // Cycle through 0 (OFF), 1 (NB1), 2 (NB2), 3 (NB3)
-
-        char nbCommand[8];
-        std::snprintf(nbCommand, sizeof(nbCommand), "NB%d;", newNB);
-        m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), nbCommand);
-
-        ESP_LOGI(TAG, "NB button short press: %s -> %s", nbNames[currentNB], nbNames[newNB]);
+        // Normal short press when popup closed - cycle NB mode (OFF->NB1->NB2->NB3->OFF)
+        m_radioManager.dispatchCycleLocked(m_radioManager.getPanelCATHandler(),
+                                           radio::CycleTarget::NoiseBlanker);
+        ESP_LOGI(TAG, "NB button short press: cycled NB mode");
     }
 }
 
@@ -2228,14 +2124,9 @@ void ButtonHandler::handleSpeechProcessorButton(MatrixButton &button)
         // Normal short press - toggle Speech Processor (PR command)
         ESP_LOGI(TAG, "Speech Processor button short press - toggling PR");
 
-        bool currentPR = m_radioManager.getState().processor;
-        int newPR = currentPR ? 0 : 1; // Toggle between 0 (OFF) and 1 (ON)
-
-        char prCommand[8];
-        std::snprintf(prCommand, sizeof(prCommand), "PR%d;", newPR);
-        m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), prCommand);
-
-        ESP_LOGI(TAG, "Speech Processor: %s -> %s", currentPR ? "ON" : "OFF", newPR ? "ON" : "OFF");
+        m_radioManager.dispatchToggle(m_radioManager.getPanelCATHandler(),
+                                      radio::ToggleTarget::Processor);
+        ESP_LOGI(TAG, "Speech Processor button short press: PR toggled");
     }
 }
 
@@ -2251,15 +2142,9 @@ void ButtonHandler::handleRfAttenuatorButton()
         return;
     }
 
-    bool currentRA = m_radioManager.getState().attenuator;
-    int newRA = currentRA ? 0 : 1; // Toggle between 0 (OFF) and 1 (ON)
-
-    // RA command format: RA<P1><P1>; where P1P1 is 00 (OFF) or 01 (ON)
-    char raCommand[8];
-    std::snprintf(raCommand, sizeof(raCommand), "RA0%d;", newRA);
-    m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), raCommand);
-
-    ESP_LOGI(TAG, "RF Attenuator button pressed (0x27): %s -> %s", currentRA ? "ON" : "OFF", newRA ? "ON" : "OFF");
+    m_radioManager.dispatchToggle(m_radioManager.getPanelCATHandler(),
+                                  radio::ToggleTarget::Attenuator);
+    ESP_LOGI(TAG, "RF Attenuator button pressed (0x27): RA toggled");
 }
 
 
@@ -2275,14 +2160,9 @@ void ButtonHandler::handlePreampButton()
         return;
     }
 
-    const bool currentPreamp = m_radioManager.getState().preAmplifier;
-    const bool newPreamp = !currentPreamp;
-
-    char paCommand[8];
-    std::snprintf(paCommand, sizeof(paCommand), "PA%d;", newPreamp ? 1 : 0);
-    m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), paCommand);
-
-    ESP_LOGI(TAG, "Preamp button (0x04): %s -> %s", currentPreamp ? "ON" : "OFF", newPreamp ? "ON" : "OFF");
+    m_radioManager.dispatchToggle(m_radioManager.getPanelCATHandler(),
+                                  radio::ToggleTarget::Preamp);
+    ESP_LOGI(TAG, "Preamp button (0x04): PA toggled");
 }
 
 void ButtonHandler::handleClearButton()
@@ -2633,38 +2513,18 @@ void ButtonHandler::handleVoxButton(MatrixButton &button)
         // Short press - toggle VOX on/off
         ESP_LOGI(TAG, "VOX button short press detected - toggling VOX");
 
-        // voxEnabled in RadioState is the shared source of truth, so the toggle target
-        // tracks CAT-initiated VX changes instead of a private static that would drift.
-        // Write it back for immediate coherence after dispatching the command.
-        // NOTE: full CAT sync also requires the VX command/answer handler to store
-        // voxEnabled; that handler lives outside this file's scope.
-        auto &state = m_radioManager.getState();
-        const bool newVoxState = !state.voxEnabled.load(std::memory_order_relaxed);
-        int voxMode = newVoxState ? 1 : 0; // 0=OFF, 1=ON
-
-        // Send VX command to toggle VOX
-        char vxCommand[8];
-        std::snprintf(vxCommand, sizeof(vxCommand), "VX%d;", voxMode);
-        m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), vxCommand);
-        state.voxEnabled.store(newVoxState, std::memory_order_relaxed);
-
-        ESP_LOGI(TAG, "VOX button short press: VOX %s", newVoxState ? "ON" : "OFF");
+        m_radioManager.dispatchToggle(m_radioManager.getPanelCATHandler(),
+                                      radio::ToggleTarget::Vox);
+        ESP_LOGI(TAG, "VOX button short press: VX toggled");
     }
 }
 
 void ButtonHandler::fallbackToRadioAntennaSwitch()
 {
     // Fallback to radio's built-in antenna switching (ANT1/ANT2)
-    int currentAnt = m_radioManager.getState().mainAntenna;
-    int newAnt = (currentAnt == 0) ? 1 : 0; // Toggle between ANT1 (0) and ANT2 (1)
-
-    // Use AN command: AN<main_ant><rx_ant><drv_out>;
-    // Keep RX antenna and DRV unchanged (9), only change main antenna
-    char anCommand[8];
-    std::snprintf(anCommand, sizeof(anCommand), "AN%d99;", newAnt);
-    m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), anCommand);
-
-    ESP_LOGI(TAG, "Radio antenna fallback: %s -> %s", antNames[currentAnt], antNames[newAnt]);
+    m_radioManager.dispatchToggle(m_radioManager.getPanelCATHandler(),
+                                  radio::ToggleTarget::Antenna);
+    ESP_LOGI(TAG, "Radio antenna fallback: AN main antenna toggled");
 }
 
 void ButtonHandler::handleAntennaTunerButton(MatrixButton &button)
@@ -2697,15 +2557,9 @@ void ButtonHandler::handleAntennaTunerButton(MatrixButton &button)
         // Short press - toggle antenna tuner on/off
         ESP_LOGI(TAG, "Antenna Tuner button short press detected");
 
-        bool currentTxAT = m_radioManager.getState().txAtIn;
-        int newTxAT = currentTxAT ? 0 : 1; // Toggle TX-AT between 0 (THRU) and 1 (IN)
-
-        // AC<RX><TX>0; - RX path follows TX path, no tuning
-        char acCommand[8];
-        std::snprintf(acCommand, sizeof(acCommand), "AC%d%d0;", newTxAT, newTxAT);
-        m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), acCommand);
-
-        ESP_LOGI(TAG, "Antenna Tuner button short press: %s -> %s", currentTxAT ? "ON" : "OFF", newTxAT ? "ON" : "OFF");
+        m_radioManager.dispatchToggle(m_radioManager.getPanelCATHandler(),
+                                      radio::ToggleTarget::TxAtu);
+        ESP_LOGI(TAG, "Antenna Tuner button short press: AC (TX-AT) toggled");
     }
 }
 
