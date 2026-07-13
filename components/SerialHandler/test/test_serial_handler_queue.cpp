@@ -23,21 +23,24 @@ void tearDown_SerialHandlerQueue() {
     testHandler = nullptr;
 }
 
-// Test that queue capacity is reduced from 64 to 16
-void test_queue_capacity_reduced(void) {
+// Queue is a fixed-capacity ring; SerialHandler::QUEUE_CAPACITY is 64 (private, so
+// the literal is used here). Enqueue more than capacity and confirm the ring caps
+// at 64 by dropping the oldest frames.
+static constexpr int QUEUE_CAPACITY = 64;
+
+void test_queue_capacity_caps_at_64(void) {
     TEST_ASSERT_NOT_NULL(testHandler);
-    
-    // Fill queue with messages by simulating received data
-    std::vector<std::string> testMessages;
-    for (int i = 0; i < 20; i++) {  // Try to add more than capacity
+
+    // Enqueue more than capacity in a tight loop (all fresh, none expire).
+    const int sent = QUEUE_CAPACITY + 20;
+    for (int i = 0; i < sent; i++) {
         std::string msg = "FA" + std::to_string(i) + ";";
-        testMessages.push_back(msg);
         testHandler->processReceivedData(
-            reinterpret_cast<const uint8_t*>(msg.c_str()), 
+            reinterpret_cast<const uint8_t*>(msg.c_str()),
             msg.length()
         );
     }
-    
+
     // Count how many messages are actually queued
     int messageCount = 0;
     while (testHandler->hasMessage()) {
@@ -46,10 +49,69 @@ void test_queue_capacity_reduced(void) {
             messageCount++;
         }
     }
-    
-    // Should be limited to QUEUE_CAPACITY (16)
-    TEST_ASSERT_EQUAL(16, messageCount);
-    ESP_LOGI(TAG, "Queue capacity correctly limited to %d messages", messageCount);
+
+    // Ring keeps at most QUEUE_CAPACITY (64), dropping the oldest on overflow.
+    TEST_ASSERT_EQUAL(QUEUE_CAPACITY, messageCount);
+    ESP_LOGI(TAG, "Queue capacity correctly capped at %d messages", messageCount);
+}
+
+// Overflow drops the OLDEST frame and is counted in QueueStats.overflowDrops.
+void test_overflow_drops_counted_in_stats(void) {
+    TEST_ASSERT_NOT_NULL(testHandler);
+
+    // Clear any counters accumulated during setup.
+    testHandler->resetQueueStats();
+
+    const int overflow = 12;
+    const int sent = QUEUE_CAPACITY + overflow;
+    for (int i = 0; i < sent; i++) {
+        std::string msg = "FA" + std::to_string(i) + ";";
+        testHandler->processReceivedData(
+            reinterpret_cast<const uint8_t*>(msg.c_str()),
+            msg.length()
+        );
+    }
+
+    const auto stats = testHandler->resetQueueStats();
+    // Exactly `overflow` frames were dropped to make room; depth is capped at 64.
+    TEST_ASSERT_EQUAL_UINT32(static_cast<uint32_t>(overflow), stats.overflowDrops);
+    TEST_ASSERT_EQUAL(static_cast<size_t>(QUEUE_CAPACITY), stats.currentDepth);
+    TEST_ASSERT_EQUAL_UINT32(static_cast<uint32_t>(QUEUE_CAPACITY), stats.highWatermark);
+    ESP_LOGI(TAG, "Overflow drops correctly counted: %lu", (unsigned long)stats.overflowDrops);
+}
+
+// H1 regression: getMessageView() copies the frame into a per-instance scratch
+// buffer, so the returned view must stay valid even after the producer overwrites
+// the ring slot it originally occupied. The view is only invalidated by the NEXT
+// getMessageView() call, not by further enqueues.
+void test_view_survives_slot_overwrite(void) {
+    TEST_ASSERT_NOT_NULL(testHandler);
+
+    const std::string first = "FA14074000;";
+    testHandler->processReceivedData(
+        reinterpret_cast<const uint8_t*>(first.c_str()),
+        first.length()
+    );
+
+    auto [status, view] = testHandler->getMessageView();
+    TEST_ASSERT_EQUAL(ESP_OK, status);
+    TEST_ASSERT_EQUAL(first.length(), view.length());
+    TEST_ASSERT_EQUAL_STRING(first.c_str(), std::string(view).c_str());
+
+    // Flood the ring with more than a full lap of fresh frames so the slot that
+    // originally held `first` is definitely overwritten by the producer.
+    for (int i = 0; i < QUEUE_CAPACITY + 20; i++) {
+        std::string msg = "FB" + std::to_string(i) + ";";
+        testHandler->processReceivedData(
+            reinterpret_cast<const uint8_t*>(msg.c_str()),
+            msg.length()
+        );
+    }
+
+    // The held view must still reflect the original frame (copied into scratch).
+    TEST_ASSERT_EQUAL(first.length(), view.length());
+    TEST_ASSERT_EQUAL_STRING(first.c_str(), std::string(view).c_str());
+    ESP_LOGI(TAG, "Held view survived slot overwrite: %s", std::string(view).c_str());
 }
 
 // Test that messages expire after timeout period
@@ -194,12 +256,19 @@ void test_high_traffic_queue_behavior(void) {
              commands.size(), remainingCount);
 }
 
+// Unity's global setUp()/tearDown() are no-ops here, so each test explicitly
+// brackets itself with the queue fixture to get a fresh handler + empty queue.
+#define RUN_QUEUE_TEST(fn) \
+    do { setUp_SerialHandlerQueue(); RUN_TEST(fn); tearDown_SerialHandlerQueue(); } while (0)
+
 void run_serial_handler_queue_tests(void) {
-    RUN_TEST(test_queue_capacity_reduced);
-    RUN_TEST(test_message_timeout_expiry);
-    RUN_TEST(test_fresh_messages_not_cleared);
-    RUN_TEST(test_mixed_age_message_clearing);
-    RUN_TEST(test_high_traffic_queue_behavior);
+    RUN_QUEUE_TEST(test_queue_capacity_caps_at_64);
+    RUN_QUEUE_TEST(test_overflow_drops_counted_in_stats);
+    RUN_QUEUE_TEST(test_view_survives_slot_overwrite);
+    RUN_QUEUE_TEST(test_message_timeout_expiry);
+    RUN_QUEUE_TEST(test_fresh_messages_not_cleared);
+    RUN_QUEUE_TEST(test_mixed_age_message_clearing);
+    RUN_QUEUE_TEST(test_high_traffic_queue_behavior);
 }
 
 } // extern "C"

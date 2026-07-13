@@ -146,26 +146,30 @@ void test_getParameters_without_params() {
 // ============== COMMAND VALIDATION TESTS ==============
 
 void test_validate_FA_parameters(void) {
-    
-    // Test FA parameter validation
-    [[maybe_unused]] std::string validFA = "14150000";
-    [[maybe_unused]] std::string invalidFA = "99999999999";  // Too many digits
-    
-    // This would test parameter validation if utilities exist
+    // FA carries an 11-digit frequency; ParserUtils must round-trip it and preserve
+    // leading zeros in the extracted parameter substring.
+    TEST_ASSERT_EQUAL_UINT32(14150000UL,
+                             static_cast<uint32_t>(ParserUtils::parseFrequency("00014150000")));
+    TEST_ASSERT_TRUE(ParserUtils::getParameters("FA00014150000;") == "00014150000");
+
+    // Non-numeric frequency payloads are rejected (parseFrequency returns 0).
+    TEST_ASSERT_EQUAL_UINT32(0UL, static_cast<uint32_t>(ParserUtils::parseFrequency("14150ABC")));
 }
 
 void test_validate_MD_parameters() {
-    
-    // Test MD parameter validation
-    for (int mode = 1; mode <= 9; mode++) {
-        //std::to_string(mode);
-        // Valid modes 1-9
+    // MD carries a single-digit mode; ParserUtils::getParameters extracts it and
+    // parseInt converts each valid mode 1-9 to its integer value.
+    for (int mode = 1; mode <= 9; ++mode) {
+        const std::string frame = "MD" + std::to_string(mode) + ";";
+        const std::string_view params = ParserUtils::getParameters(frame);
+        TEST_ASSERT_EQUAL_INT(1, static_cast<int>(params.length()));
+        TEST_ASSERT_EQUAL_INT(mode, ParserUtils::parseInt(params));
     }
-    
-    // Invalid modes
-    [[maybe_unused]] std::string invaliMode = "0";   // Mode 0 invalid
-    [[maybe_unused]] std::string invalidMode2 = "10"; // Mode 10 invalid
 
+    // A bare "MD;" is a query with no parameter.
+    TEST_ASSERT_TRUE(ParserUtils::getParameters("MD;").empty());
+    // Non-numeric mode payloads fail integer parsing.
+    TEST_ASSERT_EQUAL_INT(-1, ParserUtils::parseInt("X"));
 }
 
 // ============== EDGE CASE TESTS ==============
@@ -187,12 +191,14 @@ void test_handle_special_characters() {
 }
 
 void test_case_sensitivity() {
-    
-    // CAT commands should be case sensitive (uppercase)
+    // isValidCAT() validates STRUCTURE, not case: it accepts any two leading letters
+    // (std::isalpha matches both cases), so a lowercase prefix passes format validation.
+    // The parser does not fold case either (see test_frame_lowercase_prefix_not_aliased);
+    // any normalization happens upstream of CatParser.
     TEST_ASSERT_TRUE(ParserUtils::isValidCAT("FA;"));
-    // Lowercase should be invalid (implementation dependent)
-    // TEST_ASSERT_FALSE(ParserUtils::isValidCAT("fa;"));
-
+    TEST_ASSERT_TRUE(ParserUtils::isValidCAT("fa;"));
+    // Non-letter leading characters are still rejected.
+    TEST_ASSERT_FALSE(ParserUtils::isValidCAT("1A;"));
 }
 
 // ============== UI META COMMAND TESTS ==============
