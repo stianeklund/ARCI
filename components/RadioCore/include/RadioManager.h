@@ -834,8 +834,13 @@ namespace radio
             // Simple hash of 2-char prefix into ORIGIN_TABLE_SIZE slots
             return static_cast<uint8_t>(((static_cast<unsigned>(c1) * 31) + static_cast<unsigned>(c2)) % ORIGIN_TABLE_SIZE);
         }
+        static constexpr uint16_t originPrefix(char c1, char c2) {
+            return static_cast<uint16_t>((static_cast<uint16_t>(static_cast<uint8_t>(c1)) << 8) |
+                                         static_cast<uint8_t>(c2));
+        }
         std::array<std::atomic<uint64_t>, ORIGIN_TABLE_SIZE> lastOriginTime_{}; // per prefix
         std::array<std::atomic<int>, ORIGIN_TABLE_SIZE> lastOriginSrc_{}; // stores int(CommandSource)
+        std::array<std::atomic<uint16_t>, ORIGIN_TABLE_SIZE> lastOriginPrefix_{}; // exact prefix, validates hash slot
 
         // (sendToSource is public)
     };

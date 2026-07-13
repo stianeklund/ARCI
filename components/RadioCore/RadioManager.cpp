@@ -1831,11 +1831,14 @@ namespace radio
         if (prefix.size() < 2)
             return;
         const uint8_t id = originHash(prefix[0], prefix[1]);
-        lastOriginTime_[id].store(nowUs, std::memory_order_relaxed);
+        lastOriginPrefix_[id].store(originPrefix(prefix[0], prefix[1]), std::memory_order_relaxed);
         int srcVal = static_cast<int>(src);
         if (cacheServed)
             srcVal |= ORIGIN_CACHE_SERVED_BIT;
         lastOriginSrc_[id].store(srcVal, std::memory_order_relaxed);
+        // Publish the timestamp last so a matcher never observes a new timestamp
+        // with the previous slot's source/prefix metadata.
+        lastOriginTime_[id].store(nowUs, std::memory_order_release);
         ESP_LOGV(RadioManager::TAG, "Recorded origin for %c%c -> %d%s at %llu us", prefix[0], prefix[1],
                  static_cast<int>(src), cacheServed ? " (cache-served)" : "",
                  static_cast<unsigned long long>(nowUs));
@@ -1855,10 +1858,14 @@ namespace radio
         if (prefix.size() < 2)
             return std::nullopt;
         const uint8_t id = originHash(prefix[0], prefix[1]);
-        const uint64_t t = lastOriginTime_[id].load(std::memory_order_relaxed);
+        const uint64_t t = lastOriginTime_[id].load(std::memory_order_acquire);
         if (t == 0 || (nowUs - t) > ORIGIN_TTL_US)
         {
             return std::nullopt; // stale or no origin
+        }
+        if (lastOriginPrefix_[id].load(std::memory_order_relaxed) != originPrefix(prefix[0], prefix[1]))
+        {
+            return std::nullopt; // hash collision: this slot belongs to another command
         }
         const int srcInt = lastOriginSrc_[id].load(std::memory_order_relaxed);
         const bool cacheServed = (srcInt & ORIGIN_CACHE_SERVED_BIT) != 0;

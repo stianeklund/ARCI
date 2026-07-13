@@ -490,6 +490,41 @@ namespace {
         tearDownTestRadioManager();
     }
 
+    void test_radio_AI_answer_is_not_exposed_to_CAT_clients() {
+        setUpTestRadioManager();
+
+        auto &state = testRadioManager->getState();
+        state.usbCdc0AiMode.store(2);
+        state.usbCdc1AiMode.store(2);
+        state.tcp0AiMode.store(2);
+        state.tcp1AiMode.store(2);
+        mockUsbSerial.clearSentMessages();
+
+        // AI2; is the physical collector's acknowledgement, not an external
+        // interface response, even when a client has AI2 enabled.
+        testRadioManager->getRemoteCATHandler().parseMessage("AI2;");
+        TEST_ASSERT_TRUE_MESSAGE(mockUsbSerial.sentMessages.empty(),
+                                 "Physical radio AI answer must remain internal to ARCI");
+        state.usbCdc0AiMode.store(0);
+        state.usbCdc1AiMode.store(0);
+        state.tcp0AiMode.store(0);
+        state.tcp1AiMode.store(0);
+        tearDownTestRadioManager();
+    }
+
+    void test_query_origin_rejects_hash_collision() {
+        setUpTestRadioManager();
+        mockUsbSerial.clearSentMessages();
+
+        // EM and AI intentionally share the compact origin-table hash. The exact
+        // prefix check must prevent an EM query from claiming an AI answer.
+        testRadioManager->noteQueryOrigin("EM", radio::CommandSource::UsbCdc0, 1);
+        const auto matched = testRadioManager->routeMatchedAnswerWithSource("AI", "AI2;", 2);
+        TEST_ASSERT_FALSE_MESSAGE(matched.has_value(), "Origin hash collision must not route an AI answer");
+        TEST_ASSERT_TRUE(mockUsbSerial.sentMessages.empty());
+        tearDownTestRadioManager();
+    }
+
     void test_BC_beat_cancel_commands() {
         setUpTestRadioManager();
 
@@ -1784,6 +1819,8 @@ namespace {
         RUN_TEST(test_AI0_forwards_query_responses);
         RUN_TEST(test_AI0_suppresses_unsolicited_responses);
         RUN_TEST(test_AI0_set_suppresses_internal_radio_AI_and_unsolicited_updates);
+        RUN_TEST(test_radio_AI_answer_is_not_exposed_to_CAT_clients);
+        RUN_TEST(test_query_origin_rejects_hash_collision);
         RUN_TEST(test_unhandled_command_returns_error);
         RUN_TEST(test_programmer_startup_sequence);
 
