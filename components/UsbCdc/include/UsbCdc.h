@@ -4,6 +4,8 @@
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include <atomic>
+#include <cstdint>
 
 /**
  * @brief USB CDC handler for debug output redirection
@@ -169,13 +171,21 @@ private:
     static size_t txBuffered(uint8_t instance);
     static size_t txContigAvailable(uint8_t instance);
     static void   txEnqueue(uint8_t instance, const uint8_t* data, size_t len);
+    // Public wrapper: acquires m_tx_mutex, drains, releases.
     static size_t txDequeueToUsb(uint8_t instance);
+    // Core drain; caller MUST already hold m_tx_mutex[instance]. Non-blocking.
+    static size_t txDequeueToUsbLocked(uint8_t instance);
     static bool m_initialized;
     static bool m_control_pins_initialized;
     static bool m_dtr_state;
     static bool m_rts_state;
-    static uint64_t m_writeBlockUntilUs[2];
-    static uint8_t m_backpressureLevel[2];
+    // Backpressure gates shared across radio_task, dispatch contexts and the TX
+    // timeout task. Atomic to avoid torn 64-bit reads/writes on the 32-bit Xtensa
+    // core; relaxed ordering suffices as each is an independent scalar gate (a
+    // cooldown deadline and a level counter) that establishes no happens-before
+    // relationship with other memory.
+    static std::atomic<uint64_t> m_writeBlockUntilUs[2];
+    static std::atomic<uint8_t> m_backpressureLevel[2];
     static bool m_last_cdc_connected[2];
     static bool m_last_usb_mounted[2];
     static RxCallback m_rx_callback;

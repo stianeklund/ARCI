@@ -20,12 +20,37 @@
 
 static const char *TAG = "UsbCdc";
 
+namespace {
+// RAII guard for a FreeRTOS mutex. Acquires on construction (blocking only to
+// ACQUIRE the lock, never while held) and releases on scope exit.
+class TxLock {
+public:
+    explicit TxLock(SemaphoreHandle_t handle) : m_handle(handle) {
+        if (m_handle != nullptr && xSemaphoreTake(m_handle, portMAX_DELAY) == pdTRUE) {
+            m_held = true;
+        }
+    }
+    ~TxLock() {
+        if (m_held) {
+            xSemaphoreGive(m_handle);
+        }
+    }
+    TxLock(const TxLock&) = delete;
+    TxLock& operator=(const TxLock&) = delete;
+    bool held() const { return m_held; }
+
+private:
+    SemaphoreHandle_t m_handle;
+    bool m_held = false;
+};
+} // namespace
+
 bool UsbCdc::m_initialized = false;
 bool UsbCdc::m_control_pins_initialized = false;
 bool UsbCdc::m_dtr_state = false;
 bool UsbCdc::m_rts_state = false;
-uint64_t UsbCdc::m_writeBlockUntilUs[2] = {0, 0};
-uint8_t UsbCdc::m_backpressureLevel[2] = {0, 0};
+std::atomic<uint64_t> UsbCdc::m_writeBlockUntilUs[2] = {};
+std::atomic<uint8_t> UsbCdc::m_backpressureLevel[2] = {};
 bool UsbCdc::m_last_cdc_connected[2] = {false, false};
 bool UsbCdc::m_last_usb_mounted[2] = {false, false};
 UsbCdc::RxCallback UsbCdc::m_rx_callback = nullptr;
@@ -292,8 +317,8 @@ esp_err_t UsbCdc::writeData(const uint8_t* data, size_t length, uint8_t instance
                 xSemaphoreGive(m_tx_mutex[instance]);
             }
             // Reset backpressure so writes resume immediately when host reconnects
-            m_writeBlockUntilUs[instance] = 0;
-            m_backpressureLevel[instance] = 0;
+            m_writeBlockUntilUs[instance].store(0, std::memory_order_relaxed);
+            m_backpressureLevel[instance].store(0, std::memory_order_relaxed);
 
             // Send a remote wakeup if suspended to notify host we have data
             if (suspended && tud_remote_wakeup()) {
@@ -303,8 +328,8 @@ esp_err_t UsbCdc::writeData(const uint8_t* data, size_t length, uint8_t instance
 
         // If we just connected, reset backpressure to allow writes immediately
         if (connected && !m_last_cdc_connected[instance]) {
-            m_writeBlockUntilUs[instance] = 0;
-            m_backpressureLevel[instance] = 0;
+            m_writeBlockUntilUs[instance].store(0, std::memory_order_relaxed);
+            m_backpressureLevel[instance].store(0, std::memory_order_relaxed);
         }
 
         // Update state after checking for disconnection
@@ -334,21 +359,37 @@ esp_err_t UsbCdc::writeData(const uint8_t* data, size_t length, uint8_t instance
     
     ESP_LOGV(TAG, "CDC%d USB status: mounted=%d, connected=%d, suspended=%d", instance, mounted, connected, suspended);
 
-    // First, try to flush any buffered data from previous short writes
-    (void)txDequeueToUsb(instance);
-
-    // Write data to CDC queue
-    ESP_LOGV(TAG, "Writing %zu bytes to CDC%d", length, instance);
     const tinyusb_cdcacm_itf_t cdc_itf = (instance == 0) ? TINYUSB_CDC_ACM_0 : TINYUSB_CDC_ACM_1;
-    const size_t written = tinyusb_cdcacm_write_queue(cdc_itf, data, length);
+
+    // Serialize the entire TX sequence (ring drain + new-data enqueue + flush) for
+    // this instance under a single lock so the ordering invariant "ring residue
+    // flushes before new data, atomically" holds against every other producer
+    // (CdcSerialHandler::sendMessage on radio_task, dispatch contexts via
+    // sendToSource, and txTimeoutTask). Every call made while holding the lock is
+    // non-blocking: tinyusb_cdcacm_write_queue/write_flush(0) only move bytes into
+    // the TinyUSB FIFO, and txDequeueToUsbLocked does the same. We never block
+    // while the lock is held.
+    TxLock lock(m_tx_mutex[instance]);
+    if (!lock.held()) {
+        ESP_LOGW(TAG, "CDC%d TX lock unavailable, dropping %zu bytes", instance, length);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    // First, flush any residue buffered from previous short writes so it precedes
+    // the new data in the FIFO.
+    (void)txDequeueToUsbLocked(instance);
+
+    // If the ring still holds residue, the new data MUST go behind it or it would
+    // jump ahead in the stream should the host free FIFO space between the drain
+    // above and this write. Only write directly to the FIFO when the ring is empty.
+    ESP_LOGV(TAG, "Writing %zu bytes to CDC%d", length, instance);
+    const bool ringEmpty = (m_tx_tail[instance] == m_tx_head[instance]);
+    const size_t written = ringEmpty ? tinyusb_cdcacm_write_queue(cdc_itf, data, length) : 0;
     if (written != length) {
-        // Enqueue remaining bytes into ring buffer for later retry
+        // Enqueue remaining bytes into ring buffer (behind any residue) for later retry
         const size_t remaining = length - written;
         if (remaining > 0) {
-            if (m_tx_mutex[instance] && xSemaphoreTake(m_tx_mutex[instance], portMAX_DELAY) == pdTRUE) {
-                txEnqueue(instance, data + written, remaining);
-                xSemaphoreGive(m_tx_mutex[instance]);
-            }
+            txEnqueue(instance, data + written, remaining);
         }
         // If not connected (DTR=0) but we don't require DTR, it's normal to queue
         if (!tud_cdc_n_connected(instance) && !m_require_dtr) {
@@ -372,7 +413,7 @@ esp_err_t UsbCdc::writeData(const uint8_t* data, size_t length, uint8_t instance
         // Don't return error for flush issues - data was queued successfully
     }
     // Try to push any buffered data after flush as space may be free now
-    (void)txDequeueToUsb(instance);
+    (void)txDequeueToUsbLocked(instance);
     return ESP_OK;
 }
 
@@ -459,8 +500,17 @@ size_t UsbCdc::txDequeueToUsb(uint8_t instance) {
     if (!m_tx_mutex[instance]) return 0;
     if (!tud_mounted()) return 0;
     if (!tud_cdc_n_connected(instance)) return 0;
+    TxLock lock(m_tx_mutex[instance]);
+    if (!lock.held()) return 0;
+    return txDequeueToUsbLocked(instance);
+}
+
+// Caller MUST already hold m_tx_mutex[instance]. All work here is non-blocking:
+// write_queue/write_flush(0) only move bytes into the TinyUSB FIFO.
+size_t UsbCdc::txDequeueToUsbLocked(uint8_t instance) {
+    if (!tud_mounted()) return 0;
+    if (!tud_cdc_n_connected(instance)) return 0;
     size_t moved = 0;
-    if (xSemaphoreTake(m_tx_mutex[instance], portMAX_DELAY) != pdTRUE) return 0;
     const tinyusb_cdcacm_itf_t cdc_itf = (instance == 0) ? TINYUSB_CDC_ACM_0 : TINYUSB_CDC_ACM_1;
     while (m_tx_tail[instance] != m_tx_head[instance]) {
         size_t tail = m_tx_tail[instance];
@@ -476,7 +526,6 @@ size_t UsbCdc::txDequeueToUsb(uint8_t instance) {
     }
     // Attempt non-blocking flush to move data downstream
     (void)tinyusb_cdcacm_write_flush(cdc_itf, 0);
-    xSemaphoreGive(m_tx_mutex[instance]);
     return moved;
 }
 
@@ -669,23 +718,23 @@ bool UsbCdc::shouldThrottleWrite(uint8_t instance) {
         return false;
     }
     const uint64_t now = esp_timer_get_time();
-    return now < m_writeBlockUntilUs[instance];
+    return now < m_writeBlockUntilUs[instance].load(std::memory_order_relaxed);
 }
 
 void UsbCdc::notifyWriteSuccess(uint8_t instance) {
     if (instance > 1) {
         return;
     }
-    m_writeBlockUntilUs[instance] = 0;
-    m_backpressureLevel[instance] = 0;
+    m_writeBlockUntilUs[instance].store(0, std::memory_order_relaxed);
+    m_backpressureLevel[instance].store(0, std::memory_order_relaxed);
 }
 
 void UsbCdc::resetBackpressure(uint8_t instance) {
     if (instance > 1) {
         return;
     }
-    m_writeBlockUntilUs[instance] = 0;
-    m_backpressureLevel[instance] = 0;
+    m_writeBlockUntilUs[instance].store(0, std::memory_order_relaxed);
+    m_backpressureLevel[instance].store(0, std::memory_order_relaxed);
 }
 
 void UsbCdc::notifyWriteBackpressure(uint8_t instance) {
@@ -693,11 +742,14 @@ void UsbCdc::notifyWriteBackpressure(uint8_t instance) {
         return;
     }
     const uint64_t now = esp_timer_get_time();
-    const uint8_t level = std::min<uint8_t>(m_backpressureLevel[instance], BACKPRESSURE_MAX_LEVEL);
+    const uint8_t current = m_backpressureLevel[instance].load(std::memory_order_relaxed);
+    const uint8_t level = std::min<uint8_t>(current, BACKPRESSURE_MAX_LEVEL);
     const uint64_t cooldown = BACKPRESSURE_BASE_COOLDOWN_US << level;
-    m_writeBlockUntilUs[instance] = now + cooldown;
-    if (m_backpressureLevel[instance] < BACKPRESSURE_MAX_LEVEL) {
-        ++m_backpressureLevel[instance];
+    m_writeBlockUntilUs[instance].store(now + cooldown, std::memory_order_relaxed);
+    if (current < BACKPRESSURE_MAX_LEVEL) {
+        // Benign race on the increment: the level is only a cooldown multiplier
+        // heuristic, so a lost update at worst slightly mis-scales one backoff.
+        m_backpressureLevel[instance].store(current + 1, std::memory_order_relaxed);
     }
 }
 
