@@ -30,6 +30,10 @@ namespace radio
         // Public AI coordination helper for external monitoring
         static void logAiCoordinationSnapshot(const RadioState &state);
 
+        // Return the physical-radio AI mode required by ARCI's collector.
+        // This is independent from each CAT client's virtual AI preference.
+        static int calculateRadioAIMode(const RadioState &state);
+
         // Public logging tag for use by helper functions
         static constexpr auto TAG = "InterfaceSystemCommandHandler";
 
@@ -58,7 +62,6 @@ namespace radio
         static std::string formatPSResponse(int state);
 
         // AI coordination helper methods
-        static int calculateRadioAIMode(const RadioState &state);
         void updateClientAIMode(CommandSource source, int mode, ISerialChannel &radioSerial,
                                 RadioManager &radioManager) const;
 

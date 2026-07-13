@@ -436,10 +436,10 @@ namespace {
         testRadioManager->getState().usbCdc1AiMode.store(0);
         testRadioManager->getState().displayAiMode.store(2);  // Default display mode
 
-        // AI mode coordination: radio gets max(usbCdc0, usbCdc1, display) where display defaults to 2
-        // So AI0 from USB results in coordinated mode = max(0, 0, 2) = 2 sent to radio
+        // The physical radio is an ARCI collector and therefore stays at least AI2.
+        // So AI0 from USB still results in AI2 being sent to the radio.
         testRadioManager->getLocalCATHandler().parseMessage("AI0;");
-        test_utils::CATTestHelper::assertForwardedToRadio(mockRadioSerial, "AI2;"); // Coordinated mode
+        test_utils::CATTestHelper::assertForwardedToRadio(mockRadioSerial, "AI2;"); // Collector mode
 
         mockRadioSerial.clearSentMessages();
 
@@ -451,6 +451,42 @@ namespace {
 
         // Simulate radio response
         testRadioManager->getRemoteCATHandler().parseMessage("AI2;");
+        tearDownTestRadioManager();
+    }
+
+    // Test: AI0 is a SET, so the radio's internal AI answer must not leak back to
+    // that interface as a query response. Unsolicited state updates remain blocked.
+    void test_AI0_set_suppresses_internal_radio_AI_and_unsolicited_updates() {
+        setUpTestRadioManager();
+
+        auto &state = testRadioManager->getState();
+        state.lastAiCoordinationTime.store(0);
+        state.usbCdc0AiMode.store(0);
+        state.usbCdc1AiMode.store(0);
+        state.tcp0AiMode.store(0);
+        state.tcp1AiMode.store(0);
+        state.displayAiMode.store(0);
+        mockRadioSerial.clearSentMessages();
+        mockUsbSerial.clearSentMessages();
+
+        // This is a SET on CDC0. ARCI still keeps the physical radio in collector mode.
+        testRadioManager->getLocalCATHandler().parseMessage("AI0;");
+        TEST_ASSERT_EQUAL(0, state.usbCdc0AiMode.load());
+        test_utils::CATTestHelper::assertForwardedToRadio(mockRadioSerial, "AI2;");
+
+        // The AI2 answer belongs to ARCI's internal coordination query, not to CDC0.
+        mockUsbSerial.clearSentMessages();
+        testRadioManager->getRemoteCATHandler().parseMessage("AI2;");
+        testRadioManager->getRemoteCATHandler().parseMessage("FA00014074000;");
+        TEST_ASSERT_TRUE_MESSAGE(mockUsbSerial.sentMessages.empty(),
+                                 "AI0 SET must not leak internal AI or unsolicited radio frames");
+
+        // A real AI; query is still answered locally with the interface's virtual mode.
+        mockRadioSerial.clearSentMessages();
+        testRadioManager->getLocalCATHandler().parseMessage("AI;");
+        TEST_ASSERT_TRUE_MESSAGE(mockRadioSerial.sentMessages.empty(), "AI; must remain local");
+        TEST_ASSERT_FALSE(mockUsbSerial.sentMessages.empty());
+        TEST_ASSERT_EQUAL_STRING("AI0;", mockUsbSerial.sentMessages.back().c_str());
         tearDownTestRadioManager();
     }
 
@@ -1747,6 +1783,7 @@ namespace {
         RUN_TEST(test_TC_format_has_space);
         RUN_TEST(test_AI0_forwards_query_responses);
         RUN_TEST(test_AI0_suppresses_unsolicited_responses);
+        RUN_TEST(test_AI0_set_suppresses_internal_radio_AI_and_unsolicited_updates);
         RUN_TEST(test_unhandled_command_returns_error);
         RUN_TEST(test_programmer_startup_sequence);
 
