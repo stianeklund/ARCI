@@ -785,6 +785,16 @@ namespace radio
         std::unique_ptr<CATHandler> macroHandler_; // For internal macro commands (Macro source)
         mutable RtosRecursiveMutex dispatchMutex_; // Serializes CAT command dispatch (recursive allows nested macro execution)
 
+        // Global radio-TX rate limiter. The TS-590SG rejects (?;) commands that
+        // arrive faster than it can process. All senders (boot sequence, transverter
+        // sync, AI enforcement, normal dispatch) funnel through sendRadioCommand, so
+        // per-task pacing alone does not bound the aggregate wire rate — this shared
+        // minimum-gap gate does. radioTxMutex_ guards lastRadioTxUs_ and serializes
+        // the record+write so diagnostics stay coherent across tasks.
+        mutable RtosMutex radioTxMutex_;
+        mutable uint64_t lastRadioTxUs_ = 0;
+        static constexpr uint64_t RADIO_TX_MIN_GAP_US = 10'000; // 10 ms between sends
+
         // Antenna switching system
         std::unique_ptr<antenna::AntennaSwitch> antennaSwitch_;
 
