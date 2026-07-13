@@ -33,6 +33,16 @@ namespace radio
         On = 1
     };
 
+    // Outcome of a CAT dispatch attempt. Distinguishes a genuine "handler declined"
+    // (Unhandled) from a dropped command due to dispatch-lock contention (LockTimeout),
+    // which callers previously could not tell apart via the bool dispatchMessage() API.
+    enum class DispatchOutcome
+    {
+        Handled,     // A handler consumed the command
+        Unhandled,   // Parsed but no handler claimed it (forwarding may apply)
+        LockTimeout  // Could not acquire dispatchMutex_ within the timeout; not processed
+    };
+
     /**
      * @brief Central manager for all radio state and command processing
      *
@@ -88,18 +98,30 @@ namespace radio
         /**
          * @brief Get statistics about command processing
          */
+        // Plain snapshot returned by value. Live counters are the atomics below;
+        // read/set split is surfaced separately via the CAT parser statistics, and no
+        // feedback-loop detector exists, so those fields were removed rather than left
+        // reading permanent zeros.
         struct Statistics
         {
-            size_t totalCommandsProcessed{0};
-            size_t localCommandsProcessed{0};
-            size_t remoteCommandsProcessed{0};
-            size_t readCommandsProcessed{0};
-            size_t setCommandsProcessed{0};
-            size_t feedbackLoopsPrevented{0};
+            uint32_t totalCommandsProcessed{0};
+            uint32_t localCommandsProcessed{0};
+            uint32_t remoteCommandsProcessed{0};
         };
 
-        Statistics getStatistics() const { return stats_; }
-        void resetStatistics() { stats_ = Statistics{}; }
+        Statistics getStatistics() const
+        {
+            return Statistics{
+                totalCommandsProcessed_.load(std::memory_order_relaxed),
+                localCommandsProcessed_.load(std::memory_order_relaxed),
+                remoteCommandsProcessed_.load(std::memory_order_relaxed)};
+        }
+        void resetStatistics()
+        {
+            totalCommandsProcessed_.store(0, std::memory_order_relaxed);
+            localCommandsProcessed_.store(0, std::memory_order_relaxed);
+            remoteCommandsProcessed_.store(0, std::memory_order_relaxed);
+        }
 
         // Business logic methods moved from Cat facade
 
@@ -130,8 +152,29 @@ namespace radio
 
         /**
          * @brief Synchronize transverter-related menu settings with the radio on startup
+         *
+         * Runs inline (contains paced vTaskDelay); safe only when NOT called under the
+         * dispatch lock (e.g. startup load-and-sync path).
          */
         void syncTransverterMenuSettings() const;
+
+        /**
+         * @brief Deferred variant of syncTransverterMenuSettings()
+         *
+         * Spawns a one-shot task to run the paced sync off the dispatch lock. Use this
+         * from CAT dispatch context (e.g. PS1 answer handling) so the inter-command
+         * delays never hold dispatchMutex_.
+         */
+        void syncTransverterMenuSettingsAsync() const;
+
+        /**
+         * @brief Send PS0; (power off) to the radio, paced, off the dispatch lock
+         *
+         * Spawns a one-shot task that repeats PS0; three times with 50 ms pacing (the
+         * TS-590SG can drop the command during busy periods). Kept off the dispatch
+         * lock so the retries/delays do not stall other interfaces' dispatch.
+         */
+        void sendPowerOffToRadioAsync() const;
 
         /**
          * @brief Update band from VFO A frequency
@@ -154,16 +197,6 @@ namespace radio
          * @param frequency Frequency string to decode
          */
         void decodeBandFromFreq(std::string_view frequency);
-
-        /**
-         * @brief Change to next band
-         */
-        void changeBand();
-
-        /**
-         * @brief Send VFO updates to USB
-         */
-        void sendVfoUpdates() const;
 
         // Runtime toggle for transverter offset behavior (affects display and USB CDC)
         bool isTransverterOffsetEnabled() const { return state_.transverterOffsetEnabled.load(std::memory_order_relaxed); }
@@ -396,8 +429,15 @@ namespace radio
         int currentPrimaryControlOwner() const;
         void forceReleasePrimaryControl();
 
-        // Thread-safe CAT dispatch entry point used by all tasks/macros
+        // Thread-safe CAT dispatch entry point used by all tasks/macros.
+        // Retained for existing callers: returns true only when a handler consumed
+        // the command (equivalent to dispatchMessageEx() == DispatchOutcome::Handled).
         bool dispatchMessage(CATHandler &handler, std::string_view message) const;
+
+        // Richer dispatch entry point that distinguishes a lock timeout from an
+        // unhandled command, so callers can surface a defined CAT error ("?;") or
+        // retry instead of silently dropping the message.
+        DispatchOutcome dispatchMessageEx(CATHandler &handler, std::string_view message) const;
 
         // Mode access methods for command handlers
         /**
@@ -519,7 +559,7 @@ namespace radio
         /**
          * @brief Send one or more local CAT frames through the handler
          */
-        void sendLocal(const std::string_view frames) const { localHandler_->parseMessage(frames); }
+        void sendLocal(const std::string_view frames) const { (void)dispatchMessage(*localHandler_, frames); }
         void sendLocal(std::initializer_list<std::string_view> frames) const;
 
 
@@ -603,33 +643,6 @@ namespace radio
          * @brief Set processor state
          */
         void setProcessorState(int proc) const;
-
-        // === VFO CONVENIENCE METHODS ===
-
-        /**
-         * @brief Copy VFO A to VFO B
-         */
-        void copyVfoAToB() const { sendLocal("VV;"); }
-
-        /**
-         * @brief Set RX on VFO A
-         */
-        void setRxOnA() const { sendLocal("FR0;"); }
-
-        /**
-         * @brief Set RX on VFO B
-         */
-        void setRxOnB() const { sendLocal("FR1;"); }
-
-        /**
-         * @brief Set TX on VFO A
-         */
-        void setTxOnA() const { sendLocal("FT0;"); }
-
-        /**
-         * @brief Set TX on VFO B
-         */
-        void setTxOnB() const { sendLocal("FT1;"); }
 
         // === LEGACY ACCESSORS ===
 
@@ -734,14 +747,15 @@ namespace radio
         std::unique_ptr<CATHandler> panelHandler_; // For on-device panel/button commands (Panel source)
         std::unique_ptr<CATHandler> macroHandler_; // For internal macro commands (Macro source)
         mutable RtosRecursiveMutex dispatchMutex_; // Serializes CAT command dispatch (recursive allows nested macro execution)
-        mutable RtosMutex radioTxMutex_; // Serializes direct UART writes
 
         // Antenna switching system
         std::unique_ptr<antenna::AntennaSwitch> antennaSwitch_;
 
-        // Statistics and monitoring
-        Statistics stats_;
-        std::atomic<int64_t> previousMicros_{0};
+        // Statistics and monitoring. mutable: incremented from the const dispatch path
+        // (dispatchMessageEx), which runs on many tasks, so the counters are atomic.
+        mutable std::atomic<uint32_t> totalCommandsProcessed_{0};
+        mutable std::atomic<uint32_t> localCommandsProcessed_{0};
+        mutable std::atomic<uint32_t> remoteCommandsProcessed_{0};
 
         // Power state change callback
         void (*powerStateChangeCallback_)(bool powerOn, bool oldState) = nullptr;
@@ -760,6 +774,10 @@ namespace radio
 
         // Boot sequence task (non-blocking paced command sending)
         static void bootSequenceTask(void *pvParameters);
+
+        // One-shot tasks that run paced radio I/O off the dispatch lock
+        static void powerOffTask(void *pvParameters);
+        static void transverterSyncTask(void *pvParameters);
 
         // Boot sequence queries baseline radio state.
         // Note: PS/AI are NOT included - handled separately by InterfaceSystemCommandHandler.
@@ -787,7 +805,6 @@ namespace radio
 
         // Allocation-free radio send helpers
         void sendRadioCommand(std::string_view command) const;
-        void sendRadioCommand(std::string_view part1, std::string_view part2) const;
         void sendRadioCommand(const char *command) const;
 
         // State validation and updates

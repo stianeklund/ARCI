@@ -776,6 +776,11 @@ namespace radio
 
     bool RadioManager::dispatchMessage(CATHandler &handler, std::string_view message) const
     {
+        return dispatchMessageEx(handler, message) == DispatchOutcome::Handled;
+    }
+
+    DispatchOutcome RadioManager::dispatchMessageEx(CATHandler &handler, std::string_view message) const
+    {
         // Performance instrumentation: separate mutex wait from command processing
         const uint64_t startUs = esp_timer_get_time();
 
@@ -783,7 +788,7 @@ namespace radio
         if (!dispatchMutex_.try_lock_for(pdMS_TO_TICKS(2000))) {
             ESP_LOGE(TAG, "dispatchMessage timeout - mutex held for >2s (cmd: %.*s)",
                      static_cast<int>(std::min(message.size(), size_t(16))), message.data());
-            return false;
+            return DispatchOutcome::LockTimeout;
         }
         RtosUniqueLock<RtosRecursiveMutex> lock(dispatchMutex_, std::adopt_lock);
 
@@ -838,7 +843,23 @@ namespace radio
                      mutexWaitUs, processingUs, totalUs);
         }
 
-        return result;
+        // Statistics: dispatchMessageEx is the single choke point for all CAT dispatch,
+        // so count accepted messages here (atomic — reached from many tasks). Local vs
+        // remote is derived from the handler's source (Remote == from radio hardware).
+        if (result)
+        {
+            totalCommandsProcessed_.fetch_add(1, std::memory_order_relaxed);
+            if (RadioCommand::isLocalSource(handler.getSource()))
+            {
+                localCommandsProcessed_.fetch_add(1, std::memory_order_relaxed);
+            }
+            else
+            {
+                remoteCommandsProcessed_.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+
+        return result ? DispatchOutcome::Handled : DispatchOutcome::Unhandled;
     }
 
 
@@ -878,7 +899,6 @@ namespace radio
         // Track last command sent for error diagnostics
         commandDispatcher_->recordCommandSentToRadio(command);
 
-        const RtosLockGuard<RtosMutex> txLock(radioTxMutex_);
         radioSerial_.sendMessage(command);
         if (state_.isTx.load() && state_.getTxOwner() == static_cast<int>(CommandSource::Remote))
         {
@@ -887,52 +907,6 @@ namespace radio
         }
         ESP_LOGD(RadioManager::TAG, "SEND->RADIO: '%.*s' (len=%zu)", (int)command.size(), command.data(),
                  command.size());
-    }
-
-    void RadioManager::sendRadioCommand(const std::string_view part1, const std::string_view part2) const
-    {
-        // Validate combined
-        if (const size_t total = part1.size() + part2.size(); total < 3)
-        {
-            ESP_LOGE(RadioManager::TAG, "❌ BLOCKED 2-part command too short: total=%zu", total);
-            return;
-        }
-        if (!(!part2.empty() && part2.back() == ';') && !(!part1.empty() && part1.back() == ';'))
-        {
-            ESP_LOGE(RadioManager::TAG, "❌ BLOCKED 2-part command missing semicolon");
-            return;
-        }
-        // Basic ASCII control check on each part
-
-        auto valid = [](std::string_view s)
-        { return std::ranges::all_of(s, [](const char c) { return c >= 32 || c == ';'; }); };
-
-        if (!valid(part1) || !valid(part2))
-        {
-            ESP_LOGE(RadioManager::TAG, "❌ BLOCKED 2-part command invalid char");
-            return;
-        }
-        // Track combined command for error diagnostics (stack buffer, no heap)
-        {
-            char buf[48];
-            const size_t total = part1.size() + part2.size();
-            const size_t n = std::min(total, sizeof(buf) - 1);
-            const size_t n1 = std::min(part1.size(), n);
-            std::memcpy(buf, part1.data(), n1);
-            const size_t n2 = std::min(part2.size(), n - n1);
-            std::memcpy(buf + n1, part2.data(), n2);
-            buf[n1 + n2] = '\0';
-            commandDispatcher_->recordCommandSentToRadio(std::string_view{buf, n1 + n2});
-        }
-        const RtosLockGuard<RtosMutex> txLock(radioTxMutex_);
-        radioSerial_.sendMessage(part1, part2);
-        if (state_.isTx.load() && state_.getTxOwner() == static_cast<int>(CommandSource::Remote))
-        {
-            ESP_LOGD(RadioManager::TAG, "TXMON: remote TX active -> command '%.*s%.*s'",
-                     (int)part1.size(), part1.data(), (int)part2.size(), part2.data());
-        }
-        ESP_LOGD(RadioManager::TAG, "SEND->RADIO(2-part): '%.*s' + '%.*s'", (int)part1.size(), part1.data(),
-                 (int)part2.size(), part2.data());
     }
 
     void RadioManager::sendRadioCommand(const char *command) const
@@ -1098,6 +1072,71 @@ namespace radio
         ESP_LOGD(RadioManager::TAG, "Transverter menu synchronization commands sent");
     }
 
+    void RadioManager::transverterSyncTask(void *pvParameters)
+    {
+        auto *self = static_cast<RadioManager *>(pvParameters);
+        // Runs the paced sync in its own task context, off the dispatch lock.
+        self->syncTransverterMenuSettings();
+        vTaskDelete(nullptr);
+    }
+
+    void RadioManager::syncTransverterMenuSettingsAsync() const
+    {
+#ifndef CONFIG_RUN_UNIT_TESTS
+        xTaskCreate(
+            transverterSyncTask,
+            "tvtr_sync",
+            3072,
+            const_cast<RadioManager *>(this),
+            5, // Background pacing; same priority class as boot sequence
+            nullptr);
+#else
+        // Unit tests run without a spawnable scheduler context here: execute inline.
+        syncTransverterMenuSettings();
+#endif
+    }
+
+    void RadioManager::powerOffTask(void *pvParameters)
+    {
+        auto *self = static_cast<RadioManager *>(pvParameters);
+        // Send PS0 three times with pacing to ensure the radio actually powers off.
+        // The TS-590SG may drop commands during busy periods.
+        //
+        // These sends intentionally go through RadioManager::sendRadioCommand (the
+        // canonical serialized TX path to radioSerial_) rather than a command handler's
+        // serial parameter. In production both resolve to the same UART, but a test
+        // harness that injects a mock ISerialChannel into the handler will NOT observe
+        // these PS0; frames.
+        for (int i = 0; i < 3; ++i)
+        {
+            self->sendRadioCommand("PS0;");
+            if (i < 2)
+            {
+                vTaskDelay(pdMS_TO_TICKS(50));
+            }
+        }
+        vTaskDelete(nullptr);
+    }
+
+    void RadioManager::sendPowerOffToRadioAsync() const
+    {
+#ifndef CONFIG_RUN_UNIT_TESTS
+        xTaskCreate(
+            powerOffTask,
+            "ps_off",
+            3072,
+            const_cast<RadioManager *>(this),
+            6, // Slightly above boot pacing so power-off completes promptly
+            nullptr);
+#else
+        // Unit tests: send inline without inter-command delays.
+        for (int i = 0; i < 3; ++i)
+        {
+            sendRadioCommand("PS0;");
+        }
+#endif
+    }
+
     void RadioManager::updateBandFromVfoA()
     {
         if (const uint64_t freq = state_.vfoAFrequency.load(); freq > 0)
@@ -1191,56 +1230,6 @@ namespace radio
         }
 
         decodeBandFromFreq(freq);
-    }
-
-    void RadioManager::changeBand()
-    {
-        const int64_t currentTime = esp_timer_get_time() / 1000;
-        if (currentTime - previousMicros_ < 500)
-        {
-            return;
-        }
-
-        if (!state_.keepAlive.load())
-            return;
-
-        updateBandFromVfoA();
-        const int idx = (state_.bandNumber.load(std::memory_order_relaxed) + 1) % 10;
-
-        const std::string bandCommand = "BD" + std::to_string(idx) + ";";
-        sendRadioCommand(bandCommand);
-        state_.bandNumber.store(idx, std::memory_order_relaxed);
-
-        previousMicros_ = currentTime;
-        sendRadioCommand("FA;"); // Request VFO A
-        vTaskDelay(pdMS_TO_TICKS(10));
-        sendRadioCommand("FB;"); // Request VFO B
-    }
-
-
-    void RadioManager::sendVfoUpdates() const
-    {
-        static constexpr unsigned long REFRESH_INTERVAL = 100; // ms
-        static unsigned long lastRefreshTime = 0;
-        static FastFreqFormatter formatter; // Thread-safe for const operations
-
-        if (const uint64_t currentTime = esp_timer_get_time() / 1000; currentTime - lastRefreshTime >= REFRESH_INTERVAL)
-        {
-            lastRefreshTime = currentTime;
-
-            // Only send frequency refresh if CDC0 is not in AI2 mode (AI2 provides automatic updates)
-            if (state_.usbCdc0AiMode.load() != 2)
-            {
-                if (const uint64_t freqA = state_.vfoAFrequency.load(); freqA > 0)
-                {
-                    usbSerial_.sendMessage(formatter.formatFA(freqA));
-                }
-                if (const uint64_t freqB = state_.vfoBFrequency.load(); freqB > 0)
-                {
-                    usbSerial_.sendMessage(formatter.formatFB(freqB));
-                }
-            }
-        }
     }
 
     bool RadioManager::shouldForwardToUSB(const std::string_view &response) const
@@ -1672,7 +1661,7 @@ namespace radio
         snprintf(buffer, sizeof(buffer), "SH%02d;", newHighCut);
         (void)dispatchMessage(*panelHandler_, buffer);
 
-        ESP_LOGD(RadioManager::TAG, "SH: %d + %d = %d", state_.receiveHighCut, delta, newHighCut);
+        ESP_LOGD(RadioManager::TAG, "SH: %d + %d = %d", state_.receiveHighCut.load(), delta, newHighCut);
         // State will be updated by radio's answer (via AI mode or explicit response)
     }
 
@@ -1702,7 +1691,7 @@ namespace radio
         snprintf(buffer, sizeof(buffer), "SL%02d;", newLowCut);
         (void)dispatchMessage(*panelHandler_, buffer);
 
-        ESP_LOGD(RadioManager::TAG, "SL: %d + %d = %d", state_.receiveLowCut, delta, newLowCut);
+        ESP_LOGD(RadioManager::TAG, "SL: %d + %d = %d", state_.receiveLowCut.load(), delta, newLowCut);
         // State will be updated by radio's answer (via AI mode or explicit response)
     }
 
@@ -2228,14 +2217,14 @@ namespace radio
                 sendUICommand(UICommandHandler::formatUIPI(newValue));
                 // Apply immediately to radio for real-time feedback
                 state_.speechProcessorInLevel = newValue;
-                snprintf(cmdBuf, sizeof(cmdBuf), "PL%03d%03d;", newValue, state_.speechProcessorOutLevel);
+                snprintf(cmdBuf, sizeof(cmdBuf), "PL%03d%03d;", newValue, state_.speechProcessorOutLevel.load());
                 dispatchMessage(*panelHandler_, cmdBuf);
                 break;
             case UIControl::ProcOutputLevel:
                 sendUICommand(UICommandHandler::formatUIPO(newValue));
                 // Apply immediately to radio for real-time feedback
                 state_.speechProcessorOutLevel = newValue;
-                snprintf(cmdBuf, sizeof(cmdBuf), "PL%03d%03d;", state_.speechProcessorInLevel, newValue);
+                snprintf(cmdBuf, sizeof(cmdBuf), "PL%03d%03d;", state_.speechProcessorInLevel.load(), newValue);
                 dispatchMessage(*panelHandler_, cmdBuf);
                 break;
             case UIControl::DataMode:

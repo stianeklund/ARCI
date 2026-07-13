@@ -61,6 +61,18 @@ public:
 
     [[nodiscard]] Statistics getStatistics() const { return stats_; }
     void resetStatistics() { stats_ = Statistics{}; }
+
+    /**
+     * @brief Command source this handler was constructed for (local/panel/macro vs Remote)
+     */
+    [[nodiscard]] CommandSource getSource() const { return source_; }
+
+    /**
+     * @brief Statistics maintained by the underlying CAT parser (per-source)
+     */
+    [[nodiscard]] const UnifiedCATStatistics& getParserStatistics() const {
+        return unifiedParser_.getStatistics();
+    }
     
     /**
      * @brief Get reference to the RadioManager
