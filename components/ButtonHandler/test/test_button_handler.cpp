@@ -568,6 +568,12 @@ void test_band_button_frequency_aware() {
     
     // Test bandNumber-based band cycling (mock feeds back no FA/FB answer)
     ESP_LOGI("TEST", "Testing bandNumber-based band cycling");
+
+    // The ButtonHandler test suite shares a single RadioManager across all tests
+    // (buttonHandlerSetUp runs once), so bandNumber can leak in from a prior test.
+    // Pin the starting band to 0 so the first BU press produces band 1 (BU01;).
+    radioManager->getState().bandNumber.store(0);
+
     for (const auto& test : tests) {
         ESP_LOGI("TEST", "%s", test.description);
 
