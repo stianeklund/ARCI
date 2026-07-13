@@ -69,8 +69,14 @@ public:
 private:
     static void onPowerStateChange(bool powerOn, bool oldState);
 
+    // Deferred-save worker: performs the power-off flash commits (saveRadioState +
+    // saveExtendedMenu) OUTSIDE the dispatch-context power-state callback, so tens-to-
+    // hundreds of ms of flash-cache-stalling writes never run under dispatchMutex_.
+    static void saveWorkerTask(void* arg);
+
     radio::RadioManager& m_radioManager;
     static NvsManager* s_instance; // For static callback access
+    TaskHandle_t m_saveTaskHandle = nullptr; // Deferred save worker (signaled via notification)
 
     static constexpr const char* TAG = "NvsManager";
     static constexpr const char* STORAGE_NAMESPACE = "radio_state";
