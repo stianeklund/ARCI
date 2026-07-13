@@ -34,10 +34,15 @@ esp_err_t MacroStorage::init() {
     // Mark as initialized so save/load can work during init
     initialized_ = true;
 
-    // Check if data exists, otherwise load defaults
+    // init() runs once at startup before the ButtonHandler/CAT tasks touch the
+    // cache, but we still guard cache_ mutations for consistency. persist()
+    // takes the mutex itself to snapshot cache_, so it must be called unlocked.
     if (!nvsHasMacroData()) {
         ESP_LOGI(TAG, "No macro data found in NVS - loading defaults");
-        populateDefaults();
+        {
+            RtosLockGuard<RtosMutex> lock(cacheMutex_);
+            populateDefaults();
+        }
         err = persist();
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Failed to save defaults: %s", esp_err_to_name(err));
@@ -46,6 +51,7 @@ esp_err_t MacroStorage::init() {
         }
     } else {
         // Load existing data into cache
+        RtosLockGuard<RtosMutex> lock(cacheMutex_);
         err = load(cache_);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "Failed to load existing macros: %s", esp_err_to_name(err));
@@ -150,7 +156,7 @@ esp_err_t MacroStorage::load(MacroStorageData& data) {
     }
 }
 
-esp_err_t MacroStorage::save(const MacroStorageData& data) {
+esp_err_t MacroStorage::writeBlobToNvs(const MacroStorageData& data) const {
     if (!initialized_ || nvsHandle_ == 0) {
         ESP_LOGE(TAG, "MacroStorage not initialized");
         return ESP_ERR_INVALID_STATE;
@@ -170,16 +176,37 @@ esp_err_t MacroStorage::save(const MacroStorageData& data) {
         return err;
     }
 
-    // Update cache
-    cache_ = data;
-    cache_.macroCount = computeMacroCount();
+    return ESP_OK;
+}
 
-    ESP_LOGI(TAG, "Saved %d macros to NVS successfully", cache_.macroCount);
+esp_err_t MacroStorage::save(const MacroStorageData& data) {
+    // Commit to flash first (outside the cache mutex), then publish to cache_.
+    esp_err_t err = writeBlobToNvs(data);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    uint8_t count;
+    {
+        RtosLockGuard<RtosMutex> lock(cacheMutex_);
+        cache_ = data;
+        cache_.macroCount = computeMacroCount();
+        count = cache_.macroCount;
+    }
+
+    ESP_LOGI(TAG, "Saved %d macros to NVS successfully", count);
     return ESP_OK;
 }
 
 esp_err_t MacroStorage::persist() {
-    return save(cache_);
+    // Snapshot the authoritative cache under the lock, then commit to flash
+    // outside the lock so the button read path never blocks on nvs_commit.
+    MacroStorageData snapshot;
+    {
+        RtosLockGuard<RtosMutex> lock(cacheMutex_);
+        snapshot = cache_;
+    }
+    return writeBlobToNvs(snapshot);
 }
 
 esp_err_t MacroStorage::getMacro(uint8_t macroId, MacroDefinition& macro) const {
@@ -191,8 +218,9 @@ esp_err_t MacroStorage::getMacro(uint8_t macroId, MacroDefinition& macro) const 
     }
 
     const uint8_t index = macroId - 1;
+    RtosLockGuard<RtosMutex> lock(cacheMutex_);
     if (cache_.macros[index].enabled) {
-        macro = cache_.macros[index];
+        macro = cache_.macros[index];  // copy out under the lock (no tearing)
         return ESP_OK;
     }
 
@@ -213,9 +241,12 @@ esp_err_t MacroStorage::setMacro(uint8_t macroId, const MacroDefinition& macro) 
              macroId, macro.name, macro.command);
 
     const uint8_t index = macroId - 1;
-    cache_.macros[index] = macro;
-    cache_.macros[index].enabled = true;
-    cache_.macroCount = computeMacroCount();
+    {
+        RtosLockGuard<RtosMutex> lock(cacheMutex_);
+        cache_.macros[index] = macro;
+        cache_.macros[index].enabled = true;
+        cache_.macroCount = computeMacroCount();
+    }
 
     return persist();
 }
@@ -229,16 +260,19 @@ esp_err_t MacroStorage::deleteMacro(uint8_t macroId) {
     }
 
     const uint8_t index = macroId - 1;
-    cache_.macros[index].clear();
+    {
+        RtosLockGuard<RtosMutex> lock(cacheMutex_);
+        cache_.macros[index].clear();
 
-    // Remove from any slot assignments
-    for (auto& slot : cache_.slotAssignments) {
-        if (slot == macroId) {
-            slot = 0;
+        // Remove from any slot assignments
+        for (auto& slot : cache_.slotAssignments) {
+            if (slot == macroId) {
+                slot = 0;
+            }
         }
-    }
 
-    cache_.macroCount = computeMacroCount();
+        cache_.macroCount = computeMacroCount();
+    }
     return persist();
 }
 
@@ -246,7 +280,8 @@ esp_err_t MacroStorage::getSlotAssignments(std::array<uint8_t, kMacroSlotCount>&
     if (!initialized_) {
         return ESP_ERR_INVALID_STATE;
     }
-    assignments = cache_.slotAssignments;
+    RtosLockGuard<RtosMutex> lock(cacheMutex_);
+    assignments = cache_.slotAssignments;  // copy out under the lock
     return ESP_OK;
 }
 
@@ -257,6 +292,7 @@ esp_err_t MacroStorage::getSlotAssignments(uint8_t* assignments) const {
     if (assignments == nullptr) {
         return ESP_ERR_INVALID_ARG;
     }
+    RtosLockGuard<RtosMutex> lock(cacheMutex_);
     std::memcpy(assignments, cache_.slotAssignments.data(), kMacroSlotCount);
     return ESP_OK;
 }
@@ -269,7 +305,10 @@ esp_err_t MacroStorage::setSlotAssignment(uint8_t slot, uint8_t macroId) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    cache_.slotAssignments[slot] = macroId;
+    {
+        RtosLockGuard<RtosMutex> lock(cacheMutex_);
+        cache_.slotAssignments[slot] = macroId;
+    }
     return persist();
 }
 
@@ -277,6 +316,7 @@ uint8_t MacroStorage::getCount() const {
     if (!initialized_) {
         return 0;
     }
+    RtosLockGuard<RtosMutex> lock(cacheMutex_);
     return cache_.macroCount;
 }
 
@@ -299,15 +339,21 @@ esp_err_t MacroStorage::factoryReset() {
         return err;
     }
 
-    // Reload defaults and save
-    populateDefaults();
+    // Reload defaults into the cache, then persist (persist locks internally to
+    // snapshot the cache, so it must be called without the lock held).
+    uint8_t count;
+    {
+        RtosLockGuard<RtosMutex> lock(cacheMutex_);
+        populateDefaults();
+        count = cache_.macroCount;
+    }
     err = persist();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to save defaults after reset: %s", esp_err_to_name(err));
         return err;
     }
 
-    ESP_LOGI(TAG, "Factory reset complete - loaded %d default macros", cache_.macroCount);
+    ESP_LOGI(TAG, "Factory reset complete - loaded %d default macros", count);
     return ESP_OK;
 }
 

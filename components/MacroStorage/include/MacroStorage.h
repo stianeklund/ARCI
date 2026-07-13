@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esp_err.h"
+#include "rtos_mutex.h"
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -145,14 +146,30 @@ private:
     MacroStorage() = default;
     ~MacroStorage();
 
+    // NOTE ON THREAD SAFETY:
+    // cache_ is written from the CAT dispatch task (setMacro/deleteMacro/
+    // setSlotAssignment/factoryReset) and read from the ButtonHandler task
+    // (getMacro/getSlotAssignments/getCount via RadioMacroManager). All cache_
+    // accesses are guarded by cacheMutex_. NVS flash I/O is performed OUTSIDE
+    // the mutex (on a snapshot copy) so the latency-sensitive button read path
+    // never blocks on a flash commit. cache_ is the authoritative in-memory
+    // copy; a persist failure leaves cache_ ahead of NVS, which is acceptable.
+    //
+    // populateDefaults() and computeMacroCount() touch cache_ directly and MUST
+    // be called with cacheMutex_ held by the caller.
     void populateDefaults();
     uint8_t computeMacroCount() const;
     bool nvsHasMacroData() const;
     esp_err_t persist();
 
+    // Serialize `data` to NVS (nvs_set_blob + nvs_commit). Pure flash I/O:
+    // touches neither cache_ nor cacheMutex_, so it is safe to call unlocked.
+    esp_err_t writeBlobToNvs(const MacroStorageData& data) const;
+
     uint32_t nvsHandle_ = 0;
     bool initialized_ = false;
     MacroStorageData cache_;
+    mutable RtosMutex cacheMutex_;  // Guards all cache_ reads and writes
 
     static constexpr const char* TAG = "MacroStorage";
 };
