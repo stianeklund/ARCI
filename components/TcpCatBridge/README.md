@@ -55,9 +55,25 @@ Component config → TCP CAT Bridge Configuration
 | `TCP_CAT_BRIDGE_ENABLE_DUAL`       | Yes     | Enable second bridge instance   |
 | `TCP_CAT_BRIDGE_MAX_CLIENTS`       | 2       | Maximum client slots per bridge |
 | `TCP_CAT_BRIDGE_BUFFER_SIZE`       | 256     | RX buffer size per client       |
-| `TCP_CAT_BRIDGE_TASK_STACK_SIZE`   | 4096    | Bridge task stack (bytes)       |
+| `TCP_CAT_BRIDGE_TASK_STACK_SIZE`   | 6144    | Bridge task stack (bytes)       |
 | `TCP_CAT_BRIDGE_TASK_PRIORITY`     | 5       | FreeRTOS task priority          |
 | `TCP_CAT_BRIDGE_SELECT_TIMEOUT_MS` | 100     | Select timeout (ms)             |
+| `TCP_CAT_BRIDGE_BIND_ADDR`         | 0.0.0.0 | Listen address (limit exposure) |
+| `TCP_CAT_BRIDGE_AUTH_TOKEN`        | (empty) | Shared-secret token; empty=off  |
+| `TCP_CAT_BRIDGE_MIN_ACCEPT_INTERVAL_MS` | 1000 | Min interval between accepts   |
+
+### Authentication
+
+Authentication is **disabled by default** (empty `TCP_CAT_BRIDGE_AUTH_TOKEN`) for
+Hamlib/N1MM compatibility. When a token is set, a new connection's first frame
+must be exactly `AUTH <token>;`; the bridge replies `AUTH1;` on success and
+closes the connection on any other first frame. Pre-auth frames are never
+forwarded to the radio, and the existing authenticated client is only evicted
+once a newcomer authenticates.
+
+> **WARNING:** With auth disabled, anyone who can reach the TCP port can issue
+> CAT commands — including PTT and RF power — and key your transmitter. On
+> untrusted networks, set a token and/or restrict `TCP_CAT_BRIDGE_BIND_ADDR`.
 
 ## Resource Usage
 
@@ -143,6 +159,10 @@ When a new client connects, any existing client is disconnected. This prevents c
 
 ## Limitations
 
-- **No authentication**: Plain TCP, no encryption or access control
-- **Single client per bridge**: New connections replace existing
-- **Best-effort delivery**: No flow control or guaranteed delivery
+- **Optional token auth only**: Plain-TCP shared-secret token (no encryption/TLS).
+  Disabled by default for Hamlib compatibility — see the Authentication section.
+- **Single client per bridge**: New connections replace existing (on connect when
+  auth is off, or on successful auth when a token is set)
+- **Bounded TX buffering**: Would-block sends are queued in a fixed 512-byte
+  per-client buffer and flushed when the socket is writable; on overflow the
+  client is disconnected rather than sending a truncated frame

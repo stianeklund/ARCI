@@ -77,4 +77,46 @@ menu "TCP CAT Bridge Configuration"
             Timeout for select() call in the bridge task loop.
             Lower values = more responsive, higher CPU usage.
 
+    config TCP_CAT_BRIDGE_BIND_ADDR
+        string "Bind Address"
+        default "0.0.0.0"
+        depends on TCP_CAT_BRIDGE_ENABLE
+        help
+            IPv4 address the bridge listens on.
+            "0.0.0.0" (default) binds all interfaces. Set to a specific interface
+            address (e.g. a private-LAN or AP-only address) to limit exposure of
+            the CAT control surface. An empty or unparseable value falls back to
+            0.0.0.0.
+
+    config TCP_CAT_BRIDGE_AUTH_TOKEN
+        string "Auth Token"
+        default ""
+        depends on TCP_CAT_BRIDGE_ENABLE
+        help
+            Optional shared-secret token gating access to the CAT control surface.
+
+            Empty (default) = authentication DISABLED for Hamlib/N1MM compatibility.
+            WARNING: with auth disabled, anyone who can reach this TCP port on the
+            network can issue CAT commands, including PTT and RF power — they can
+            key your transmitter. Prefer binding to a trusted interface and/or
+            setting a token when the port is reachable from an untrusted network.
+
+            When non-empty, a new connection's FIRST frame must be exactly
+            "AUTH <token>;". On match the bridge replies "AUTH1;" and enters normal
+            CAT mode; any other first frame closes the connection. Frames received
+            before successful auth are never forwarded to the radio. The existing
+            authenticated client is only evicted once a newcomer authenticates, so
+            a reconnect loop cannot knock the active operator offline.
+
+    config TCP_CAT_BRIDGE_MIN_ACCEPT_INTERVAL_MS
+        int "Minimum Accept Interval (milliseconds)"
+        default 1000
+        range 0 10000
+        depends on TCP_CAT_BRIDGE_ENABLE
+        help
+            Minimum time between accepted client connections. Connections arriving
+            faster than this are dropped immediately, blunting reconnect-loop
+            denial-of-service (which, with auth disabled, would otherwise churn the
+            active client via evict-on-connect). 0 disables the throttle.
+
 endmenu
