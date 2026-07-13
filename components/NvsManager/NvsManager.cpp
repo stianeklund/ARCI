@@ -4,6 +4,16 @@
 #include "sdkconfig.h"
 #include <cstring>
 
+namespace {
+// RAII guard so early returns between nvs_open and nvs_commit cannot leak the handle
+// (audit finding M5). Closes the handle on scope exit once marked open.
+struct NvsHandleGuard {
+    nvs_handle_t handle = 0;
+    bool open = false;
+    ~NvsHandleGuard() { if (open) nvs_close(handle); }
+};
+} // namespace
+
 // Static instance for callback access
 NvsManager* NvsManager::s_instance = nullptr;
 
@@ -28,8 +38,41 @@ esp_err_t NvsManager::init() {
 }
 
 void NvsManager::setupPowerStateCallback() {
+    // Start the deferred-save worker before registering the callback so a very early
+    // power-off event always has a task to signal.
+    if (m_saveTaskHandle == nullptr) {
+        if (xTaskCreate(&NvsManager::saveWorkerTask, "nvs_save", 4096, this, 4, &m_saveTaskHandle) != pdPASS) {
+            ESP_LOGE(TAG, "Failed to create deferred NVS save task; saves will run inline");
+            m_saveTaskHandle = nullptr;
+        }
+    }
     ESP_LOGI(TAG, "Setting up power state change callback for event-driven saves");
     m_radioManager.setPowerStateChangeCallback(&NvsManager::onPowerStateChange);
+}
+
+void NvsManager::saveWorkerTask(void* arg) {
+    auto* self = static_cast<NvsManager*>(arg);
+    while (true) {
+        // Block until a power-off event requests a persistent save. Performing the
+        // flash commits here (not in the dispatch-context callback) keeps them off
+        // dispatchMutex_. Wakes promptly on notification (well within ~1 s).
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        ESP_LOGI(TAG, "Deferred save: writing radio state + EX menu to NVS");
+        esp_err_t ret = self->saveRadioState();
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "Radio state saved successfully (deferred power-off)");
+        } else {
+            ESP_LOGE(TAG, "Deferred radio state save failed: %s", esp_err_to_name(ret));
+        }
+
+        ret = self->saveExtendedMenu();
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "EX menu saved (deferred power-off)");
+        } else {
+            ESP_LOGW(TAG, "Deferred EX menu save failed: %s", esp_err_to_name(ret));
+        }
+    }
 }
 
 esp_err_t NvsManager::loadAndSyncOnStartup() {
@@ -74,20 +117,17 @@ void NvsManager::onPowerStateChange(bool powerOn, bool oldState) {
              oldState ? "ON" : "OFF", powerOn ? "ON" : "OFF");
     
     if (!powerOn && oldState) {
-        // Power turning OFF - save current state
-        ESP_LOGI(s_instance->TAG, "Power turning OFF - saving radio state to NVS");
-        esp_err_t ret = s_instance->saveRadioState();
-        if (ret == ESP_OK) {
-            ESP_LOGI(s_instance->TAG, "Radio state saved successfully on power-off");
+        // Power turning OFF - defer the flash commits to the save worker. This callback
+        // runs inside CAT dispatch (under dispatchMutex_); doing the writes here would
+        // stall every other interface for the duration of the flash-cache-blocking commit.
+        if (s_instance->m_saveTaskHandle != nullptr) {
+            ESP_LOGI(s_instance->TAG, "Power turning OFF - signaling deferred NVS save");
+            xTaskNotifyGive(s_instance->m_saveTaskHandle);
         } else {
-            ESP_LOGE(s_instance->TAG, "Failed to save radio state on power-off: %s", esp_err_to_name(ret));
-        }
-        // Save EX menu if dirty
-        ret = s_instance->saveExtendedMenu();
-        if (ret == ESP_OK) {
-            ESP_LOGI(s_instance->TAG, "EX menu saved on power-off");
-        } else {
-            ESP_LOGW(s_instance->TAG, "Failed to save EX menu on power-off: %s", esp_err_to_name(ret));
+            // Worker unavailable (creation failed): fall back to inline save.
+            ESP_LOGW(s_instance->TAG, "Save worker unavailable - saving radio state inline");
+            s_instance->saveRadioState();
+            s_instance->saveExtendedMenu();
         }
     } else if (powerOn && !oldState) {
         // Power turning ON - will be handled by separate sync mechanism
@@ -97,49 +137,50 @@ void NvsManager::onPowerStateChange(bool powerOn, bool oldState) {
 
 esp_err_t NvsManager::saveRadioState() {
 #ifdef CONFIG_ENABLE_NVS_PERSISTENCE
-    nvs_handle_t my_handle;
-    esp_err_t err = nvs_open(STORAGE_NAMESPACE, NVS_READWRITE, &my_handle);
+    // RAII guard closes the handle on any early return below (audit M5).
+    NvsHandleGuard guard;
+    esp_err_t err = nvs_open(STORAGE_NAMESPACE, NVS_READWRITE, &guard.handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Error (%s) opening NVS handle!", esp_err_to_name(err));
         return err;
     }
+    guard.open = true;
 
     const auto& state = m_radioManager.getState();
 
-    err = nvs_set_u64(my_handle, "vfoA", state.vfoAFrequency.load());
+    err = nvs_set_u64(guard.handle, "vfoA", state.vfoAFrequency.load());
     if (err != ESP_OK) return err;
 
-    err = nvs_set_u64(my_handle, "vfoB", state.vfoBFrequency.load());
+    err = nvs_set_u64(guard.handle, "vfoB", state.vfoBFrequency.load());
     if (err != ESP_OK) return err;
 
-    err = nvs_set_i8(my_handle, "mode", state.mode.load());
+    err = nvs_set_i8(guard.handle, "mode", state.mode.load());
     if (err != ESP_OK) return err;
 
     // Save transverter configuration
-    err = nvs_set_u8(my_handle, "transverter", state.transverter.load(std::memory_order_relaxed) ? 1 : 0);
+    err = nvs_set_u8(guard.handle, "transverter", state.transverter.load(std::memory_order_relaxed) ? 1 : 0);
     if (err != ESP_OK) return err;
 
-    err = nvs_set_u8(my_handle, "tvr_offset_plus", state.transverterOffsetPlus.load(std::memory_order_relaxed) ? 1 : 0);
+    err = nvs_set_u8(guard.handle, "tvr_offset_plus", state.transverterOffsetPlus.load(std::memory_order_relaxed) ? 1 : 0);
     if (err != ESP_OK) return err;
 
-    err = nvs_set_u64(my_handle, "tvr_offset_hz", state.transverterOffsetHz.load(std::memory_order_relaxed));
+    err = nvs_set_u64(guard.handle, "tvr_offset_hz", state.transverterOffsetHz.load(std::memory_order_relaxed));
     if (err != ESP_OK) return err;
 
     // Save transverter-related menu settings
-    err = nvs_set_i32(my_handle, "drv_connector", state.drvConnectorMode);
+    err = nvs_set_i32(guard.handle, "drv_connector", state.drvConnectorMode);
     if (err != ESP_OK) return err;
 
-    err = nvs_set_i32(my_handle, "hf_linear_amp", state.hfLinearAmpControl.load(std::memory_order_relaxed));
+    err = nvs_set_i32(guard.handle, "hf_linear_amp", state.hfLinearAmpControl.load(std::memory_order_relaxed));
     if (err != ESP_OK) return err;
 
-    err = nvs_set_i32(my_handle, "vhf_linear_amp", state.vhfLinearAmpControl.load(std::memory_order_relaxed));
+    err = nvs_set_i32(guard.handle, "vhf_linear_amp", state.vhfLinearAmpControl.load(std::memory_order_relaxed));
     if (err != ESP_OK) return err;
 
-    err = nvs_commit(my_handle);
+    err = nvs_commit(guard.handle);
     if (err != ESP_OK) return err;
 
-    nvs_close(my_handle);
-    return ESP_OK;
+    return ESP_OK; // guard closes the handle
 #else
     ESP_LOGD(TAG, "NVS save requested but persistence is disabled");
     return ESP_OK;
