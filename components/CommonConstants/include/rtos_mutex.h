@@ -3,6 +3,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "esp_log.h"
+#include <mutex>  // std::adopt_lock_t / std::defer_lock_t
 
 /**
  * @brief RAII wrapper for FreeRTOS mutex (non-recursive)
