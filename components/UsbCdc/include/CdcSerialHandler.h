@@ -40,4 +40,11 @@ private:
     uint8_t m_instance;
     mutable uint8_t m_frameBuffer[FRAME_BUFFER_SIZE] = {};
     std::atomic<uint32_t> sendFailures_{0};
+
+    // Extracts the first complete ';'-terminated frame from m_rxAccum into
+    // m_frameBuffer and returns a sanitized view. Consumes the frame from the
+    // accumulator. An oversized frame (length > FRAME_BUFFER_SIZE) is DISCARDED
+    // (consumed, not emitted) so a truncated terminator-less frame is never
+    // injected. Returns an empty view when no complete usable frame is present.
+    std::string_view extractFrameFromAccum();
 };

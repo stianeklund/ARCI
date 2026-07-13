@@ -123,31 +123,44 @@ std::pair<esp_err_t, std::string> CdcSerialHandler::getMessage() {
     return {ESP_OK, message};
 }
 
-std::pair<esp_err_t, std::string_view> CdcSerialHandler::getMessageView() {
-    // 1) If accumulator already has a full frame, extract it
+std::string_view CdcSerialHandler::extractFrameFromAccum() {
     for (size_t i = 0; i < m_rxLen; ++i) {
-        if (m_rxAccum[i] == ';') {
-            const size_t frameLen = i + 1;
-            const size_t copyLen = std::min(frameLen, static_cast<size_t>(FRAME_BUFFER_SIZE));
-            memcpy(m_frameBuffer, m_rxAccum, copyLen);
+        if (m_rxAccum[i] != ';') continue;
+        const size_t frameLen = i + 1;
+
+        if (frameLen > FRAME_BUFFER_SIZE) {
+            // Oversized frame: discard rather than truncate-and-emit a frame with
+            // no terminator (CAT frames are <=64 bytes; this is line noise/desync).
+            ESP_LOGW(TAG, "%s RX oversized frame (%zu B): discarded", instanceTag(m_instance), frameLen);
             const size_t remain = m_rxLen - frameLen;
             memmove(m_rxAccum, m_rxAccum + frameLen, remain);
             m_rxLen = remain;
-            if (copyLen == 0) {
-                i = static_cast<size_t>(-1);
-                continue;
-            }
-
-            const std::string_view frameView = sanitizeFrameBuffer(m_frameBuffer, copyLen);
-            if (frameView.empty()) {
-                i = static_cast<size_t>(-1);
-                continue;
-            }
-            return {ESP_OK, frameView};
+            i = static_cast<size_t>(-1); // restart scan from the new head
+            continue;
         }
+
+        memcpy(m_frameBuffer, m_rxAccum, frameLen);
+        const size_t remain = m_rxLen - frameLen;
+        memmove(m_rxAccum, m_rxAccum + frameLen, remain);
+        m_rxLen = remain;
+
+        const std::string_view frameView = sanitizeFrameBuffer(m_frameBuffer, frameLen);
+        if (frameView.empty()) {
+            i = static_cast<size_t>(-1); // sanitized to nothing; keep scanning
+            continue;
+        }
+        return frameView;
+    }
+    return std::string_view{};
+}
+
+std::pair<esp_err_t, std::string_view> CdcSerialHandler::getMessageView() {
+    // 1) accumulator may already hold a complete frame
+    if (std::string_view f = extractFrameFromAccum(); !f.empty()) {
+        return {ESP_OK, f};
     }
 
-    // 2) Read new bytes and append to accumulator; return first full frame found
+    // 2) read new bytes, append to accumulator, extract after each read
     while (true) {
         uint8_t tmp[FRAME_BUFFER_SIZE / 2];
         size_t rx_len = 0;
@@ -177,29 +190,9 @@ std::pair<esp_err_t, std::string_view> CdcSerialHandler::getMessageView() {
             ESP_LOGW(TAG, "%s RX accumulator overflow: dropped %zu bytes", instanceTag(m_instance), overflow);
         }
 
-        // Scan for a frame terminator now
-        for (size_t i = 0; i < m_rxLen; ++i) {
-            if (m_rxAccum[i] == ';') {
-                const size_t frameLen = i + 1;
-                const size_t copyLen = std::min(frameLen, static_cast<size_t>(FRAME_BUFFER_SIZE));
-                memcpy(m_frameBuffer, m_rxAccum, copyLen);
-                const size_t remain = m_rxLen - frameLen;
-                memmove(m_rxAccum, m_rxAccum + frameLen, remain);
-                m_rxLen = remain;
-                if (copyLen == 0) {
-                    i = static_cast<size_t>(-1);
-                    continue;
-                }
-
-                const std::string_view frameView = sanitizeFrameBuffer(m_frameBuffer, copyLen);
-                if (frameView.empty()) {
-                    i = static_cast<size_t>(-1);
-                    continue;
-                }
-                return {ESP_OK, frameView};
-            }
+        if (std::string_view f = extractFrameFromAccum(); !f.empty()) {
+            return {ESP_OK, f};
         }
-        // If no terminator yet, continue reading until CDC ring drains
     }
 
     // No full frame yet
