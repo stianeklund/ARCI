@@ -48,10 +48,11 @@ extern "C" void run_radiomanager_cat_tests(void);
 extern "C" void run_encoder_handler_tests(void);
 extern "C" void run_radio_macro_manager_tests(void);
 extern "C" void run_cat_parser_tests(void);
+extern "C" void run_cat_parser_frame_tests(void);
 extern "C" void run_cache_tests(void); // Consolidated cache tests (replaces cache_behavior + cache_system)
 extern "C" void run_transverter_tests(void);
 extern "C" void run_consolidated_command_handlers_tests(void);
-// extern "C" void run_serial_handler_queue_tests(void); // Temporarily disabled
+extern "C" void run_serial_handler_queue_tests(void);
 
 extern "C" void run_all_tests(void) {
     ESP_LOGI(TAG, "Starting unit tests...");
@@ -71,12 +72,13 @@ extern "C" void run_all_tests(void) {
     runTestSuiteWithFailureTracking("Radio CAT Handler", run_radiocat_handler_tests);
     runTestSuiteWithFailureTracking("RadioManager CAT", run_radiomanager_cat_tests);
     runTestSuiteWithFailureTracking("CAT Parser", run_cat_parser_tests);
+    runTestSuiteWithFailureTracking("CAT Parser Frame", run_cat_parser_frame_tests);
     runTestSuiteWithFailureTracking("Cache", run_cache_tests); // Consolidated cache tests
     runTestSuiteWithFailureTracking("Transverter", run_transverter_tests);
     runTestSuiteWithFailureTracking("EncoderHandler", run_encoder_handler_tests);
     runTestSuiteWithFailureTracking("RadioMacroManager", run_radio_macro_manager_tests);
     runTestSuiteWithFailureTracking("Consolidated Command Handlers", run_consolidated_command_handlers_tests);
-    // runTestSuiteWithFailureTracking("SerialHandler Queue", run_serial_handler_queue_tests); // Temporarily disabled
+    runTestSuiteWithFailureTracking("SerialHandler Queue", run_serial_handler_queue_tests);
     
     UNITY_END();
     
