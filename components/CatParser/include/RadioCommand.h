@@ -37,6 +37,12 @@ struct ParamValue {
     enum class Type : uint8_t { Empty, Int, String };
 
     Type type = Type::Empty;
+    // Set when a String value did not fit SSO_CAPACITY and was truncated on
+    // construction. Makes truncation observable to callers/tests instead of
+    // silently dropping characters (e.g. long KY text payloads). Kept as a
+    // cheap flag: no logging here because RadioCommand.h is a hot, widely
+    // included header that intentionally pulls in no ESP-IDF logging.
+    bool truncated = false;
     union {
         int intValue;
         struct {
@@ -55,7 +61,9 @@ struct ParamValue {
             std::copy(str.begin(), str.end(), ssoString.data);
             ssoString.data[ssoString.length] = '\0';
         } else {
-            // Fallback: truncate to SSO capacity
+            // Value exceeds inline capacity: keep the first SSO_CAPACITY-1 chars
+            // and flag the truncation so it is no longer silent.
+            truncated = true;
             ssoString.length = SSO_CAPACITY - 1;
             std::copy(str.begin(), str.begin() + ssoString.length, ssoString.data);
             ssoString.data[ssoString.length] = '\0';
@@ -65,6 +73,9 @@ struct ParamValue {
     [[nodiscard]] bool isInt() const { return type == Type::Int; }
     [[nodiscard]] bool isString() const { return type == Type::String; }
     [[nodiscard]] bool isEmpty() const { return type == Type::Empty; }
+
+    // True if this value was truncated to fit SSO_CAPACITY during construction.
+    [[nodiscard]] bool wasTruncated() const { return truncated; }
 
     [[nodiscard]] int asInt() const { return intValue; }
     [[nodiscard]] std::string_view asStringView() const {
