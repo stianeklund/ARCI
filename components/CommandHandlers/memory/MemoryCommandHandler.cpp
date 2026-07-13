@@ -309,33 +309,48 @@ bool MemoryCommandHandler::handleSV(const RadioCommand& command,
 MemoryCommandHandler::MemoryChannel MemoryCommandHandler::parseMemoryChannel(const RadioCommand& command) const {
     MemoryChannel result = {0, false};
 
-    if (command.paramsEmpty()) {
+    // Parse the channel out of the intact original message rather than the inline
+    // params. The inline ParamValue uses SSO and truncates long payloads (e.g. the
+    // full MW memory-data blob), which corrupted the parsed channel. The channel is
+    // always a bounded 3-character field whose position depends on the command:
+    //
+    //   MC  -> "MCP1P2P2;"     : channel is the 3-char field at offset 2 (no selector)
+    //   MW  -> "MWP1P2P3P3...;" : P1 is a 1-char simplex/split selector, channel is
+    //                             the 3-char field at offset 3
+    //   MR  -> "MRP1P2P2P2;"    : P1 is a 1-char simplex/split selector, channel is
+    //                             the 3-char field at offset 3
+    //
+    // The channel field is a right-justified, space-padded number (000-299); parse
+    // only its digits so trailing memory data / the ';' terminator are ignored.
+    const std::string& msg = command.originalMessage;
+
+    size_t channelOffset = 2; // default: field immediately after the 2-char command
+    if (command.command == "MW" || command.command == "MR") {
+        channelOffset = 3; // skip the 1-char P1 simplex/split selector
+    }
+
+    if (msg.size() <= channelOffset) {
         return result;
     }
 
-    // Read from inline params
-    if (command.paramCount > 0) {
-        const auto &p = command.inlineParams[0];
-        if (p.isInt()) {
-            result.channel = p.asInt();
-            result.valid = true;
-            return result;
-        }
-        if (p.isString()) {
-            const std::string str = p.asString();
+    size_t fieldEnd = channelOffset + 3;
+    if (fieldEnd > msg.size()) {
+        fieldEnd = msg.size();
+    }
+    std::string_view field(msg.data() + channelOffset, fieldEnd - channelOffset);
 
-            // Channel numbers may be space-padded (e.g. " 00" for ch 0, " 05" for ch 5).
-            // Trim leading spaces and parse as integer.
-            std::string_view sv = str;
-            while (!sv.empty() && sv.front() == ' ') sv.remove_prefix(1);
-            if (!sv.empty()) {
-                int channel = 0;
-                auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), channel);
-                if (ec == std::errc{} && ptr == sv.data() + sv.size()) {
-                    result.channel = channel;
-                    result.valid = true;
-                }
-            }
+    // Skip leading spaces (space-padded field), then keep only leading digits.
+    while (!field.empty() && field.front() == ' ') field.remove_prefix(1);
+    size_t digits = 0;
+    while (digits < field.size() && field[digits] >= '0' && field[digits] <= '9') ++digits;
+    field = field.substr(0, digits);
+
+    if (!field.empty()) {
+        int channel = 0;
+        auto [ptr, ec] = std::from_chars(field.data(), field.data() + field.size(), channel);
+        if (ec == std::errc{}) {
+            result.channel = channel;
+            result.valid = true;
         }
     }
 
