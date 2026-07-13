@@ -3,6 +3,7 @@
 #include "esp_mac.h"
 #include "esp_netif_ip_addr.h"
 #include "esp_sntp.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 
 namespace wifi {
@@ -83,7 +84,21 @@ bool WiFiManager::initialize() {
     
     // Set WiFi mode to station
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    
+
+#ifdef CONFIG_WIFI_AUTO_RECONNECT
+    // Create the one-shot timer used to drive backoff reconnects.
+    esp_timer_create_args_t timerArgs = {};
+    timerArgs.callback = &WiFiManager::reconnectTimerCallback;
+    timerArgs.arg = this;
+    timerArgs.dispatch_method = ESP_TIMER_TASK;
+    timerArgs.name = "wifi_reconnect";
+    esp_err_t timerErr = esp_timer_create(&timerArgs, &reconnectTimer_);
+    if (timerErr != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to create reconnect timer: %s", esp_err_to_name(timerErr));
+        reconnectTimer_ = nullptr;
+    }
+#endif
+
     initialized_ = true;
     ESP_LOGI(TAG, "WiFi subsystem initialized successfully");
     return true;
@@ -344,16 +359,23 @@ void WiFiManager::handleWifiEvent(esp_event_base_t eventBase, int32_t eventId, v
                 status_.store(WiFiStatus::DISCONNECTED);
 
 #ifdef CONFIG_WIFI_MAXIMUM_RETRY
-                // Retry logic using configured max retry count
+                // Immediate retry budget: reconnect right away (no delay).
                 if (retryCount_ < CONFIG_WIFI_MAXIMUM_RETRY) {
                     retryCount_++;
                     ESP_LOGI(TAG, "Retrying WiFi connection (%d/%d)...",
                              retryCount_, CONFIG_WIFI_MAXIMUM_RETRY);
                     esp_wifi_connect();
                 } else {
+#ifdef CONFIG_WIFI_AUTO_RECONNECT
+                    // Budget spent: keep retrying with exponential backoff so a
+                    // runtime AP loss recovers without a power cycle. retryCount_
+                    // stays pinned so every future drop lands here until GOT_IP.
+                    scheduleReconnect();
+#else
                     ESP_LOGE(TAG, "Max retries (%d) exhausted - giving up",
                              CONFIG_WIFI_MAXIMUM_RETRY);
                     xEventGroupSetBits(wifiEventGroup_, WIFI_FAIL_BIT);
+#endif
                 }
 #else
                 xEventGroupSetBits(wifiEventGroup_, WIFI_FAIL_BIT);
@@ -368,6 +390,13 @@ void WiFiManager::handleWifiEvent(esp_event_base_t eventBase, int32_t eventId, v
         ip_event_got_ip_t* event = static_cast<ip_event_got_ip_t*>(eventData);
         ESP_LOGI(TAG, "Got IP address: " IPSTR, IP2STR(&event->ip_info.ip));
         retryCount_ = 0;  // Reset retry counter on successful connection
+#ifdef CONFIG_WIFI_AUTO_RECONNECT
+        // Cancel any pending backoff reconnect and reset the delay.
+        if (reconnectTimer_) {
+            esp_timer_stop(reconnectTimer_);
+        }
+        reconnectBackoffMs_ = RECONNECT_BACKOFF_MIN_MS;
+#endif
         status_.store(WiFiStatus::CONNECTED);
         xEventGroupSetBits(wifiEventGroup_, WIFI_CONNECTED_BIT);
 
@@ -382,7 +411,42 @@ void WiFiManager::handleWifiEvent(esp_event_base_t eventBase, int32_t eventId, v
     }
 }
 
+#ifdef CONFIG_WIFI_AUTO_RECONNECT
+void WiFiManager::scheduleReconnect() {
+    if (!reconnectTimer_) {
+        // No timer available - fall back to failing so callers aren't left hanging.
+        xEventGroupSetBits(wifiEventGroup_, WIFI_FAIL_BIT);
+        return;
+    }
+
+    ESP_LOGW(TAG, "Auto-reconnect: retrying in %lu ms",
+             static_cast<unsigned long>(reconnectBackoffMs_));
+
+    esp_timer_stop(reconnectTimer_);  // ensure not already armed
+    esp_timer_start_once(reconnectTimer_,
+                         static_cast<uint64_t>(reconnectBackoffMs_) * 1000ULL);
+
+    // Double the delay for next time, capped.
+    const uint32_t next = reconnectBackoffMs_ * 2;
+    reconnectBackoffMs_ = (next > RECONNECT_BACKOFF_MAX_MS) ? RECONNECT_BACKOFF_MAX_MS : next;
+}
+
+void WiFiManager::reconnectTimerCallback(void* arg) {
+    WiFiManager* self = static_cast<WiFiManager*>(arg);
+    ESP_LOGI(TAG, "Auto-reconnect: attempting connection");
+    self->status_.store(WiFiStatus::CONNECTING);
+    esp_wifi_connect();
+}
+#endif
+
 void WiFiManager::cleanup() {
+#ifdef CONFIG_WIFI_AUTO_RECONNECT
+    if (reconnectTimer_) {
+        esp_timer_stop(reconnectTimer_);
+        esp_timer_delete(reconnectTimer_);
+        reconnectTimer_ = nullptr;
+    }
+#endif
     if (initialized_) {
         esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, &WiFiManager::ipEventHandler);
         esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, &WiFiManager::wifiEventHandler);
