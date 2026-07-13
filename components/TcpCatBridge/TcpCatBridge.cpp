@@ -50,6 +50,7 @@ esp_err_t TcpCatBridge::start() {
     }
 
     running_.store(true);
+    taskExited_.store(false);
 
     const uint32_t stackDepth = std::max<int>(CONFIG_TCP_CAT_BRIDGE_TASK_STACK_SIZE, MIN_STACK_DEPTH);
 
@@ -82,19 +83,35 @@ void TcpCatBridge::stop() {
     }
 
     ESP_LOGI(TAG, "Stopping TCP-CAT bridge for bridge %d", bridgeId_);
+
+    // Signal shutdown. The task owns cleanup(); stop() only joins.
     running_.store(false);
 
-    // Wait for task to exit
-    if (taskHandle_ != nullptr) {
-        // Give task time to cleanup gracefully
-        vTaskDelay(pdMS_TO_TICKS(100));
+    // Nudge the listening socket so a task parked in select() wakes promptly
+    // instead of waiting out the full select timeout. The task's cleanup()
+    // still owns the close(), so we only shutdown() here (never close()).
+    if (serverSocket_ >= 0) {
+        shutdown(serverSocket_, SHUT_RDWR);
+    }
 
-        // Force delete if still running
-        vTaskDelete(taskHandle_);
+    // Join: wait for the task to confirm it exited its loop and ran cleanup().
+    // Never force-delete — the task may hold clientsMutex_, and vTaskDelete
+    // would strand it (deadlocking the next lock acquisition).
+    if (taskHandle_ != nullptr) {
+        constexpr int JOIN_TIMEOUT_MS = 2000;
+        constexpr int POLL_MS = 10;
+        int waited = 0;
+        while (!taskExited_.load() && waited < JOIN_TIMEOUT_MS) {
+            vTaskDelay(pdMS_TO_TICKS(POLL_MS));
+            waited += POLL_MS;
+        }
+        if (!taskExited_.load()) {
+            ESP_LOGE(TAG, "Bridge %d task did not exit within %d ms; leaving it (may hold a lock)",
+                     bridgeId_, JOIN_TIMEOUT_MS);
+        }
         taskHandle_ = nullptr;
     }
 
-    cleanup();
     ESP_LOGI(TAG, "TCP-CAT bridge for bridge %d stopped", bridgeId_);
 }
 
@@ -118,11 +135,19 @@ esp_err_t TcpCatBridge::initSocket() {
         ESP_LOGW(TAG, "Failed to set non-blocking: errno %d", errno);
     }
 
-    // Bind to port
+    // Bind to configured address (default 0.0.0.0 = all interfaces)
     struct sockaddr_in serverAddr{};
     serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = htonl(INADDR_ANY);
     serverAddr.sin_port = htons(serverPort_);
+
+    const char* bindAddr = CONFIG_TCP_CAT_BRIDGE_BIND_ADDR;
+    if (bindAddr[0] == '\0' || inet_aton(bindAddr, &serverAddr.sin_addr) == 0) {
+        // Empty or unparseable address falls back to all interfaces
+        serverAddr.sin_addr.s_addr = htonl(INADDR_ANY);
+        if (bindAddr[0] != '\0') {
+            ESP_LOGW(TAG, "Invalid bind address '%s', using 0.0.0.0", bindAddr);
+        }
+    }
 
     if (bind(serverSocket_, reinterpret_cast<struct sockaddr*>(&serverAddr), sizeof(serverAddr)) < 0) {
         ESP_LOGE(TAG, "Failed to bind socket to port %d: errno %d", serverPort_, errno);
@@ -157,23 +182,43 @@ int TcpCatBridge::acceptClient() {
 
     RtosLockGuard<RtosMutex> lock(clientsMutex_);
 
-    // Single client enforcement: close existing client before accepting new one
-    for (int i = 0; i < MAX_CLIENTS; ++i) {
-        if (clients_[i].connected) {
-            ESP_LOGI(TAG, "Closing existing client %d to accept new connection on bridge %d", i, bridgeId_);
-            closeClientLocked(i);
-            break;  // Only one client can be connected at a time
+    // Rate limit accepted connections. Only advance the clock on an actual
+    // accept, so a tight reconnect loop is throttled (each early attempt is
+    // dropped, the real client is not churned). Applies with auth on or off.
+    const TickType_t now = xTaskGetTickCount();
+    const TickType_t minInterval = pdMS_TO_TICKS(MIN_ACCEPT_INTERVAL_MS);
+    if (lastAcceptTick_ != 0 && (now - lastAcceptTick_) < minInterval) {
+        ESP_LOGW(TAG, "Bridge %d dropping connection: accept rate limit (< %d ms)",
+                 bridgeId_, MIN_ACCEPT_INTERVAL_MS);
+        close(clientSock);
+        return -1;
+    }
+    lastAcceptTick_ = now;
+
+    // Auth disabled (Hamlib default): evict the existing client on connect so a
+    // stale session is replaced. Auth enabled: keep the current client until the
+    // newcomer proves itself (eviction happens in handleAuthFrame on success).
+    if (!AUTH_ENABLED) {
+        for (int i = 0; i < MAX_CLIENTS; ++i) {
+            if (clients_[i].connected) {
+                ESP_LOGI(TAG, "Closing existing client %d to accept new connection on bridge %d", i, bridgeId_);
+                closeClientLocked(i);
+                break;  // Only one client can be connected at a time
+            }
         }
     }
 
-    // Find free slot (should be available after closing existing client)
+    // Find a free slot. With auth enabled an authenticated client keeps its slot,
+    // so a newcomer needs a spare slot to run the handshake; if none, reject it.
     for (int i = 0; i < MAX_CLIENTS; ++i) {
         if (!clients_[i].connected) {
             clients_[i].socket = clientSock;
             clients_[i].connected = true;
+            clients_[i].authenticated = !AUTH_ENABLED;  // trusted immediately when auth is off
             clients_[i].bytesRx = 0;
             clients_[i].bytesTx = 0;
             clients_[i].pendingLen = 0;
+            clients_[i].txPending = 0;
 
             // Disable Nagle's algorithm to minimize latency for small CAT frames
             int nodelay = 1;
@@ -192,20 +237,28 @@ int TcpCatBridge::acceptClient() {
         }
     }
 
-    // Should not reach here due to single client enforcement
-    ESP_LOGW(TAG, "No free slots (unexpected), rejecting connection");
+    // No free slot. With auth off this is unexpected (we just evicted); with auth
+    // on it means an authenticated client already occupies every slot — reject so
+    // the current session is not disturbed by an unauthenticated newcomer.
+    ESP_LOGW(TAG, "Bridge %d no free slot, rejecting connection", bridgeId_);
     close(clientSock);
     return -1;
 }
 
-void TcpCatBridge::handleClientData(int clientIdx) {
+void TcpCatBridge::handleClientData(int clientIdx, int expectedSock) {
     int sock;
     {
         RtosLockGuard<RtosMutex> lock(clientsMutex_);
         if (clientIdx < 0 || clientIdx >= MAX_CLIENTS || !clients_[clientIdx].connected) {
             return;
         }
+        // Revalidate: acceptClient() may have evicted and reused this slot between
+        // the select() snapshot and now. Skip if the fd no longer matches — the
+        // readiness we observed belonged to the previous occupant of this slot.
         sock = clients_[clientIdx].socket;
+        if (sock != expectedSock) {
+            return;
+        }
     }
 
     // recv() outside lock — safe because only bridgeTask reads from client sockets
@@ -259,6 +312,7 @@ void TcpCatBridge::processClientInput(int clientIdx, const uint8_t* data, size_t
     while (inputPos < length) {
         size_t frameLen = 0;
         bool gotFrame = false;
+        bool frameAuthed = false;
 
         {
             RtosLockGuard<RtosMutex> lock(clientsMutex_);
@@ -266,6 +320,7 @@ void TcpCatBridge::processClientInput(int clientIdx, const uint8_t* data, size_t
             if (!client.connected) {
                 return;
             }
+            frameAuthed = client.authenticated;
 
             while (inputPos < length) {
                 const unsigned char ch = data[inputPos++];
@@ -314,13 +369,56 @@ void TcpCatBridge::processClientInput(int clientIdx, const uint8_t* data, size_t
         } // clientsMutex_ released here
 
         // Dispatch WITHOUT holding clientsMutex_
-        if (gotFrame && frameCallback) {
+        if (gotFrame) {
             std::string_view frame(frameData, frameLen);
-            ESP_LOGV(TAG, "Bridge %d RX from client %d: %.*s", bridgeId_, clientIdx,
-                     (int)frame.size(), frame.data());
-            frameCallback(frame);
+            if (!AUTH_ENABLED || frameAuthed) {
+                if (frameCallback) {
+                    ESP_LOGV(TAG, "Bridge %d RX from client %d: %.*s", bridgeId_, clientIdx,
+                             (int)frame.size(), frame.data());
+                    frameCallback(frame);
+                }
+            } else {
+                // Auth enabled and client not yet authenticated: the first frame
+                // must be the auth handshake. Never forward it to the CAT callback.
+                handleAuthFrame(clientIdx, frame);
+            }
         }
     }
+}
+
+void TcpCatBridge::handleAuthFrame(int clientIdx, std::string_view frame) {
+    // Expected exactly: "AUTH <token>;" (control chars already stripped upstream).
+    char expected[128];
+    const int n = snprintf(expected, sizeof(expected), "AUTH %s;", CONFIG_TCP_CAT_BRIDGE_AUTH_TOKEN);
+
+    const bool ok = (n > 0 && static_cast<size_t>(n) < sizeof(expected) &&
+                     frame.size() == static_cast<size_t>(n) &&
+                     memcmp(frame.data(), expected, static_cast<size_t>(n)) == 0);
+
+    if (!ok) {
+        ESP_LOGW(TAG, "Bridge %d client %d failed auth, closing", bridgeId_, clientIdx);
+        closeClient(clientIdx);
+        return;
+    }
+
+    {
+        RtosLockGuard<RtosMutex> lock(clientsMutex_);
+        if (clientIdx < 0 || clientIdx >= MAX_CLIENTS || !clients_[clientIdx].connected) {
+            return;
+        }
+        clients_[clientIdx].authenticated = true;
+        // Now enforce single-client: evict any other (previously authenticated) client.
+        for (int j = 0; j < MAX_CLIENTS; ++j) {
+            if (j != clientIdx && clients_[j].connected) {
+                ESP_LOGI(TAG, "Bridge %d evicting client %d in favour of newly authenticated client %d",
+                         bridgeId_, j, clientIdx);
+                closeClientLocked(j);
+            }
+        }
+    }
+
+    ESP_LOGI(TAG, "Bridge %d client %d authenticated", bridgeId_, clientIdx);
+    sendToActiveClient("AUTH1;");
 }
 
 void TcpCatBridge::sendToActiveClient(std::string_view message) {
@@ -330,39 +428,116 @@ void TcpCatBridge::sendToActiveClient(std::string_view message) {
 
     RtosLockGuard<RtosMutex> lock(clientsMutex_);
 
-    // Send to the first connected client (single client enforcement ensures only one exists)
+    // Send to the active (authenticated) client. Single-client enforcement means
+    // at most one client is authenticated; an unauthenticated newcomer (auth mode)
+    // never receives radio responses.
     for (int i = 0; i < MAX_CLIENTS; ++i) {
-        if (clients_[i].connected) {
-            ESP_LOGV(TAG, "Bridge %d TX to client %d: %.*s", bridgeId_, i,
-                     (int)message.size(), message.data());
-
-            const char* ptr = message.data();
-            size_t remaining = message.size();
-            while (remaining > 0) {
-                ssize_t sent = send(clients_[i].socket, ptr, remaining, 0);
-                if (sent > 0) {
-                    clients_[i].bytesTx += static_cast<uint64_t>(sent);
-                    bytesSent_.fetch_add(static_cast<uint64_t>(sent));
-                    ptr += sent;
-                    remaining -= static_cast<size_t>(sent);
-                } else if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                    ESP_LOGW(TAG, "Client %d send error: errno %d", i, errno);
-                    closeClient(i);
-                    return;
-                } else {
-                    // EAGAIN/EWOULDBLOCK on non-blocking socket - drop remaining bytes
-                    // rather than blocking the caller (CAT frames are small, this is rare)
-                    ESP_LOGD(TAG, "Client %d send would block, %zu bytes unsent", i, remaining);
-                    break;
-                }
-            }
-            return;  // Single client only - done after first send attempt
+        if (!clients_[i].connected || !clients_[i].authenticated) {
+            continue;
         }
+
+        ESP_LOGV(TAG, "Bridge %d TX to client %d: %.*s", bridgeId_, i,
+                 (int)message.size(), message.data());
+
+        // 1. Drain any previously queued remainder first to preserve ordering.
+        if (clients_[i].txPending > 0) {
+            flushPendingTxLocked(i);
+            if (!clients_[i].connected) {
+                return;  // closed on hard error
+            }
+            if (clients_[i].txPending > 0) {
+                // Still backed up: queue the new frame behind the pending bytes
+                // (whole-frame). Overflow closes the client inside the helper.
+                appendPendingTxLocked(i, message.data(), message.size());
+                return;
+            }
+        }
+
+        // 2. Send the new frame directly; stash any would-block remainder.
+        const char* ptr = message.data();
+        size_t remaining = message.size();
+        while (remaining > 0) {
+            ssize_t sent = send(clients_[i].socket, ptr, remaining, 0);
+            if (sent > 0) {
+                clients_[i].bytesTx += static_cast<uint64_t>(sent);
+                bytesSent_.fetch_add(static_cast<uint64_t>(sent));
+                ptr += sent;
+                remaining -= static_cast<size_t>(sent);
+            } else if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                ESP_LOGW(TAG, "Client %d send error: errno %d", i, errno);
+                // clientsMutex_ is already held; use the locked variant to avoid
+                // re-taking the non-recursive mutex (deadlock).
+                closeClientLocked(i);
+                return;
+            } else {
+                // Would block: queue the unsent remainder so the client never sees
+                // a truncated frame. Flushed later (next send / writable select).
+                ESP_LOGD(TAG, "Client %d send would block, queuing %zu bytes", i, remaining);
+                appendPendingTxLocked(i, ptr, remaining);
+                return;
+            }
+        }
+        return;  // Single active client - done
     }
 
-    // No clients connected - silently drop message
-    ESP_LOGV(TAG, "No clients connected on bridge %d, dropping message: %.*s",
+    // No active client - silently drop message
+    ESP_LOGV(TAG, "No active client on bridge %d, dropping message: %.*s",
              bridgeId_, static_cast<int>(message.size()), message.data());
+}
+
+bool TcpCatBridge::appendPendingTxLocked(int clientIdx, const char* data, size_t length) {
+    ClientState& client = clients_[clientIdx];
+    if (length == 0) {
+        return true;
+    }
+    if (client.txPending + length > PENDING_TX_SIZE) {
+        // Unrecoverable: the client cannot keep up. Closing preserves whole-frame
+        // semantics (better a clean disconnect than a permanently desynced stream).
+        ESP_LOGW(TAG, "Client %d pending-TX overflow (%zu + %zu > %zu), closing",
+                 clientIdx, client.txPending, length, PENDING_TX_SIZE);
+        closeClientLocked(clientIdx);
+        return false;
+    }
+    memcpy(client.txBuffer.data() + client.txPending, data, length);
+    client.txPending += length;
+    return true;
+}
+
+void TcpCatBridge::flushPendingTxLocked(int clientIdx) {
+    ClientState& client = clients_[clientIdx];
+    while (client.txPending > 0) {
+        ssize_t sent = send(client.socket, client.txBuffer.data(), client.txPending, 0);
+        if (sent > 0) {
+            client.bytesTx += static_cast<uint64_t>(sent);
+            bytesSent_.fetch_add(static_cast<uint64_t>(sent));
+            const size_t rem = client.txPending - static_cast<size_t>(sent);
+            if (rem > 0) {
+                memmove(client.txBuffer.data(), client.txBuffer.data() + sent, rem);
+            }
+            client.txPending = rem;
+        } else if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            ESP_LOGW(TAG, "Client %d pending-TX flush error: errno %d", clientIdx, errno);
+            closeClientLocked(clientIdx);
+            return;
+        } else {
+            // Still would block: keep the remainder queued for the next attempt.
+            break;
+        }
+    }
+}
+
+void TcpCatBridge::handleClientWritable(int clientIdx, int expectedSock) {
+    RtosLockGuard<RtosMutex> lock(clientsMutex_);
+    if (clientIdx < 0 || clientIdx >= MAX_CLIENTS || !clients_[clientIdx].connected) {
+        return;
+    }
+    // Revalidate the fd (slot may have been evicted/reused since the snapshot).
+    if (clients_[clientIdx].socket != expectedSock) {
+        return;
+    }
+    if (clients_[clientIdx].txPending > 0) {
+        flushPendingTxLocked(clientIdx);
+    }
 }
 
 void TcpCatBridge::closeClientLocked(int clientIdx) {
@@ -381,7 +556,9 @@ void TcpCatBridge::closeClientLocked(int clientIdx) {
     }
 
     client.connected = false;
+    client.authenticated = false;
     client.pendingLen = 0;
+    client.txPending = 0;
     clientCount_.fetch_sub(1);
 }
 
@@ -417,25 +594,33 @@ void TcpCatBridge::bridgeTask(void* arg) {
     ESP_LOGI(TAG, "Bridge task started for bridge %d", bridge->bridgeId_);
 
     fd_set readfds;
+    fd_set writefds;
     struct timeval timeout{};
 
     while (bridge->running_.load()) {
         FD_ZERO(&readfds);
+        FD_ZERO(&writefds);
 
         // Add server socket to set
         int maxfd = bridge->serverSocket_;
         FD_SET(bridge->serverSocket_, &readfds);
 
-        // Snapshot client sockets under lock for select() fd_set setup
+        // Snapshot (fd, has-pending) per slot under lock for select() setup.
+        // The fd is carried into the handlers so they can revalidate the slot.
         int clientSockets[MAX_CLIENTS];
         {
             RtosLockGuard<RtosMutex> lock(bridge->clientsMutex_);
             for (int i = 0; i < MAX_CLIENTS; ++i) {
                 if (bridge->clients_[i].connected) {
-                    clientSockets[i] = bridge->clients_[i].socket;
-                    FD_SET(clientSockets[i], &readfds);
-                    if (clientSockets[i] > maxfd) {
-                        maxfd = clientSockets[i];
+                    const int sock = bridge->clients_[i].socket;
+                    clientSockets[i] = sock;
+                    FD_SET(sock, &readfds);
+                    // Only watch for writability while there is queued TX to flush.
+                    if (bridge->clients_[i].txPending > 0) {
+                        FD_SET(sock, &writefds);
+                    }
+                    if (sock > maxfd) {
+                        maxfd = sock;
                     }
                 } else {
                     clientSockets[i] = -1;
@@ -448,7 +633,7 @@ void TcpCatBridge::bridgeTask(void* arg) {
         timeout.tv_usec = SELECT_TIMEOUT_MS * 1000;
 
         // Wait for activity (outside lock - this blocks)
-        int activity = select(maxfd + 1, &readfds, nullptr, nullptr, &timeout);
+        int activity = select(maxfd + 1, &readfds, &writefds, nullptr, &timeout);
 
         if (activity < 0) {
             if (errno != EINTR) {
@@ -463,10 +648,17 @@ void TcpCatBridge::bridgeTask(void* arg) {
             bridge->acceptClient();
         }
 
-        // Check for client data
+        // Flush queued TX for now-writable clients (fd revalidated inside).
+        for (int i = 0; i < MAX_CLIENTS; ++i) {
+            if (clientSockets[i] >= 0 && FD_ISSET(clientSockets[i], &writefds)) {
+                bridge->handleClientWritable(i, clientSockets[i]);
+            }
+        }
+
+        // Check for client data (fd revalidated inside handleClientData).
         for (int i = 0; i < MAX_CLIENTS; ++i) {
             if (clientSockets[i] >= 0 && FD_ISSET(clientSockets[i], &readfds)) {
-                bridge->handleClientData(i);
+                bridge->handleClientData(i, clientSockets[i]);
             }
         }
 
@@ -474,11 +666,13 @@ void TcpCatBridge::bridgeTask(void* arg) {
         taskYIELD();
     }
 
-    // Cleanup on exit
+    // The task is the sole owner of cleanup(). stop() only joins on taskExited_,
+    // and never touches taskHandle_ until this flag is observed set — so we must
+    // not write taskHandle_ here (that would race the join).
     bridge->running_.store(false);
-    bridge->taskHandle_ = nullptr;
     bridge->cleanup();
     ESP_LOGI(TAG, "Bridge task exiting for bridge %d", bridge->bridgeId_);
+    bridge->taskExited_.store(true);
     vTaskDelete(nullptr);
 }
 

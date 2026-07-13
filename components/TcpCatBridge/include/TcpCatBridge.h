@@ -11,6 +11,18 @@
 #include <string_view>
 #include "rtos_mutex.h"
 
+// Fallback defaults so the unit compiles before sdkconfig is regenerated from
+// Kconfig. The build system force-includes sdkconfig.h, which overrides these.
+#ifndef CONFIG_TCP_CAT_BRIDGE_AUTH_TOKEN
+#define CONFIG_TCP_CAT_BRIDGE_AUTH_TOKEN ""
+#endif
+#ifndef CONFIG_TCP_CAT_BRIDGE_BIND_ADDR
+#define CONFIG_TCP_CAT_BRIDGE_BIND_ADDR "0.0.0.0"
+#endif
+#ifndef CONFIG_TCP_CAT_BRIDGE_MIN_ACCEPT_INTERVAL_MS
+#define CONFIG_TCP_CAT_BRIDGE_MIN_ACCEPT_INTERVAL_MS 1000
+#endif
+
 namespace tcp_cat_bridge {
 
 /**
@@ -139,10 +151,46 @@ private:
     int acceptClient();
 
     /**
-     * @brief Handle data from TCP client -> CAT handler (via callback)
+     * @brief Handle readable data from TCP client -> CAT handler (via callback)
+     * @param clientIdx Client index in clients_ array
+     * @param expectedSock Socket fd captured in the select() snapshot; recv is
+     *                     skipped if the slot no longer holds this fd (evicted/reused)
+     */
+    void handleClientData(int clientIdx, int expectedSock);
+
+    /**
+     * @brief Flush pending TX to a writable client socket
+     * @param clientIdx Client index in clients_ array
+     * @param expectedSock Socket fd captured in the select() snapshot (revalidated)
+     */
+    void handleClientWritable(int clientIdx, int expectedSock);
+
+    /**
+     * @brief Flush queued pending-TX bytes to the socket (caller holds clientsMutex_)
+     *
+     * Non-blocking: sends what it can, keeps the remainder queued. Closes the
+     * client on a hard send error. Never blocks.
      * @param clientIdx Client index in clients_ array
      */
-    void handleClientData(int clientIdx);
+    void flushPendingTxLocked(int clientIdx);
+
+    /**
+     * @brief Queue bytes into the client's pending-TX buffer (caller holds clientsMutex_)
+     *
+     * If the buffer would overflow the stream is unrecoverable, so the client is
+     * closed to preserve whole-frame semantics.
+     * @return true if queued, false if the client was closed on overflow
+     */
+    bool appendPendingTxLocked(int clientIdx, const char* data, size_t length);
+
+    /**
+     * @brief Validate an unauthenticated client's first frame against the auth token
+     *
+     * On match: replies "AUTH1;", marks the client authenticated and evicts any
+     * other connected client. On mismatch: closes the client. Never forwards the
+     * frame to the CAT callback.
+     */
+    void handleAuthFrame(int clientIdx, std::string_view frame);
 
     /**
      * @brief Process received input from TCP client
@@ -181,15 +229,28 @@ private:
     static constexpr size_t COMMAND_BUFFER_SIZE = BUFFER_SIZE * 2;
     static constexpr int MIN_STACK_DEPTH = 6144;
 
+    // Minimum interval between accepted connections (blunts reconnect-loop DoS)
+    static constexpr int MIN_ACCEPT_INTERVAL_MS = CONFIG_TCP_CAT_BRIDGE_MIN_ACCEPT_INTERVAL_MS;
+
+    // Fixed per-client pending-TX buffer. Holds the unsent remainder of a frame
+    // when the socket would block, so whole-frame semantics survive a partial send.
+    static constexpr size_t PENDING_TX_SIZE = 512;
+
+    // Auth is enabled iff the configured token is non-empty. sizeof includes the
+    // trailing NUL, so an empty "" literal yields 1.
+    static constexpr bool AUTH_ENABLED = sizeof(CONFIG_TCP_CAT_BRIDGE_AUTH_TOKEN) > 1;
+
     // Client connection state
     struct ClientState {
         int socket = -1;
         bool connected = false;
-        uint8_t rxBuffer[BUFFER_SIZE]{};
+        bool authenticated = false;   // true once AUTH accepted (or immediately if auth disabled)
         uint64_t bytesRx = 0;
         uint64_t bytesTx = 0;
         std::array<char, COMMAND_BUFFER_SIZE> pendingBuffer{};
         size_t pendingLen = 0;
+        std::array<char, PENDING_TX_SIZE> txBuffer{}; // unsent frame remainder (would-block)
+        size_t txPending = 0;                          // bytes queued in txBuffer
     };
 
     // State
@@ -199,6 +260,8 @@ private:
     ClientState clients_[MAX_CLIENTS]{};
     TaskHandle_t taskHandle_ = nullptr;
     std::atomic<bool> running_{false};
+    std::atomic<bool> taskExited_{false};  // set by the task just before it self-deletes
+    TickType_t lastAcceptTick_ = 0;        // tick of last accepted connection (rate limit)
     std::atomic<uint8_t> clientCount_{0};
     std::atomic<uint64_t> bytesReceived_{0};
     std::atomic<uint64_t> bytesSent_{0};
