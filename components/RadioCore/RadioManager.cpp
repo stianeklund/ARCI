@@ -995,10 +995,31 @@ namespace radio
             ESP_LOGW(RadioManager::TAG, "Stack trace needed to find source of ID; command");
         }
 
-        // Track last command sent for error diagnostics
-        commandDispatcher_->recordCommandSentToRadio(command);
+        // Global radio-TX rate limiter: enforce a minimum gap between ANY two sends,
+        // across all tasks, so the TS-590SG is not flooded (which yields ?; errors).
+        // Holding the lock across the pacing delay and the write is intentional: it
+        // serializes the shared UART TX path and keeps record+send atomic.
+        {
+            RtosLockGuard<RtosMutex> txLock(radioTxMutex_);
+            const uint64_t nowUs = esp_timer_get_time();
+            if (lastRadioTxUs_ != 0)
+            {
+                const uint64_t elapsedUs = nowUs - lastRadioTxUs_;
+                if (elapsedUs < RADIO_TX_MIN_GAP_US)
+                {
+                    // Round the remaining gap up to whole milliseconds for vTaskDelay.
+                    const uint32_t waitMs =
+                        static_cast<uint32_t>((RADIO_TX_MIN_GAP_US - elapsedUs + 999) / 1000);
+                    vTaskDelay(pdMS_TO_TICKS(waitMs));
+                }
+            }
 
-        radioSerial_.sendMessage(command);
+            // Track last command sent for error diagnostics (inside the lock so the
+            // recorded "last TX" and the actual write cannot diverge across tasks).
+            commandDispatcher_->recordCommandSentToRadio(command);
+            radioSerial_.sendMessage(command);
+            lastRadioTxUs_ = esp_timer_get_time();
+        }
         if (state_.isTx.load() && state_.getTxOwner() == static_cast<int>(CommandSource::Remote))
         {
             ESP_LOGD(RadioManager::TAG, "TXMON: remote TX active -> command '%.*s'", (int)command.size(),
