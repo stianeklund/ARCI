@@ -58,6 +58,16 @@ namespace radio
         Antenna,     // AN (main antenna P1 only; P2/P3 = 9 = no change)
     };
 
+    // Targets for atomic multi-state button cycles (M3 follow-up): read-current-and-
+    // advance is resolved under dispatchMutex_, same guarantee as ToggleTarget but for
+    // settings that step through >2 states instead of flipping a boolean.
+    enum class CycleTarget
+    {
+        NoiseReduction,      // NR: OFF -> NR1 -> NR2 -> OFF        (state_.noiseReductionMode)
+        NoiseBlanker,        // NB: OFF -> NB1 -> NB2 -> NB3 -> OFF (state_.noiseBlanker)
+        NoiseBlankerActive,  // NB: NB1 -> NB2 -> NB3 -> NB1 (skip OFF; used while the NB level popup is open)
+    };
+
     /**
      * @brief Central manager for all radio state and command processing
      *
@@ -459,6 +469,12 @@ namespace radio
         // read and dispatch are one critical section (fixes M3 TOCTOU). Returns the
         // dispatch outcome; LockTimeout if the lock could not be acquired in time.
         DispatchOutcome dispatchToggle(CATHandler &handler, ToggleTarget target) const;
+
+        // Atomically advance a multi-state radio setting to its next value: reads the
+        // current cached value and dispatches the advanced absolute command while holding
+        // dispatchMutex_, so read+dispatch is one critical section (M3). Returns the
+        // dispatch outcome; LockTimeout if the lock could not be acquired in time.
+        DispatchOutcome dispatchCycleLocked(CATHandler &handler, CycleTarget target) const;
 
         // Mode access methods for command handlers
         /**

@@ -21,9 +21,6 @@ const char *bandNames[] = {"1.8MHz", "3.5MHz", "7MHz",  "10MHz", "14MHz", "18MHz
 // instead of being rebuilt on the stack every button press.
 static const char *const modeNames[] = {"Invalid", "LSB", "USB", "CW", "FM", "AM", "FSK", "CW-R", "Invalid", "FSK-R"};
 static const int8_t      validModes[] = {1, 2, 3, 4, 5, 6, 7, 9};
-static const char *const nbNames[]   = {"OFF", "NB1", "NB2", "NB3"};
-static const char *const agcNames[]  = {"OFF", "FAST", "SLOW", "AUTO"};
-static const char *const nrNames[]   = {"OFF", "NR1", "NR2"};
 static const char *const vfoNames[]  = {"VFO A", "VFO B", "Memory"};
 static const int         voxDelays[] = {150, 300, 500, 1000};
 
@@ -387,47 +384,6 @@ void ButtonHandler::trigger_A_equals_B_button()
 }
 
 // Function button triggers - used by TCA8418 key mappings
-void ButtonHandler::triggerFunctionButton1()
-{
-    if (!m_radioManager.getState().keepAlive.load())
-        return;
-
-    // Check panel lock state - block button when locked
-    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
-    {
-        ESP_LOGD(TAG, "Function Button 1 blocked - panel is LOCKED");
-        return;
-    }
-
-    m_radioManager.recordButtonActivity();
-
-    // Toggle AGC - query current state first, then toggle
-    int currentAgc = m_radioManager.getState().agcMode;
-    int newAgc = (currentAgc == 1) ? 2 : 1; // Toggle between FAST (1) and SLOW (2)
-
-    char gtCommand[8];
-    std::snprintf(gtCommand, sizeof(gtCommand), "GT%d;", newAgc);
-    m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), gtCommand);
-
-    ESP_LOGI(TAG, "Function Button 1 pressed: AGC from %s to %s", agcNames[currentAgc], agcNames[newAgc]);
-}
-
-void ButtonHandler::triggerFunctionButton2()
-{
-    if (!m_radioManager.getState().keepAlive.load())
-        return;
-
-    // Toggle Noise Blanker - query current state first, then toggle
-    int currentNB = m_radioManager.getState().noiseBlanker;
-    int newNB = (currentNB + 1) % 3; // Cycle through 0, 1, 2
-
-    char nlCommand[8];
-    std::snprintf(nlCommand, sizeof(nlCommand), "NL%d;", newNB);
-    m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), nlCommand);
-
-    ESP_LOGI(TAG, "Function Button 2 pressed: Noise Blanker from %s to %s", nbNames[currentNB], nbNames[newNB]);
-}
-
 void ButtonHandler::triggerFunctionButton3()
 {
     if (!m_radioManager.getState().keepAlive.load())
@@ -461,24 +417,6 @@ void ButtonHandler::triggerFunctionButton3()
 
     // Invalidate frequency cache and request fresh FA/FB from radio
     m_radioManager.requestFrequencyUpdate();
-}
-
-void ButtonHandler::triggerFunctionButton4()
-{
-    if (!m_radioManager.getState().keepAlive.load())
-        return;
-
-    // Toggle between noise blanker variants: OFF (0) -> NB1 (1) -> NB2 (2) -> NB3 (3) -> OFF (0)
-    int currentNB = m_radioManager.getState().noiseBlanker;
-    int nextNB = (currentNB + 1) % 3; // Cycle through 0, 1, 2
-
-    // Use NL command for noise blanker
-    char nlCommand[8];
-    std::snprintf(nlCommand, sizeof(nlCommand), "NL%d;", nextNB);
-    m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), nlCommand);
-
-    ESP_LOGI(TAG, "Function Button 4 pressed: Toggling Noise Blanker from %s to %s", nbNames[currentNB],
-             nbNames[nextNB]);
 }
 
 void ButtonHandler::triggerFunctionButton5()
@@ -1854,15 +1792,10 @@ void ButtonHandler::handleNoiseReductionButton(MatrixButton &button)
             return;
         }
 
-        // Normal short press when popup closed - cycle NR mode
-        int currentNR = m_radioManager.getState().noiseReductionMode;
-        int newNR = (currentNR + 1) % 3; // Cycle through 0 (OFF), 1 (NR1), 2 (NR2)
-
-        char nrCommand[8];
-        std::snprintf(nrCommand, sizeof(nrCommand), "NR%d;", newNR);
-        m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), nrCommand);
-
-        ESP_LOGI(TAG, "NR button short press: %s -> %s", nrNames[currentNR], nrNames[newNR]);
+        // Normal short press when popup closed - cycle NR mode (OFF->NR1->NR2->OFF)
+        m_radioManager.dispatchCycleLocked(m_radioManager.getPanelCATHandler(),
+                                           radio::CycleTarget::NoiseReduction);
+        ESP_LOGI(TAG, "NR button short press: cycled NR mode");
     }
 }
 
@@ -2040,17 +1973,10 @@ void ButtonHandler::handleNoiseBlankerButton(MatrixButton &button)
     {
         if (nbPopupOpen)
         {
-            // Cycle NB modes (NB1→NB2→NB3→NB1) while popup is open
-            int currentNB = m_radioManager.getState().noiseBlanker;
-            // Cycle 1→2→3→1 (staying within active modes, not going to OFF)
-            int newNB = (currentNB % 3) + 1;
-
-            ESP_LOGI(TAG, "NB button short press - cycling mode: %s -> %s (popup stays open)",
-                     nbNames[currentNB], nbNames[newNB]);
-
-            char nbCommand[8];
-            std::snprintf(nbCommand, sizeof(nbCommand), "NB%d;", newNB);
-            m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), nbCommand);
+            // Cycle NB modes (NB1->NB2->NB3->NB1) while popup is open (never OFF)
+            m_radioManager.dispatchCycleLocked(m_radioManager.getPanelCATHandler(),
+                                               radio::CycleTarget::NoiseBlankerActive);
+            ESP_LOGI(TAG, "NB button short press - cycled active mode (popup stays open)");
 
             // Re-enter UI mode to refresh popup (level stays the same)
             int currentLevel = m_radioManager.getState().noiseBlankerLevel;
@@ -2060,21 +1986,10 @@ void ButtonHandler::handleNoiseBlankerButton(MatrixButton &button)
             return;
         }
 
-        // Normal short press when popup closed - cycle NB mode
-        int currentNB = m_radioManager.getState().noiseBlanker;
-        // Bounds check to prevent array out-of-bounds crash
-        if (currentNB < 0 || currentNB > 3)
-        {
-            ESP_LOGW(TAG, "NB button: Invalid state %d, treating as OFF", currentNB);
-            currentNB = 0;
-        }
-        int newNB = (currentNB + 1) % 4; // Cycle through 0 (OFF), 1 (NB1), 2 (NB2), 3 (NB3)
-
-        char nbCommand[8];
-        std::snprintf(nbCommand, sizeof(nbCommand), "NB%d;", newNB);
-        m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), nbCommand);
-
-        ESP_LOGI(TAG, "NB button short press: %s -> %s", nbNames[currentNB], nbNames[newNB]);
+        // Normal short press when popup closed - cycle NB mode (OFF->NB1->NB2->NB3->OFF)
+        m_radioManager.dispatchCycleLocked(m_radioManager.getPanelCATHandler(),
+                                           radio::CycleTarget::NoiseBlanker);
+        ESP_LOGI(TAG, "NB button short press: cycled NB mode");
     }
 }
 

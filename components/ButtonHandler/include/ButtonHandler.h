@@ -47,10 +47,7 @@ public:
 
     // Public trigger methods used by TCA8418 key mappings
     void trigger_A_equals_B_button();
-    void triggerFunctionButton1();
-    void triggerFunctionButton2();
     void triggerFunctionButton3();
-    void triggerFunctionButton4();
     void triggerFunctionButton5();
     void triggerFunctionButton6();
     void triggerTransverterMacroButton();

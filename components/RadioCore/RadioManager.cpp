@@ -913,6 +913,54 @@ namespace radio
         return dispatchMessageEx(handler, cmd);
     }
 
+    DispatchOutcome RadioManager::dispatchCycleLocked(CATHandler &handler, CycleTarget target) const
+    {
+        // Hold the dispatch lock across the state read AND the dispatch so no
+        // concurrent CAT set can interleave (M3). Recursive mutex: dispatchMessageEx
+        // below re-acquires it (count 2).
+        if (!dispatchMutex_.try_lock_for(pdMS_TO_TICKS(2000)))
+        {
+            ESP_LOGE(TAG, "dispatchCycleLocked timeout - dispatch lock held >2s (target %d)",
+                     static_cast<int>(target));
+            return DispatchOutcome::LockTimeout;
+        }
+        RtosUniqueLock<RtosRecursiveMutex> lock(dispatchMutex_, std::adopt_lock);
+
+        char cmd[8];
+        switch (target)
+        {
+        case CycleTarget::NoiseReduction:
+        {
+            // OFF(0) -> NR1(1) -> NR2(2) -> OFF(0)
+            const int next = (state_.noiseReductionMode.load() + 1) % 3;
+            std::snprintf(cmd, sizeof(cmd), "NR%d;", next);
+            break;
+        }
+        case CycleTarget::NoiseBlanker:
+        {
+            // OFF(0) -> NB1(1) -> NB2(2) -> NB3(3) -> OFF(0); clamp corrupt state to OFF first.
+            int cur = state_.noiseBlanker.load();
+            if (cur < 0 || cur > 3)
+            {
+                ESP_LOGW(TAG, "dispatchCycleLocked: invalid NB state %d, treating as OFF", cur);
+                cur = 0;
+            }
+            const int next = (cur + 1) % 4;
+            std::snprintf(cmd, sizeof(cmd), "NB%d;", next);
+            break;
+        }
+        case CycleTarget::NoiseBlankerActive:
+        {
+            // NB1(1) -> NB2(2) -> NB3(3) -> NB1(1); never lands on OFF (popup-open cycle).
+            const int next = (state_.noiseBlanker.load() % 3) + 1;
+            std::snprintf(cmd, sizeof(cmd), "NB%d;", next);
+            break;
+        }
+        }
+
+        return dispatchMessageEx(handler, cmd);
+    }
+
 
     void RadioManager::sendRadioCommand(const std::string_view command) const
     {

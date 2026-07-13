@@ -218,12 +218,13 @@ UI/feature components (ButtonHandler, EncoderHandler, etc.) should not embed CAT
 **High-level helpers (preferred):**
 
 - `RadioManager::dispatchToggle(handler, ToggleTarget)` — atomically flip a boolean radio setting (Processor/Attenuator/Preamp/Rit/Xit/Vox/TxAtu/Antenna). Reads the current cached value and dispatches the inverted absolute frame **while holding `dispatchMutex_`**, so the read+dispatch is one critical section. UI code must use this instead of doing its own `getState()`→invert→`PR%d;`, which races a concurrent CAT set (the "button press does nothing / wrong direction" bug). `toggleSplit`/`toggleDataMode` apply the same lock discipline internally.
+- `RadioManager::dispatchCycleLocked(handler, CycleTarget)` — same guarantee for multi-state *cycle* settings that step through >2 values: NoiseReduction (`NR` OFF→NR1→NR2→OFF), NoiseBlanker (`NB` OFF→NB1→NB2→NB3→OFF), NoiseBlankerActive (`NB` NB1→NB2→NB3→NB1, used while the NB level popup is open). Reads the current value and dispatches the *advanced* absolute frame under `dispatchMutex_` (invalid NB state is clamped to OFF inside the helper).
 - `RadioManager::enableSplit(copyVfo=true)`, `RadioManager::disableSplit()`, `RadioManager::toggleSplit(copyVfo=true)`
 - `RadioManager::copyVfoAToB()`, `setRxOnA/B()`, `setTxOnA/B()`
 - `RadioManager::getLocalCATHandler().parseMessage()` for direct local command injection
 - `RadioManager::getRemoteCATHandler().parseMessage()` for processing radio responses
 
-> **Note — multi-state cycles.** AGC (`GC`) and noise blanker (`NB`) are cycles, not booleans, so they are not covered by `dispatchToggle`. They still carry the same read-then-dispatch window and should move to a future `dispatchCycleLocked` helper (read current → advance → dispatch, under the lock).
+> **Note — multi-state cycles.** Cycle buttons (noise reduction, noise blanker) step through >2 states, so they use `dispatchCycleLocked` rather than `dispatchToggle`. AGC has no wired cycle button; the former `triggerFunctionButton1/2/4` (unwired, and wrongly using `GT`/`NL` instead of `GC`/`NB`) were removed. If an AGC-mode cycle button is added later, give it a `CycleTarget::Agc` case emitting `GC` (OFF→Slow→Fast) — do not resurrect `GT` (that is the AGC *time constant*, 01–20).
 
 **Direct handler access (when needed):**
 - `radioManager.getLocalCATHandler().parseMessage("FA00014150000;")` for local commands

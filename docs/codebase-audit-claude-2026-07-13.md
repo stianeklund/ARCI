@@ -23,7 +23,7 @@ Three implementation waves were completed after this audit. Status per finding:
 | ✅ Fixed (P2 wave) | H9 WiFi backoff reconnect; M4 TCP pending-TX buffer; M9 opt-in auth token + accept rate-limit + bind addr; M10 `stop()` join handshake; M11 all metrics coherent/wired (fictional `feedbackLoopsPrevented` deleted); M14 WDT panic + drain feeds; M15 stuck-INT watchdog, stack-bytes constant, PCF8575 bounded wait, init-order callback races (TCA8418 via main.cpp reorder, PCF8575 via release/acquire `m_callbackReady`); M16 fail-fast creation; L7 fd revalidation; serial-queue test suite revived (+H1 regression test); dead code deleted (main.cpp, RadioCore, ButtonHandler, `readMultipleRegisters`, two-part `sendMessage` chain, CDC `onFrameCallback_`); L2 stack monitor wired with real sizes |
 | ✅ Fixed (P3 wave) | M7 CDC TX serialized (drain+enqueue under one lock, residue-ordering guard, atomic backpressure); M8 UART 64-byte overflow discard + fragment resync-through-terminator; M12 MacroStorage cache mutex (NVS off-lock); M13 `ParamValue::wasTruncated()`; `bandDownSlotIndex` bug fixed via shared `bandNumber` (F-button-3 steps N→N-1); `sendCommandSequence` propagates dispatch failures; VOX end-to-end (button reads `voxEnabled`; `handleVX` now writes it on set/answer); encoder gesture-end idle nuance + `tuningStopTime`; direct `CatParser::parseFrame`/`determineCommandType` tests added (Set/Read/Answer, EX 7v8, PS); vacuous CatParser tests given real assertions; stray `nul`/`README.md~` deleted |
 | ✅ Fixed (M3) | Button toggle TOCTOU closed via `RadioManager::dispatchToggle(handler, ToggleTarget)` — read+invert+dispatch held as one critical section under `dispatchMutex_`; 8 boolean targets (PR/RA/PA/RT/XT/VX/AC/AN) routed through it, plus `toggleSplit`/`toggleDataMode` hardened with the same lock discipline; 9 deterministic tests (per-target inversion + a live-state/no-stale-read regression). Multi-state cycles (AGC `GC`, NB `NB`) deliberately deferred — they need a `dispatchCycleLocked` sibling, tracked below |
-| ⬜ Open (Medium) | AGC/NB multi-state cycle buttons carry the same lost-update window as M3 did; need a `dispatchCycleLocked` (read-advance-dispatch under the lock) analogous to `dispatchToggle` |
+| ✅ Fixed (M3 cycles) | `RadioManager::dispatchCycleLocked(handler, CycleTarget)` added (read-advance-dispatch under `dispatchMutex_`, analogous to `dispatchToggle`); the live NR + NB cycle buttons (short-press, plus the NB popup-open active cycle) route through it. AGC had no wired cycle button — the dead, unwired `triggerFunctionButton1/2/4` (wrong `GT`/`NL` commands) were deleted along with their now-unused name arrays and test wrappers. 5 cycle tests added (per-target advance, OFF-skip, invalid-state clamp, live-state/no-stale regression) |
 | ⬜ Open (Low/hygiene) | Boot latency (10 s WiFi block + 3 s CDC sleep); Diagnostics runtime-stats text parsing; ADCHandler idle 50 Hz no-op task; `SerialHandler` destructor task-delete; CDC >256 B / TCP >128 B frame truncation without terminator |
 | ⬜ Open (Tests) | Vacuous `TEST_ASSERT_TRUE(true)` / `TEST_IGNORE` guards in CommandHandlers suite (~12+16); zero coverage for NvsManager/WiFiManager/Diagnostics; inert per-component `test/CMakeLists.txt` files (vestigial — `unit_test` is the real runner) |
 
@@ -262,10 +262,16 @@ inversion from both starting values + a live-state regression proving the toggle
 reads the *updated* cache, not a stale pre-read). Verified with xtensa
 `-fsyntax-only` on both changed sources.
 
-**Deliberately out of scope:** the AGC (`GC`) and NB (`NB`) *cycle* buttons —
-they advance through multiple states rather than flipping a boolean, so they
-need a `dispatchCycleLocked` sibling (read current → advance → dispatch, under
-the lock). Tracked as the remaining Open (Medium) row in the status table above.
+**Cycle follow-up (also fixed).** The multi-state cycle buttons got the sibling
+`dispatchCycleLocked(handler, CycleTarget)` — same lock-held read+dispatch, but it
+*advances* to the next state instead of inverting. `CycleTarget::NoiseReduction`
+(`NR` 0→1→2→0), `NoiseBlanker` (`NB` 0→1→2→3→0, invalid state clamped to OFF), and
+`NoiseBlankerActive` (`NB` 1→2→3→1 for the popup-open cycle) now back the live NR/NB
+buttons. AGC turned out to have **no wired cycle button**: the only AGC cycler,
+`triggerFunctionButton1`, was dead code (no hardware mapping, test-only) that sent
+`GT` (AGC *time constant*) instead of `GC` (AGC *mode*); it and the equally-dead
+`triggerFunctionButton2/4` (NB via the wrong `NL` command) were deleted, along with
+their orphaned `agcNames/nbNames/nrNames` arrays and test wrappers.
 
 ### M4. TCP partial-send silently drops the frame tail → permanent client desync (NEW)
 

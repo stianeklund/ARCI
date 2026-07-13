@@ -27,8 +27,6 @@ public:
     // Test helpers for trigger methods
     void testTriggerSplitButton() { triggerSplitButton(); }
     void testTriggerTransverterMacroButton() { triggerTransverterMacroButton(); }
-    void testTriggerFunctionButton1() { triggerFunctionButton1(); }
-    void testTriggerFunctionButton2() { triggerFunctionButton2(); }
 };
 
 static std::unique_ptr<MockSerialHandler> mockRadioSerial;
@@ -758,6 +756,94 @@ void test_dispatch_toggle_reads_live_state_not_stale() {
                               "dispatchToggle must not emit PR1; from a stale pre-read of processor=0");
 }
 
+// ---------------------------------------------------------------------------
+// M3: multi-state button cycles via RadioManager::dispatchCycleLocked
+//
+// dispatchCycleLocked reads the CURRENT cached value for a target under the
+// dispatch lock and emits the ADVANCED absolute CAT frame. Mirrors the
+// dispatchToggle tests above: seed the field via .store(...), clearMessages(),
+// dispatch through the shared panel handler, assert the advanced frame.
+// ---------------------------------------------------------------------------
+void test_dispatch_cycle_nr_advances() {
+    // NR<(v+1)%3>; -> 0 -> NR1;, 1 -> NR2;, 2 -> NR0;.
+    radioManager->getState().noiseReductionMode.store(0);
+    clearMessages();
+    radioManager->dispatchCycleLocked(radioManager->getPanelCATHandler(), radio::CycleTarget::NoiseReduction);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("NR1;"), "Expected NR1; when noiseReductionMode seeded 0");
+
+    radioManager->getState().noiseReductionMode.store(1);
+    clearMessages();
+    radioManager->dispatchCycleLocked(radioManager->getPanelCATHandler(), radio::CycleTarget::NoiseReduction);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("NR2;"), "Expected NR2; when noiseReductionMode seeded 1");
+
+    radioManager->getState().noiseReductionMode.store(2);
+    clearMessages();
+    radioManager->dispatchCycleLocked(radioManager->getPanelCATHandler(), radio::CycleTarget::NoiseReduction);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("NR0;"), "Expected NR0; when noiseReductionMode seeded 2 (wraps to OFF)");
+}
+
+void test_dispatch_cycle_nb_advances() {
+    // NB<(v+1)%4>; -> 0 -> NB1;, 1 -> NB2;, 2 -> NB3;, 3 -> NB0;.
+    radioManager->getState().noiseBlanker.store(0);
+    clearMessages();
+    radioManager->dispatchCycleLocked(radioManager->getPanelCATHandler(), radio::CycleTarget::NoiseBlanker);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("NB1;"), "Expected NB1; when noiseBlanker seeded 0");
+
+    radioManager->getState().noiseBlanker.store(1);
+    clearMessages();
+    radioManager->dispatchCycleLocked(radioManager->getPanelCATHandler(), radio::CycleTarget::NoiseBlanker);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("NB2;"), "Expected NB2; when noiseBlanker seeded 1");
+
+    radioManager->getState().noiseBlanker.store(2);
+    clearMessages();
+    radioManager->dispatchCycleLocked(radioManager->getPanelCATHandler(), radio::CycleTarget::NoiseBlanker);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("NB3;"), "Expected NB3; when noiseBlanker seeded 2");
+
+    radioManager->getState().noiseBlanker.store(3);
+    clearMessages();
+    radioManager->dispatchCycleLocked(radioManager->getPanelCATHandler(), radio::CycleTarget::NoiseBlanker);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("NB0;"), "Expected NB0; when noiseBlanker seeded 3 (wraps to OFF)");
+}
+
+void test_dispatch_cycle_nb_active_skips_off() {
+    // NoiseBlankerActive: NB<(v%3)+1>; wraps NB1->NB2->NB3->NB1 without hitting OFF.
+    radioManager->getState().noiseBlanker.store(3);
+    clearMessages();
+    radioManager->dispatchCycleLocked(radioManager->getPanelCATHandler(), radio::CycleTarget::NoiseBlankerActive);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("NB1;"), "Expected NB1; when noiseBlanker seeded 3 (wrap without OFF)");
+
+    radioManager->getState().noiseBlanker.store(0);
+    clearMessages();
+    radioManager->dispatchCycleLocked(radioManager->getPanelCATHandler(), radio::CycleTarget::NoiseBlankerActive);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("NB1;"), "Expected NB1; when noiseBlanker seeded 0");
+}
+
+void test_dispatch_cycle_nb_clamps_invalid_state() {
+    // Out-of-range cached value clamps to 0, then advances -> NB1;.
+    radioManager->getState().noiseBlanker.store(99);
+    clearMessages();
+    radioManager->dispatchCycleLocked(radioManager->getPanelCATHandler(), radio::CycleTarget::NoiseBlanker);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("NB1;"), "Expected NB1; when noiseBlanker seeded 99 (clamped to 0 then advanced)");
+}
+
+// Regression (TOCTOU): the read must reflect state UPDATED after seeding, not the
+// original value. Seed noiseBlanker=0, push an NB2; SET through the SAME dispatch
+// path (updating cached state to 2), THEN cycle: it must advance the UPDATED 2 ->
+// NB3;, not the stale 0 -> NB1;.
+void test_dispatch_cycle_reads_live_state_not_stale() {
+    radioManager->getState().noiseBlanker.store(0);
+    // Update cached state to 2 via a normal absolute SET through the panel handler.
+    radioManager->getPanelCATHandler().parseMessage("NB2;");
+    TEST_ASSERT_EQUAL(2, radioManager->getState().noiseBlanker.load());
+
+    clearMessages();
+    radioManager->dispatchCycleLocked(radioManager->getPanelCATHandler(), radio::CycleTarget::NoiseBlanker);
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("NB3;"),
+                             "dispatchCycleLocked must advance the UPDATED state (2 -> NB3;), not the stale 0");
+    TEST_ASSERT_FALSE_MESSAGE(radioSentFrame("NB1;"),
+                              "dispatchCycleLocked must not emit NB1; from a stale pre-read of noiseBlanker=0");
+}
+
 extern "C" void run_button_handler_tests(void) {
     buttonHandlerSetUp();
     ESP_LOGI("ButtonHandlerTests", "RUNNING TESTS..");
@@ -794,6 +880,13 @@ extern "C" void run_button_handler_tests(void) {
     RUN_TEST(test_dispatch_toggle_txatu_inverts_state);
     RUN_TEST(test_dispatch_toggle_antenna_inverts_state);
     RUN_TEST(test_dispatch_toggle_reads_live_state_not_stale);
+
+    // M3: multi-state cycle (dispatchCycleLocked) advances live cached state
+    RUN_TEST(test_dispatch_cycle_nr_advances);
+    RUN_TEST(test_dispatch_cycle_nb_advances);
+    RUN_TEST(test_dispatch_cycle_nb_active_skips_off);
+    RUN_TEST(test_dispatch_cycle_nb_clamps_invalid_state);
+    RUN_TEST(test_dispatch_cycle_reads_live_state_not_stale);
     buttonHandlerTearDown();
 }
 
