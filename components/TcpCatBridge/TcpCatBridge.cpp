@@ -358,9 +358,17 @@ void TcpCatBridge::processClientInput(int clientIdx, const uint8_t* data, size_t
                 client.pendingBuffer[client.pendingLen++] = static_cast<char>(ch);
 
                 if (ch == ';') {
-                    const size_t copyLen = std::min(client.pendingLen, MAX_FRAME_LEN);
-                    memcpy(frameData, client.pendingBuffer.data(), copyLen);
-                    frameLen = copyLen;
+                    if (client.pendingLen > MAX_FRAME_LEN) {
+                        // Oversized frame (> MAX_FRAME_LEN before terminator): discard
+                        // rather than truncate-and-emit a terminator-less frame, which
+                        // would desync the client stream. CAT frames are <=64 bytes.
+                        ESP_LOGW(TAG, "Client %d oversized frame (%zu B): discarded",
+                                 clientIdx, client.pendingLen);
+                        client.pendingLen = 0;
+                        continue; // keep scanning remaining input for the next frame
+                    }
+                    memcpy(frameData, client.pendingBuffer.data(), client.pendingLen);
+                    frameLen = client.pendingLen;   // <= MAX_FRAME_LEN, no truncation
                     client.pendingLen = 0;
                     gotFrame = true;
                     break; // Exit inner loop to dispatch this frame
