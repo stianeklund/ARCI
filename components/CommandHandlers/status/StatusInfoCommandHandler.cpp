@@ -277,7 +277,7 @@ bool StatusInfoCommandHandler::handleSM(const RadioCommand& command,
             const std::string response = formatSMeterResponse(state.meterSmRaw);
             respondToSource(command, response, usbSerial, radioManager);
             ESP_LOGD(TAG, "SM query in AI%d mode: answered from cache (%d) without polling",
-                     aiMode, state.meterSmRaw);
+                     aiMode, state.meterSmRaw.load());
             return true;
         }
 

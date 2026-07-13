@@ -807,7 +807,7 @@ bool ReceiverProcessingCommandHandler::handleRL(const RadioCommand& command,
             sendToRadio(radioSerial, formatResponse2D("RL", level));
         }
 
-        ESP_LOGD(TAG, "Set noise reduction level to %d (NR%d)", level, state.noiseReductionMode);
+        ESP_LOGD(TAG, "Set noise reduction level to %d (NR%d)", level, state.noiseReductionMode.load());
         return true;
     }
 

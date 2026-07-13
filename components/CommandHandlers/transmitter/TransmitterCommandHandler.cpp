@@ -614,15 +614,16 @@ namespace radio
         // VX: VOX on/off / CW break-in
         if (isQuery(command))
         {
-            if (shouldSendToRadio(command))
+            if (command.isCatClient())
+            {
+                // Respond from cached VOX enable state (VXP1; P1: 0=OFF, 1=ON)
+                const bool voxOn = radioManager.getState().voxEnabled.load();
+                respondToSource(command, buildCommand("VX", voxOn ? "1" : "0"), usbSerial, radioManager);
+            }
+            else if (shouldSendToRadio(command))
             {
                 radioManager.getState().queryTracker.recordQuery("VX", esp_timer_get_time());
                 sendToRadio(radioSerial, buildCommand("VX"));
-            }
-            else
-            {
-                // Return default VOX state (off)
-                respondToSource(command, buildCommand("VX", "0"), usbSerial, radioManager);
             }
             return true;
         }
@@ -636,20 +637,32 @@ namespace radio
                 return false;
             }
 
+            // Update local state (VXP1; P1: 0=OFF, non-zero=ON)
+            radioManager.getState().voxEnabled = (voxMode != 0);
+
             if (shouldSendToRadio(command))
             {
                 std::string cmdStr = buildCommand("VX", std::to_string(voxMode));
                 sendToRadio(radioSerial, cmdStr);
             }
 
-            ESP_LOGD(TAG, "Set VOX mode to %d", voxMode);
+            ESP_LOGD(TAG, "Set VOX %s (mode %d)", voxMode != 0 ? "ON" : "OFF", voxMode);
             return true;
         }
 
         if (command.type == CommandType::Answer)
         {
-            // Use unified routing for VX answers
+            // Update local state from radio response (VXP1; P1: 0=OFF, non-zero=ON)
             int voxMode = parseNumericValue(command);
+            if (voxMode >= 0)
+            {
+                radioManager.getState().voxEnabled = (voxMode != 0);
+            }
+
+            // Update cache timestamp when we receive answer from radio
+            radioManager.getState().commandCache.update("VX", esp_timer_get_time());
+
+            // Use unified routing for VX answers
             std::string response = buildCommand("VX", std::to_string(voxMode));
             routeAnswerResponse(command, response, usbSerial, radioManager);
             return true;
