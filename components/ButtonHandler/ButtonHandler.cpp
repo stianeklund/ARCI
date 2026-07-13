@@ -450,7 +450,7 @@ void ButtonHandler::triggerFunctionButton3()
 
     // Use BD command for band down
     char bdCommand[8];
-    std::snprintf(bdCommand, sizeof(bdCommand), "BD%d;", nextBandIndex);
+    std::snprintf(bdCommand, sizeof(bdCommand), "BD%02d;", nextBandIndex);
     m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), bdCommand);
 
     // Apply last-used mode for the target band
@@ -558,7 +558,7 @@ void ButtonHandler::triggerBandUpButton()
 
     // Use BU command for band up
     char buCommand[8];
-    std::snprintf(buCommand, sizeof(buCommand), "BU%d;", nextBandIndex);
+    std::snprintf(buCommand, sizeof(buCommand), "BU%02d;", nextBandIndex);
     m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), buCommand);
 
     // Apply last-used mode for the target band

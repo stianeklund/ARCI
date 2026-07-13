@@ -68,6 +68,22 @@ namespace {
         // Reset state between tests without recreating objects
         testRadioManager->resetMockSerials();
         testRadioManager->clearCommandCache();
+
+        // The suite reuses one shared RadioManager, so per-client AI modes set by
+        // an earlier AI test leak into later ones. Restore each field to its
+        // RadioState default (displayAiMode defaults to AI2, the rest to AI0) so
+        // AI-dependent tests start from a known baseline.
+        auto &state = testRadioManager->getState();
+        state.aiMode.store(0);
+        state.usbCdc0AiMode.store(0);
+        state.usbCdc1AiMode.store(0);
+        state.tcp0AiMode.store(0);
+        state.tcp1AiMode.store(0);
+        state.displayAiMode.store(2);
+
+        // General isolation for band/memory tests.
+        state.bandNumber.store(0);
+        state.memoryChannel.store(0);
     }
 
     void tearDownTestRadioManager() {
