@@ -214,7 +214,11 @@ esp_err_t PCF8575Handler::readAllPins(uint16_t& pins)
 
 void PCF8575Handler::setChangeCallback(PinChangeCallback callback)
 {
-    m_changeCallback = callback;
+    m_changeCallback = std::move(callback);
+    // Publish AFTER the assignment so the interrupt task (already running) never
+    // observes a half-assigned std::function. Pairs with the acquire load in
+    // processChanges().
+    m_callbackReady.store(true, std::memory_order_release);
 }
 
 void PCF8575Handler::setMuxChannel(TCA9548Handler* muxHandler, uint8_t channel)
@@ -223,33 +227,25 @@ void PCF8575Handler::setMuxChannel(TCA9548Handler* muxHandler, uint8_t channel)
     m_muxChannel = channel;
 }
 
-esp_err_t PCF8575Handler::selectMuxChannel()
-{
-    if (m_muxHandler != nullptr) {
-        esp_err_t ret = m_muxHandler->selectChannel(m_muxChannel);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to select TCA9548 channel %d: %s", m_muxChannel, esp_err_to_name(ret));
-        }
-        return ret;
-    }
-    return ESP_OK;
-}
-
 esp_err_t PCF8575Handler::writePort(uint16_t value)
 {
-    // Select mux channel if needed
-    esp_err_t ret = selectMuxChannel();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to select mux channel");
-        return ret;
-    }
-
     // PCF8575: Write 2 bytes (LSB first)
     uint8_t buf[2];
     buf[0] = value & 0xFF;         // P0-P7
     buf[1] = (value >> 8) & 0xFF;  // P10-P17
 
-    ret = i2c_master_transmit(m_i2cDevHandle, buf, 2, 1000);
+    // Hold the mux on this device's channel across the whole transaction so a
+    // preempting task cannot switch the mux between channel-select and this write.
+    TCA9548Handler::ChannelGuard guard;
+    if (m_muxHandler != nullptr) {
+        guard = m_muxHandler->lockChannel(m_muxChannel);
+        if (!guard.valid()) {
+            ESP_LOGE(TAG, "Failed to lock mux channel %d", m_muxChannel);
+            return ESP_FAIL;
+        }
+    }
+
+    esp_err_t ret = i2c_master_transmit(m_i2cDevHandle, buf, 2, 1000);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "I2C write failed: %s", esp_err_to_name(ret));
     }
@@ -265,19 +261,28 @@ esp_err_t PCF8575Handler::readPort(uint16_t& value)
         return ESP_OK;
     }
 
-    // Select mux channel if needed
-    esp_err_t ret = selectMuxChannel();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to select mux channel");
-        return ret;
-    }
-
     // PCF8575: Read 2 bytes (LSB first)
+    // Hold the mux on this device's channel only across the channel-select + read
+    // so the two are atomic against a concurrent channel switch. The guard is
+    // released at the end of this block, BEFORE processChanges() runs its callback:
+    // the callback must not execute while the (non-recursive) mux mutex is held, or
+    // any I2C access it triggers would self-deadlock.
     uint8_t buf[2];
-    ret = i2c_master_receive(m_i2cDevHandle, buf, 2, 1000);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "I2C read failed: %s", esp_err_to_name(ret));
-        return ret;
+    {
+        TCA9548Handler::ChannelGuard guard;
+        if (m_muxHandler != nullptr) {
+            guard = m_muxHandler->lockChannel(m_muxChannel);
+            if (!guard.valid()) {
+                ESP_LOGE(TAG, "Failed to lock mux channel %d", m_muxChannel);
+                return ESP_FAIL;
+            }
+        }
+
+        esp_err_t ret = i2c_master_receive(m_i2cDevHandle, buf, 2, 1000);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "I2C read failed: %s", esp_err_to_name(ret));
+            return ret;
+        }
     }
 
     value = buf[0] | (buf[1] << 8);
@@ -302,7 +307,10 @@ esp_err_t PCF8575Handler::readPort(uint16_t& value)
 
 void PCF8575Handler::processChanges(uint16_t newState, uint16_t oldState)
 {
-    if (m_changeCallback == nullptr) {
+    // Acquire pairs with the release in setChangeCallback(): if the callback has
+    // not been published yet, the running interrupt task must not read the
+    // std::function while it is being assigned on another task (data race / UB).
+    if (!m_callbackReady.load(std::memory_order_acquire)) {
         return;
     }
 
@@ -340,8 +348,12 @@ void PCF8575Handler::interruptTask(void* param)
     uint32_t failedReads = 0;
 
     while (true) {
-        // Wait for interrupt
-        if (xSemaphoreTake(handler->m_interruptSemaphore, portMAX_DELAY) == pdTRUE) {
+        // Bounded wait: a single missed edge (ISR lost under load, or INT already
+        // asserted before the handler was installed) must not freeze the panel
+        // encoders until reboot. On timeout, poll the INT line and force a recovery
+        // read if it is still asserted (PCF8575 INT is active-LOW). Mirrors the
+        // TCA8418 semaphore-timeout fallback.
+        if (xSemaphoreTake(handler->m_interruptSemaphore, pdMS_TO_TICKS(250)) == pdTRUE) {
             interruptCount++;
 
             // Read all pins (clears interrupt on PCF8575 side)
@@ -361,6 +373,13 @@ void PCF8575Handler::interruptTask(void* param)
             }
             // processChanges() called within readPort()
             // No need to re-enable interrupt with ANYEDGE (edge-triggered)
+        } else if (handler->m_interruptPin != GPIO_NUM_NC &&
+                   gpio_get_level(handler->m_interruptPin) == 0) {
+            // Timed out with INT still asserted => an edge was missed. Read the port
+            // to service and clear it (readPort() logs its own I2C errors and invokes
+            // processChanges()); this releases the stuck INT line.
+            uint16_t pins = 0;
+            (void)handler->readPort(pins);
         }
     }
 }
