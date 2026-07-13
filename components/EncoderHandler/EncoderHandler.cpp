@@ -235,9 +235,20 @@ void EncoderHandler::setup()
 
     m_usePcnt = true;
 
-    // Add wake ISRs to trigger task processing when encoder moves
+    // Add wake ISRs to trigger task processing when encoder moves.
+    // PCNT counts the edges in hardware; these GPIO interrupts exist only to wake
+    // the task on the first edge of a gesture (sub-tick latency) instead of waiting
+    // for the 50 ms semaphore timeout. The pins were configured with
+    // GPIO_INTR_DISABLE above for PCNT input, so the interrupt type must be armed
+    // explicitly here or the handlers never fire. The GPIO input signal feeds both
+    // the PCNT peripheral and the GPIO interrupt path, so both can run on the same
+    // pins simultaneously.
     ESP_ERROR_CHECK(gpio_isr_handler_add(m_pinA, wakeIsrHandler, this));
     ESP_ERROR_CHECK(gpio_isr_handler_add(m_pinB, wakeIsrHandler, this));
+    ESP_ERROR_CHECK(gpio_set_intr_type(m_pinA, GPIO_INTR_ANYEDGE));
+    ESP_ERROR_CHECK(gpio_set_intr_type(m_pinB, GPIO_INTR_ANYEDGE));
+    ESP_ERROR_CHECK(gpio_intr_enable(m_pinA));
+    ESP_ERROR_CHECK(gpio_intr_enable(m_pinB));
 #else
     gpio_config_t io_conf = {};
     io_conf.intr_type = GPIO_INTR_ANYEDGE;
@@ -411,38 +422,53 @@ void EncoderHandler::task(const bool movementDetected)
     // 1000 raw edges → 250 pulses (edgeDiv=4), 500 pulses (edgeDiv=2), 1000 pulses (edgeDiv=1)
     int edgeDiv = std::max(1, RAW_EDGES_PER_REV / ppr);
 
-    // Accumulate fractional edges across calls
+    // Accumulate raw edges across calls. Integer division truncates toward zero,
+    // matching the previous consume-in-place loop, but crucially it does NOT remove
+    // the whole pulses from m_edgeRemainder here. Pulses are only consumed at the
+    // point they are actually applied to a frequency update (see the commit below).
+    // This prevents detents from being silently dropped when a wake does not produce
+    // a send - e.g. the per-edge wakes (now that the wake ISR is armed) that get
+    // rejected by the live-update gate between sends.
     m_edgeRemainder += edgeDelta;
-    int32_t delta = 0;
-    while (m_edgeRemainder >= edgeDiv)
-    {
-        ++delta;
-        m_edgeRemainder -= edgeDiv;
-    }
-    while (m_edgeRemainder <= -edgeDiv)
-    {
-        --delta;
-        m_edgeRemainder += edgeDiv;
-    }
+    const int32_t delta = m_edgeRemainder / edgeDiv;
 
 
     const int64_t currentTime = esp_timer_get_time();
 
-    // Check if encoder is idle (final snap delay) - widened for stability
+    // Gesture-end backstop: only a genuine idle window (no new edges for
+    // IDLE_TIMEOUT_US) ends the gesture. A bare delta==0 on a single wake must
+    // NOT end it - now that the wake ISR fires per edge (H8), delta==0 wakes are
+    // common between detents, and treating them as gesture-end churned isTuning
+    // and the control lease once per detent. The final-update path (fires at
+    // FINAL_UPDATE_DELAY_US, before this backstop) still ends the gesture and
+    // flushes the pending pulse when the knob stops with a whole pulse pending.
     static constexpr int64_t IDLE_TIMEOUT_US = 100000; // 100ms
-    if (delta == 0 || (currentTime - lastMovementTime) > IDLE_TIMEOUT_US)
+    if ((currentTime - lastMovementTime) > IDLE_TIMEOUT_US)
     {
-        // If there's no change or encoder is idle, ensure the local tuning flag is false
+        // Genuine idle: end the gesture and clear the local tuning flag.
         if (m_isTuning)
         {
             m_isTuning = false;
             m_radioManager->getState().isTuning.store(false);
+            // Record the stop time the same way the knob-stopped final-update path
+            // does, so post-tuning display suppression is computed from a fresh
+            // timestamp instead of a stale one.
+            m_radioManager->getState().tuningStopTime.store(currentTime);
             m_cachedTuneVfo = -1;
             // Gesture ended (idle backstop): free the control lease immediately.
             // Owner-scoped release: no-op unless Panel currently owns it.
             m_radioManager->releasePrimaryControl(radio::CommandSource::Panel);
-            ESP_LOGD(TAG, "Local tuning stopped (idle/no delta)");
+            ESP_LOGD(TAG, "Local tuning stopped (idle)");
         }
+        return;
+    }
+
+    // Woken without a completed logical pulse (e.g. a per-edge wake between
+    // detents, or an empty semaphore-timeout wake). Nothing to send: keep the
+    // gesture alive and leave m_edgeRemainder untouched (peek-then-commit, H8)
+    // so accumulated edges are preserved for the next update.
+    if (delta == 0)
+    {
         return;
     }
 
@@ -678,6 +704,13 @@ void EncoderHandler::task(const bool movementDetected)
                 return;
             }
         }
+
+        // Commit point: past every early-return validation gate, so this update is
+        // now guaranteed to be applied. Consume exactly the whole logical pulses we
+        // are applying, leaving any sub-pulse fraction in m_edgeRemainder for the
+        // next update. Every early-exit path above leaves m_edgeRemainder intact, so
+        // detents accumulated between sends are preserved rather than dropped.
+        m_edgeRemainder -= delta * edgeDiv;
 
         // Send CAT command to set frequency on the appropriate VFO
         if (m_radioManager)
