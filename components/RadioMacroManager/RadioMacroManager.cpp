@@ -13,7 +13,62 @@ namespace radio {
 
 RadioMacroManager::RadioMacroManager(RadioManager &radioManager)
     : radioManager_(radioManager) {
+#ifndef CONFIG_RUN_UNIT_TESTS
+    // Dedicated worker so CAT-initiated macros run off the dispatch lock.
+    asyncQueue_ = xQueueCreate(kAsyncQueueDepth, sizeof(AsyncMacroRequest));
+    if (asyncQueue_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create async macro queue");
+    } else if (xTaskCreate(asyncWorkerTask, "macro_async", 4096, this, 5, &asyncTaskHandle_) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create async macro worker task");
+        vQueueDelete(asyncQueue_);
+        asyncQueue_ = nullptr;
+    }
+#endif
     ESP_LOGI(TAG, "RadioMacroManager initialized");
+}
+
+RadioMacroManager::~RadioMacroManager() {
+    if (asyncTaskHandle_ != nullptr) {
+        vTaskDelete(asyncTaskHandle_);
+        asyncTaskHandle_ = nullptr;
+    }
+    if (asyncQueue_ != nullptr) {
+        vQueueDelete(asyncQueue_);
+        asyncQueue_ = nullptr;
+    }
+}
+
+void RadioMacroManager::asyncWorkerTask(void *pvParameters) {
+    auto *self = static_cast<RadioMacroManager *>(pvParameters);
+    AsyncMacroRequest req{};
+    while (true) {
+        if (xQueueReceive(self->asyncQueue_, &req, portMAX_DELAY) == pdTRUE) {
+            // Runs OUTSIDE the dispatch lock. Each inner CAT command still goes
+            // through dispatchMessage individually, acquiring/releasing the lock
+            // briefly per command rather than holding it for the whole macro.
+            switch (req.kind) {
+            case AsyncMacroRequest::Kind::Slot:
+                self->executeSlot(req.id);
+                break;
+            case AsyncMacroRequest::Kind::UserMacro:
+                self->executeUserMacro(req.id);
+                break;
+            }
+        }
+    }
+}
+
+esp_err_t RadioMacroManager::executeSlotAsync(uint8_t slot) {
+    if (asyncQueue_ == nullptr) {
+        ESP_LOGE(TAG, "Async macro worker unavailable - cannot execute slot %u", slot);
+        return ESP_ERR_INVALID_STATE;
+    }
+    const AsyncMacroRequest req{AsyncMacroRequest::Kind::Slot, slot};
+    if (xQueueSend(asyncQueue_, &req, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "Async macro queue full - rejecting slot %u", slot);
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
 }
 
     bool RadioMacroManager::executeTransverterMacro(const bool enable) {
@@ -119,12 +174,18 @@ RadioMacroManager::RadioMacroManager(RadioManager &radioManager)
     bool RadioMacroManager::sendCommandSequence(const std::vector<std::string> &commands, const int delayMs) const {
         ESP_LOGI(TAG, "Sending command sequence of %zu commands", commands.size());
 
+        // Run every command in the sequence, but track whether all of them were
+        // accepted so callers (and their error branches) can react to a failure.
+        bool allSucceeded = true;
         for (size_t i = 0; i < commands.size(); ++i) {
             const auto &command = commands[i];
             ESP_LOGI(TAG, "Sending command %zu/%zu: %s", i + 1, commands.size(), command.c_str());
 
             // Use dispatchMessage for proper mutex serialization
-            radioManager_.dispatchMessage(radioManager_.getMacroCATHandler(), command);
+            if (!radioManager_.dispatchMessage(radioManager_.getMacroCATHandler(), command)) {
+                ESP_LOGW(TAG, "Command %zu/%zu failed to dispatch: %s", i + 1, commands.size(), command.c_str());
+                allSucceeded = false;
+            }
 
             // CRITICAL FIX: Always yield CPU to prevent starving TCA8418 task during rapid command sequences
             // This ensures button processing continues during macro execution
@@ -136,8 +197,12 @@ RadioMacroManager::RadioMacroManager(RadioManager &radioManager)
             }
         }
 
-        ESP_LOGV(TAG, "Command sequence completed successfully");
-        return true;
+        if (allSucceeded) {
+            ESP_LOGV(TAG, "Command sequence completed successfully");
+        } else {
+            ESP_LOGW(TAG, "Command sequence completed with dispatch failures");
+        }
+        return allSucceeded;
     }
 
     bool RadioMacroManager::validateRadioState() {

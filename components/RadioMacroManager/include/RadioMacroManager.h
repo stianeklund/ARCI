@@ -5,6 +5,9 @@
 #include <vector>
 #include <cstdint>
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
 
 namespace radio {
 
@@ -31,6 +34,11 @@ public:
      * @param radioManager Reference to RadioManager for dispatching commands
      */
     explicit RadioMacroManager(RadioManager& radioManager);
+    ~RadioMacroManager();
+
+    // Non-copyable, non-movable (owns a FreeRTOS task + queue)
+    RadioMacroManager(const RadioMacroManager&) = delete;
+    RadioMacroManager& operator=(const RadioMacroManager&) = delete;
 
     // =========================================================================
     // Semantic Macros (hardcoded complex operations)
@@ -102,6 +110,20 @@ public:
     esp_err_t executeSlot(uint8_t slot);
 
     /**
+     * @brief Enqueue an F-button slot macro for asynchronous execution
+     *
+     * Hands the slot to a dedicated worker task and returns immediately. Use this
+     * from CAT dispatch context (e.g. MXE) so the macro's per-command NVS reads and
+     * inter-command delays run OUTSIDE the dispatch lock; each inner CAT command then
+     * re-enters dispatchMessage individually, holding the lock only briefly.
+     *
+     * @param slot Slot number (0-11)
+     * @return ESP_OK if enqueued, ESP_ERR_NO_MEM if the queue is full,
+     *         ESP_ERR_INVALID_STATE if the worker is unavailable
+     */
+    esp_err_t executeSlotAsync(uint8_t slot);
+
+    /**
      * @brief Check if macro manager is ready to execute commands
      * @return true if initialized and ready
      */
@@ -134,6 +156,19 @@ private:
     RadioManager& radioManager_;
     std::string lastError_;
     std::string lastStatus_;
+
+    // Asynchronous execution worker: decouples CAT-initiated macro runs (MXE) from
+    // the dispatch lock. Requests are enqueued from dispatch context; the worker
+    // dequeues and runs the synchronous executeSlot/executeUserMacro off the lock.
+    struct AsyncMacroRequest {
+        enum class Kind : uint8_t { Slot, UserMacro };
+        Kind kind;
+        uint8_t id;
+    };
+    static constexpr size_t kAsyncQueueDepth = 4;
+    QueueHandle_t asyncQueue_ = nullptr;
+    TaskHandle_t asyncTaskHandle_ = nullptr;
+    static void asyncWorkerTask(void* pvParameters);
 
     /**
      * @brief Send a sequence of commands as an atomic operation
