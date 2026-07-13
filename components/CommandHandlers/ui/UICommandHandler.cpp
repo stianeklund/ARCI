@@ -108,7 +108,7 @@ namespace radio
             const int value = state.uiState.isActive() &&
                               state.uiState.getActiveControl() == UIControl::Power
                               ? state.uiState.currentValue.load()
-                              : state.transmitPower;
+                              : state.transmitPower.load();
             const std::string response = formatUIPC(value);
             sendToDisplayOnly(response, rm);
             return true;
@@ -160,7 +160,7 @@ namespace radio
             const int value = state.uiState.isActive() &&
                               state.uiState.getActiveControl() == UIControl::CarrierLevel
                               ? state.uiState.currentValue.load()
-                              : state.txMonitorLevel;
+                              : state.txMonitorLevel.load();
             const std::string response = formatUIML(value);
             sendToDisplayOnly(response, rm);
             return true;
@@ -220,7 +220,7 @@ namespace radio
                 return true;
             }
 
-            const int value = alreadyActive ? state.uiState.currentValue.load() : state.carrierLevel;
+            const int value = alreadyActive ? state.uiState.currentValue.load() : state.carrierLevel.load();
             sendToDisplayOnly(formatUICG(value), rm);
             return true;
         }
@@ -268,7 +268,7 @@ namespace radio
             const int value = state.uiState.isActive() &&
                               state.uiState.getActiveControl() == UIControl::NrLevel
                               ? state.uiState.currentValue.load()
-                              : state.nr1Level;
+                              : state.nr1Level.load();
             const std::string response = formatUIRL(value);
             sendToDisplayOnly(response, rm);
             return true;
@@ -317,7 +317,7 @@ namespace radio
             const int value = state.uiState.isActive() &&
                               state.uiState.getActiveControl() == UIControl::Nr2Speed
                               ? state.uiState.currentValue.load()
-                              : state.nr2Speed;
+                              : state.nr2Speed.load();
             const std::string response = formatUIRS(value);
             sendToDisplayOnly(response, rm);
             return true;
@@ -366,7 +366,7 @@ namespace radio
             const int value = state.uiState.isActive() &&
                               state.uiState.getActiveControl() == UIControl::NbLevel
                               ? state.uiState.currentValue.load()
-                              : state.noiseBlankerLevel;
+                              : state.noiseBlankerLevel.load();
             const std::string response = formatUINL(value);
             sendToDisplayOnly(response, rm);
             return true;
@@ -415,7 +415,7 @@ namespace radio
             const int value = state.uiState.isActive() &&
                               state.uiState.getActiveControl() == UIControl::ProcInputLevel
                               ? state.uiState.currentValue.load()
-                              : state.speechProcessorInLevel;
+                              : state.speechProcessorInLevel.load();
             const std::string response = formatUIPI(value);
             sendToDisplayOnly(response, rm);
             return true;
@@ -464,7 +464,7 @@ namespace radio
             const int value = state.uiState.isActive() &&
                               state.uiState.getActiveControl() == UIControl::ProcOutputLevel
                               ? state.uiState.currentValue.load()
-                              : state.speechProcessorOutLevel;
+                              : state.speechProcessorOutLevel.load();
             const std::string response = formatUIPO(value);
             sendToDisplayOnly(response, rm);
             return true;
@@ -513,7 +513,7 @@ namespace radio
             const int value = state.uiState.isActive() &&
                               state.uiState.getActiveControl() == UIControl::NotchFrequency
                               ? state.uiState.currentValue.load()
-                              : state.manualNotchFrequency;
+                              : state.manualNotchFrequency.load();
             const std::string response = formatUINF(value);
             sendToDisplayOnly(response, rm);
             return true;
@@ -985,7 +985,7 @@ namespace radio
             const int value = state.uiState.isActive() &&
                               state.uiState.getActiveControl() == UIControl::KeyingSpeed
                               ? state.uiState.currentValue.load()
-                              : state.keyingSpeed;
+                              : state.keyingSpeed.load();
             const std::string response = formatUIKS(value);
             sendToDisplayOnly(response, rm);
             return true;

@@ -212,31 +212,31 @@ namespace radio
             {
             case CommandSource::UsbCdc0:
                 responseMode = state.usbCdc0AiMode.load();
-                ESP_LOGI(TAG, "AI query from %s -> AI%d;", RadioCommand::sourceName(command.source).data(),
+                ESP_LOGV(TAG, "AI query from %s -> AI%d;", RadioCommand::sourceName(command.source).data(),
                          responseMode);
                 respondToSource(command, formatAIResponse(responseMode), usbSerial, radioManager);
                 break;
             case CommandSource::UsbCdc1:
                 responseMode = state.usbCdc1AiMode.load();
-                ESP_LOGI(TAG, "AI query from %s -> AI%d;", RadioCommand::sourceName(command.source).data(),
+                ESP_LOGV(TAG, "AI query from %s -> AI%d;", RadioCommand::sourceName(command.source).data(),
                          responseMode);
                 respondToSource(command, formatAIResponse(responseMode), usbSerial, radioManager);
                 break;
             case CommandSource::Tcp0:
                 responseMode = state.tcp0AiMode.load();
-                ESP_LOGI(TAG, "AI query from %s -> AI%d;", RadioCommand::sourceName(command.source).data(),
+                ESP_LOGV(TAG, "AI query from %s -> AI%d;", RadioCommand::sourceName(command.source).data(),
                          responseMode);
                 radioManager.sendToSource(CommandSource::Tcp0, formatAIResponse(responseMode));
                 break;
             case CommandSource::Tcp1:
                 responseMode = state.tcp1AiMode.load();
-                ESP_LOGI(TAG, "AI query from %s -> AI%d;", RadioCommand::sourceName(command.source).data(),
+                ESP_LOGV(TAG, "AI query from %s -> AI%d;", RadioCommand::sourceName(command.source).data(),
                          responseMode);
                 radioManager.sendToSource(CommandSource::Tcp1, formatAIResponse(responseMode));
                 break;
             case CommandSource::Display:
                 responseMode = state.displayAiMode.load();
-                ESP_LOGI(TAG, "AI query from %s -> AI%d;", RadioCommand::sourceName(command.source).data(),
+                ESP_LOGV(TAG, "AI query from %s -> AI%d;", RadioCommand::sourceName(command.source).data(),
                          responseMode);
                 radioManager.sendToDisplay(formatAIResponse(responseMode));
                 break;
@@ -262,7 +262,7 @@ namespace radio
                 return false;
             }
 
-            ESP_LOGI(TAG, "AI SET from %s: %s -> client mode AI%d;",
+            ESP_LOGV(TAG, "AI SET from %s: %s -> client mode AI%d;",
                      RadioCommand::sourceName(command.source).data(), command.originalMessage.c_str(), mode);
             updateClientAIMode(command.source, mode, radioSerial, radioManager);
             return true;
@@ -401,23 +401,17 @@ namespace radio
             // Note: Actual power control should be handled by hardware layer
             if (shouldSendToRadio(cmd))
             {
-                const std::string cmdStr = formatPSResponse(powerState);
                 if (powerState == PS_OFF)
                 {
-                    // Send PS0 multiple times to ensure radio actually powers off
-                    // TS-590SG may need multiple commands during busy periods
-                    ESP_LOGI(TAG, "⚡ Sending PS0 to radio (3x to ensure power off)");
-                    for (int i = 0; i < 3; ++i)
-                    {
-                        sendToRadio(radioSerial, cmdStr);
-                        if (i < 2)
-                        {
-                            vTaskDelay(pdMS_TO_TICKS(50)); // Small delay between sends
-                        }
-                    }
+                    // PS0 needs multiple paced sends (TS-590SG may drop commands during
+                    // busy periods). This handler runs under the dispatch lock, so the
+                    // retries + delays are moved to a one-shot task off the lock.
+                    ESP_LOGI(TAG, "⚡ Scheduling PS0 to radio (3x, off dispatch lock)");
+                    rm.sendPowerOffToRadioAsync();
                 }
                 else
                 {
+                    const std::string cmdStr = formatPSResponse(powerState);
                     ESP_LOGD(TAG, "sending to radio: %s", cmdStr.c_str());
                     sendToRadio(radioSerial, cmdStr);
                 }
@@ -476,7 +470,9 @@ namespace radio
                 {
                     ESP_LOGI(TAG, "Radio reported PS1 - enabling interface keepAlive and boot sequence");
                     rm.performBootSequence();
-                    rm.syncTransverterMenuSettings();
+                    // Deferred: this answer is processed under the dispatch lock; the paced
+                    // menu-sync queries must not hold the lock (they run in a one-shot task).
+                    rm.syncTransverterMenuSettingsAsync();
                 }
                 else
                 {

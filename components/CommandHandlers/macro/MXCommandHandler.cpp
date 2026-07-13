@@ -106,6 +106,10 @@ bool MXCommandHandler::handleMXW(const RadioCommand &command,
         return true;
     }
 
+    // TODO(dispatch-lock): setMacro() performs an NVS commit under the dispatch lock.
+    // This is a low-frequency, user-initiated config write (not a hot path), so it is
+    // left inline for now; the ack below reports the actual commit result. If this ever
+    // shows up as dispatch contention, defer the commit to a worker (see MXE/NvsManager).
     esp_err_t err = macroStorage.setMacro(macro_id, macro);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to save macro %d: %s", macro_id, esp_err_to_name(err));
@@ -288,11 +292,16 @@ bool MXCommandHandler::handleMXE(const RadioCommand &command,
         return true;
     }
 
-    esp_err_t err = macroManager->executeSlot(slot_idx);
+    // Enqueue for asynchronous execution: executeSlot/executeUserMacro do NVS reads
+    // and per-command vTaskDelay, and this handler runs under the dispatch lock. Running
+    // the macro on a worker task keeps the lock free so other interfaces' dispatch does
+    // not time out while a multi-command macro plays back. (ButtonHandler still calls
+    // executeSlot directly from its own task; that path is already lock-free.)
+    esp_err_t err = macroManager->executeSlotAsync(slot_idx);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to execute macro from slot %d: %s", slot_num, esp_err_to_name(err));
+        ESP_LOGW(TAG, "Failed to queue macro from slot %d: %s", slot_num, esp_err_to_name(err));
     } else {
-        ESP_LOGI(TAG, "MXE executed macro from slot %d", slot_num);
+        ESP_LOGI(TAG, "MXE queued macro from slot %d for async execution", slot_num);
     }
 
     return true;
@@ -317,6 +326,9 @@ bool MXCommandHandler::handleMXD(const RadioCommand &command,
         return true;
     }
 
+    // TODO(dispatch-lock): deleteMacro() performs an NVS commit under the dispatch lock.
+    // Same rationale as MXW: low-frequency config write, ack reports the real result;
+    // defer to a worker if it ever becomes a contention source.
     esp_err_t err = storage::MacroStorage::instance().deleteMacro(macro_id);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to delete macro %d: %s", macro_id, esp_err_to_name(err));
