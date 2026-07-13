@@ -23,10 +23,13 @@ using CommandHandlerPtr = std::unique_ptr<ICommandHandler>;
  * @brief Statistics for command dispatching with error response tracking
  */
 struct DispatcherStatistics {
-    size_t totalCommandsDispatched{0};
-    size_t commandsHandled{0};
-    size_t commandsUnhandled{0};
-    size_t handlerErrors{0};
+    // Plain counters are written from multiple tasks without the mutex, so they are
+    // atomic. statsMutex_ (in CommandDispatcher) covers only the non-atomic error /
+    // timing / string fields below.
+    std::atomic<uint32_t> totalCommandsDispatched{0};
+    std::atomic<uint32_t> commandsHandled{0};
+    std::atomic<uint32_t> commandsUnhandled{0};
+    std::atomic<uint32_t> handlerErrors{0};
     std::atomic<int32_t> currentProcessingDepth{0};  // Current commands being processed simultaneously (signed to catch underflow)
     std::atomic<int32_t> maxProcessingDepth{0};      // Peak processing depth observed
     
@@ -53,10 +56,10 @@ struct DispatcherStatistics {
 
     // Copy constructor to handle atomic members
     DispatcherStatistics(const DispatcherStatistics& other)
-        : totalCommandsDispatched(other.totalCommandsDispatched),
-          commandsHandled(other.commandsHandled),
-          commandsUnhandled(other.commandsUnhandled),
-          handlerErrors(other.handlerErrors),
+        : totalCommandsDispatched(other.totalCommandsDispatched.load()),
+          commandsHandled(other.commandsHandled.load()),
+          commandsUnhandled(other.commandsUnhandled.load()),
+          handlerErrors(other.handlerErrors.load()),
           currentProcessingDepth(other.currentProcessingDepth.load()),
           maxProcessingDepth(other.maxProcessingDepth.load()),
           totalErrorResponses(other.totalErrorResponses),
@@ -75,10 +78,10 @@ struct DispatcherStatistics {
     // Assignment operator to handle atomic members
     DispatcherStatistics& operator=(const DispatcherStatistics& other) {
         if (this != &other) {
-            totalCommandsDispatched = other.totalCommandsDispatched;
-            commandsHandled = other.commandsHandled;
-            commandsUnhandled = other.commandsUnhandled;
-            handlerErrors = other.handlerErrors;
+            totalCommandsDispatched.store(other.totalCommandsDispatched.load());
+            commandsHandled.store(other.commandsHandled.load());
+            commandsUnhandled.store(other.commandsUnhandled.load());
+            handlerErrors.store(other.handlerErrors.load());
             currentProcessingDepth.store(other.currentProcessingDepth.load());
             maxProcessingDepth.store(other.maxProcessingDepth.load());
             totalErrorResponses = other.totalErrorResponses;
@@ -103,10 +106,10 @@ struct DispatcherStatistics {
     }
 
     void reset() {
-        totalCommandsDispatched = 0;
-        commandsHandled = 0;
-        commandsUnhandled = 0;
-        handlerErrors = 0;
+        totalCommandsDispatched.store(0);
+        commandsHandled.store(0);
+        commandsUnhandled.store(0);
+        handlerErrors.store(0);
         currentProcessingDepth.store(0);
         maxProcessingDepth.store(0);
         totalErrorResponses = 0;
@@ -243,7 +246,7 @@ private:
     std::vector<CommandHandlerPtr> handlers_;
     std::array<ICommandHandler*, HASH_TABLE_SIZE> commandMap_{};  // Zero-initialized
     DispatcherStatistics stats_;
-    mutable RtosMutex statsMutex_;  // Protects stats_ string fields for thread-safe access
+    mutable RtosMutex statsMutex_;  // Protects only the non-atomic error/timing/string fields of stats_ (counters are atomic)
 
     static constexpr const char* TAG = "CommandDispatcher";
 };
