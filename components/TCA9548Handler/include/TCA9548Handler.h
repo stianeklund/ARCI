@@ -30,11 +30,84 @@ public:
     esp_err_t initialize(i2c_master_bus_handle_t i2cBusHandle);
 
     /**
-     * @brief Select a specific channel (0-7)
+     * @brief Select a specific channel (0-7) and release the mux immediately
      * @param channel Channel number (0-7), or 0xFF to disable all
      * @return ESP_OK on success
+     *
+     * @warning This selects the channel and drops the mutex before returning, so
+     * it does NOT protect a subsequent device transaction against a concurrent
+     * channel switch. It is only safe for single-threaded init/diagnostic use
+     * (bus scans, boot-time setup). Any code that selects a channel and then
+     * transacts with a device behind the mux MUST use lockChannel()/ChannelGuard
+     * so the channel stays fixed for the whole transaction.
      */
     esp_err_t selectChannel(uint8_t channel);
+
+    /**
+     * @brief RAII guard that holds the mux on one channel across a transaction
+     *
+     * Acquiring the guard takes the mux mutex and selects the requested channel,
+     * then keeps the mutex held until the guard is destroyed. This makes the
+     * channel-select and the caller's device I2C transaction atomic: no other
+     * task can switch the mux to a different channel (or a same-address sibling
+     * device on another channel) in between.
+     *
+     * A default-constructed guard is a valid no-op (used when a consumer has no
+     * mux configured). Construct a real guard via TCA9548Handler::lockChannel().
+     * Check valid() before transacting; if false, the channel could not be
+     * secured (mutex timeout or channel-select I2C failure) and the caller must
+     * bail out instead of transacting on an unknown channel.
+     */
+    class ChannelGuard {
+    public:
+        // Default: no mux held, valid no-op. Safe to transact directly.
+        ChannelGuard() noexcept : m_owner(nullptr), m_valid(true), m_locked(false) {}
+        ~ChannelGuard();
+
+        // Non-copyable
+        ChannelGuard(const ChannelGuard&) = delete;
+        ChannelGuard& operator=(const ChannelGuard&) = delete;
+
+        // Movable: transfers mutex ownership; source becomes a no-op guard
+        ChannelGuard(ChannelGuard&& other) noexcept
+            : m_owner(other.m_owner), m_valid(other.m_valid), m_locked(other.m_locked) {
+            other.m_owner = nullptr;
+            other.m_valid = true;
+            other.m_locked = false;
+        }
+        ChannelGuard& operator=(ChannelGuard&& other) noexcept {
+            if (this != &other) {
+                release();
+                m_owner = other.m_owner;
+                m_valid = other.m_valid;
+                m_locked = other.m_locked;
+                other.m_owner = nullptr;
+                other.m_valid = true;
+                other.m_locked = false;
+            }
+            return *this;
+        }
+
+        /// @return true if the channel is secured (or no mux was needed)
+        bool valid() const { return m_valid; }
+        explicit operator bool() const { return m_valid; }
+
+    private:
+        friend class TCA9548Handler;
+        ChannelGuard(TCA9548Handler* owner, uint8_t channel);
+        void release();
+
+        TCA9548Handler* m_owner;
+        bool m_valid;
+        bool m_locked;  // true while this guard holds the mux mutex
+    };
+
+    /**
+     * @brief Acquire the mux, select @p channel, and hold it until the guard dies
+     * @param channel Channel number (0-7), or 0xFF to disable all
+     * @return A ChannelGuard; call valid() before transacting
+     */
+    ChannelGuard lockChannel(uint8_t channel);
 
     /**
      * @brief Disable all channels

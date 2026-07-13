@@ -116,6 +116,74 @@ esp_err_t TCA9548Handler::selectChannel(uint8_t channel)
     return ESP_OK;
 }
 
+TCA9548Handler::ChannelGuard TCA9548Handler::lockChannel(uint8_t channel)
+{
+    // Prvalue return: the guard is constructed in place (channel selected, mutex
+    // held) and its ownership is handed to the caller.
+    return ChannelGuard(this, channel);
+}
+
+TCA9548Handler::ChannelGuard::ChannelGuard(TCA9548Handler* owner, uint8_t channel)
+    : m_owner(owner)
+    , m_valid(false)
+    , m_locked(false)
+{
+    if (owner == nullptr) {
+        return;
+    }
+
+    if (!owner->m_initialized) {
+        ESP_LOGE(TAG, "TCA9548 not initialized");
+        return;
+    }
+
+    if (owner->m_mutex == nullptr) {
+        ESP_LOGE(TAG, "TCA9548 mutex not created");
+        return;
+    }
+
+    if (channel != 0xFF && channel >= TCA9548Handler::MAX_CHANNELS) {
+        ESP_LOGE(TAG, "Invalid channel %d (must be 0-7 or 0xFF)", channel);
+        return;
+    }
+
+    // Take the mux mutex with a bounded timeout and hold it for the whole
+    // lifetime of the guard so select + transaction stay atomic.
+    if (xSemaphoreTake(owner->m_mutex, pdMS_TO_TICKS(TCA9548Handler::MUTEX_TIMEOUT_MS)) != pdTRUE) {
+        ESP_LOGE(TAG, "Failed to acquire TCA9548 mutex within %dms", TCA9548Handler::MUTEX_TIMEOUT_MS);
+        return;
+    }
+    m_locked = true;
+
+    // Calculate channel mask (0x00 = all disabled, 0x01-0x80 = single channel)
+    uint8_t channelMask = (channel == 0xFF) ? 0x00 : (1 << channel);
+
+    esp_err_t ret = owner->writeChannelRegister(channelMask);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to select channel %d", channel);
+        xSemaphoreGive(owner->m_mutex);  // Release mutex; channel not secured
+        m_locked = false;
+        return;  // m_valid stays false -> caller must bail out
+    }
+
+    owner->m_currentChannel = channel;
+    ESP_LOGD(TAG, "Locked channel %d (mask 0x%02X)", channel, channelMask);
+    m_valid = true;
+}
+
+TCA9548Handler::ChannelGuard::~ChannelGuard()
+{
+    release();
+}
+
+void TCA9548Handler::ChannelGuard::release()
+{
+    if (m_locked && m_owner != nullptr && m_owner->m_mutex != nullptr) {
+        xSemaphoreGive(m_owner->m_mutex);
+    }
+    m_locked = false;
+}
+
 esp_err_t TCA9548Handler::disableAllChannels()
 {
     return selectChannel(0xFF);

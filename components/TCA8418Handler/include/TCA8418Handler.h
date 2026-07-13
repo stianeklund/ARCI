@@ -149,11 +149,17 @@ private:
     
     // Improved event processing to prevent FIFO overflow
     uint32_t m_lastKeyEventTime;
-    uint32_t m_lastIntTime;  // Track INT pin timing for watchdog
+    uint32_t m_lastIntTime;   // Timestamp (ms) INT was last serviced/observed HIGH; watchdog baseline
+    bool m_intPrevLow;        // Was INT observed LOW on the previous stuck-check? (edge tracking)
+    uint32_t m_consecutiveTimeouts; // Per-instance count of semaphore-wait timeouts (starvation diag)
     static constexpr uint32_t MIN_KEY_INTERVAL_MS = 10; // Minimum 10ms between key events
     static constexpr uint32_t MAX_EVENT_BATCH_SIZE = 32; // Maximum events to process in one batch
-    static constexpr uint32_t KEY_TASK_STACK_WORDS = 6144; // ~24 KB stack to accommodate logging/path handling
-    static constexpr uint32_t INT_STUCK_TIMEOUT_MS = 50; // Max time INT can stay low without events
+    // xTaskCreate() takes the stack size in BYTES (not words). 6144 bytes (6 KB) is
+    // comfortably safe: ButtonHandler keypad callbacks are now enqueue-only (they push
+    // a small POD onto a queue and return), so the dispatch chain off this task uses
+    // very little stack. High-water-mark logging in keyTask() tracks actual headroom.
+    static constexpr uint32_t KEY_TASK_STACK_BYTES = 6144;
+    static constexpr uint32_t INT_STUCK_TIMEOUT_MS = 50; // Max time INT can stay continuously low
     
     // Event batch buffer for drain-to-empty processing
     struct EventBatch {
@@ -167,9 +173,7 @@ private:
     void scanI2CBus() const;
     bool writeRegister(uint8_t reg, uint8_t value);
     bool readRegister(uint8_t reg, uint8_t& value);
-    bool readMultipleRegisters(uint8_t startReg, uint8_t* buffer, uint8_t count); // Optimized batch I2C
     bool configureKeypadEngine();
-    esp_err_t selectMuxChannel(); // Select TCA9548 channel if configured
     void clearPendingInterruptsOnTCA(); // Helper to clear INT_STAT and FIFO
     MatrixKey decodeKeyEvent(uint8_t eventByte);
     

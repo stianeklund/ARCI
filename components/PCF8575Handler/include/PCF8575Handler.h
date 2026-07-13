@@ -6,6 +6,7 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "esp_err.h"
+#include <atomic>
 #include <cstdint>
 #include <functional>
 
@@ -116,6 +117,12 @@ private:
     TaskHandle_t m_taskHandle;
     SemaphoreHandle_t m_interruptSemaphore;
     PinChangeCallback m_changeCallback;
+    // Publishes m_changeCallback to the interrupt task. The task starts in
+    // initialize() but the callback is registered later (setChangeCallback),
+    // so the task must not touch a half-assigned std::function. Set with
+    // release AFTER m_changeCallback is assigned; checked with acquire before
+    // invocation. One-shot publish: the callback is registered exactly once.
+    std::atomic<bool> m_callbackReady{false};
 
     // Debouncing
     int64_t m_lastReadTime;
@@ -127,7 +134,6 @@ private:
     esp_err_t writePort(uint16_t value);
     esp_err_t readPort(uint16_t& value);
     void processChanges(uint16_t newState, uint16_t oldState);
-    esp_err_t selectMuxChannel();
 
     static void IRAM_ATTR interruptHandler(void* arg);
     static void interruptTask(void* param);

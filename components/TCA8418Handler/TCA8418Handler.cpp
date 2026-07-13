@@ -24,7 +24,9 @@ TCA8418Handler::TCA8418Handler(gpio_num_t interruptPin, uint8_t numRows, uint8_t
       , m_numRows(numRows > 0 && numRows <= 8 ? numRows : 5)
       , m_numCols(numCols > 0 && numCols <= 10 ? numCols : 10)
       , m_lastKeyEventTime(0)
-      , m_lastIntTime(0) {
+      , m_lastIntTime(0)
+      , m_intPrevLow(false)
+      , m_consecutiveTimeouts(0) {
     ESP_LOGD(TAG, "TCA8418Handler created with %dx%d matrix configuration", m_numRows, m_numCols);
 }
 
@@ -110,7 +112,7 @@ bool TCA8418Handler::initialize(i2c_master_bus_handle_t i2cBusHandle) {
         return false;
     }
 
-    if (xTaskCreate(keyTask, "tca8418_task", KEY_TASK_STACK_WORDS, this, 12, &m_keyTaskHandle) != pdPASS) {
+    if (xTaskCreate(keyTask, "tca8418_task", KEY_TASK_STACK_BYTES, this, 12, &m_keyTaskHandle) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create key task");
         vSemaphoreDelete(m_keySemaphore);
         m_keySemaphore = nullptr;
@@ -241,13 +243,6 @@ void TCA8418Handler::setMuxChannel(TCA9548Handler* muxHandler, uint8_t channel) 
     m_muxChannel = channel;
 }
 
-esp_err_t TCA8418Handler::selectMuxChannel() {
-    if (m_muxHandler != nullptr && m_muxChannel != 0xFF) {
-        return m_muxHandler->selectChannel(m_muxChannel);
-    }
-    return ESP_OK; // No mux, proceed normally
-}
-
 bool TCA8418Handler::configureKeypadEngine() {
     // Software reset sequence
     if (!writeRegister(REG_CFG, 0x00)) {
@@ -347,14 +342,18 @@ void TCA8418Handler::clearPendingInterruptsOnTCA() {
 }
 
 bool TCA8418Handler::writeRegister(uint8_t reg, uint8_t value) {
-    // CRITICAL: Must re-select mux channel before EVERY I2C operation
-    // Multiple TCA8418 instances share the same address (0x34) on different channels
-    // Interrupts can fire at any time and switch channels
-    esp_err_t mux_ret = selectMuxChannel();
-    if (mux_ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to select mux channel %d before write: %s",
-                 m_muxChannel, esp_err_to_name(mux_ret));
-        return false;
+    // CRITICAL: Hold the mux on this device's channel across the whole transaction.
+    // Multiple TCA8418 instances share the same address (0x34) on different channels;
+    // a preempting task (or another keypad's interrupt handler) must not be able to
+    // switch the mux between the channel-select and this write, or the write would
+    // land on the WRONG keypad. The guard keeps the channel fixed until it destructs.
+    TCA9548Handler::ChannelGuard guard;
+    if (m_muxHandler != nullptr && m_muxChannel != 0xFF) {
+        guard = m_muxHandler->lockChannel(m_muxChannel);
+        if (!guard.valid()) {
+            ESP_LOGE(TAG, "Failed to lock mux channel %d before write", m_muxChannel);
+            return false;
+        }
     }
 
     uint8_t write_buf[2] = {reg, value};
@@ -370,14 +369,18 @@ bool TCA8418Handler::writeRegister(uint8_t reg, uint8_t value) {
 }
 
 bool TCA8418Handler::readRegister(uint8_t reg, uint8_t &value) {
-    // CRITICAL: Must re-select mux channel before EVERY I2C operation
-    // Multiple TCA8418 instances share the same address (0x34) on different channels
-    // Interrupts can fire at any time and switch channels
-    esp_err_t mux_ret = selectMuxChannel();
-    if (mux_ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to select mux channel %d before read: %s",
-                 m_muxChannel, esp_err_to_name(mux_ret));
-        return false;
+    // CRITICAL: Hold the mux on this device's channel across the whole transaction.
+    // Multiple TCA8418 instances share the same address (0x34) on different channels;
+    // a preempting task must not be able to switch the mux between the channel-select
+    // and this read, or the read would return data from the WRONG keypad. The guard
+    // keeps the channel fixed until it destructs.
+    TCA9548Handler::ChannelGuard guard;
+    if (m_muxHandler != nullptr && m_muxChannel != 0xFF) {
+        guard = m_muxHandler->lockChannel(m_muxChannel);
+        if (!guard.valid()) {
+            ESP_LOGE(TAG, "Failed to lock mux channel %d before read", m_muxChannel);
+            return false;
+        }
     }
 
     // Write register address then read data
@@ -437,26 +440,27 @@ void TCA8418Handler::keyTask(void *param) {
 
             vTaskDelay(pdMS_TO_TICKS(50));
         } else {
-            // MACRO DIAGNOSTIC: Track consecutive timeouts to detect task starvation
-            static uint32_t consecutiveTimeouts = 0;
-            
+            // MACRO DIAGNOSTIC: Track consecutive timeouts to detect task starvation.
+            // Per-instance member (was a function-local static shared across both
+            // keypad instances, which corrupted the diagnostic when two exist).
+
             // Interrupt mode: wait for semaphore from ISR with timeout for health checks
             if (xSemaphoreTake(handler->m_keySemaphore, pdMS_TO_TICKS(500)) == pdTRUE) {
                 // Reset timeout counter when we successfully process events
-                consecutiveTimeouts = 0;
+                handler->m_consecutiveTimeouts = 0;
                 handler->handleKeyEvents();
             } else {
                 // Timeout fallback: if INT is asserted but edge was missed, process events
                 if (gpio_get_level(handler->m_interruptPin) == 0) {
                     handler->handleKeyEvents();
-                    consecutiveTimeouts = 0;
+                    handler->m_consecutiveTimeouts = 0;
                     continue;
                 }
 
-                consecutiveTimeouts++;
-                if (consecutiveTimeouts >= 3) {
-                    ESP_LOGV(TAG, "TCA8418 task timeout %lu times - possible CPU starvation during macro execution", consecutiveTimeouts);
-                    consecutiveTimeouts = 0;
+                handler->m_consecutiveTimeouts++;
+                if (handler->m_consecutiveTimeouts >= 3) {
+                    ESP_LOGV(TAG, "TCA8418 task timeout %lu times - possible CPU starvation during macro execution", handler->m_consecutiveTimeouts);
+                    handler->m_consecutiveTimeouts = 0;
                 }
 
                 // Timeout occurred - perform health check
@@ -479,42 +483,52 @@ void TCA8418Handler::keyTask(void *param) {
 }
 
 void TCA8418Handler::handleKeyEvents() {
-    // Update interrupt pin timing for watchdog
-    m_lastIntTime = esp_timer_get_time() / 1000; // Convert to milliseconds
-    
-    // Check for stuck interrupt pin before processing
+    // Check for a stuck INT line BEFORE processing. Deliberately do NOT prime the
+    // watchdog timestamp here: the stuck detector needs the INT-low age to
+    // accumulate across calls, otherwise it always measures ~0 and never fires.
+    // m_lastIntTime is refreshed only when INT is observed HIGH (in
+    // checkStuckInterruptPin) or after events are actually processed (below).
     if (checkStuckInterruptPin()) {
         ESP_LOGW(TAG, "Stuck interrupt pin detected, forcing recovery");
         return;
     }
-    
+
     // Drain all events to empty in one pass - prevents interrupt storms
     EventBatch batch = drainEventsToEmpty();
-    
+
     // Handle critical conditions first
     if (batch.hasOverflow) {
         handleOverflowRecovery();
     }
-    
+
     if (batch.hasKeyLock) {
         handleKeyLockRecovery();
     }
-    
+
     // Process all batched events
     if (batch.count > 0) {
         processBatchedEvents(batch);
-        ESP_LOGD(TAG, "Processed batch of %d events (overflow: %s, keylock: %s)", 
+        ESP_LOGD(TAG, "Processed batch of %d events (overflow: %s, keylock: %s)",
                  batch.count, batch.hasOverflow ? "YES" : "NO", batch.hasKeyLock ? "YES" : "NO");
+        // Successful event processing means the INT line is being serviced: reset
+        // the stuck-watchdog baseline so a busy key burst never looks "stuck".
+        m_lastIntTime = esp_timer_get_time() / 1000;
     }
-    
+
     // Single INT_STAT clear after all processing - critical for proper interrupt handling
     writeRegister(REG_INT_STAT, 0xFF);
 
-    // Race condition guard: if a new event arrived during processing, INT stays LOW
-    // and the edge-triggered ISR won't fire (no transition). Re-give semaphore so
-    // the task immediately re-enters to drain the remaining events.
-    if (!m_usePolling && gpio_get_level(m_interruptPin) == 0) {
-        xSemaphoreGive(m_keySemaphore);
+    if (!m_usePolling) {
+        if (gpio_get_level(m_interruptPin) == 0) {
+            // Race condition guard: a new event arrived during processing (or the line
+            // is stuck low). The edge-triggered ISR won't fire without a transition, so
+            // re-give the semaphore to re-enter and drain / let the watchdog age it.
+            xSemaphoreGive(m_keySemaphore);
+        } else {
+            // INT deasserted (HIGH) => line healthy. Refresh the watchdog baseline.
+            m_lastIntTime = esp_timer_get_time() / 1000;
+            m_intPrevLow = false;
+        }
     }
 }
 
@@ -823,49 +837,46 @@ bool TCA8418Handler::checkStuckInterruptPin() {
     if (m_usePolling) {
         return false; // Not applicable in polling mode
     }
-    
-    // Check if INT pin is stuck low without events
-    int pinLevel = gpio_get_level(m_interruptPin);
-    uint32_t currentTime = esp_timer_get_time() / 1000; // Convert to milliseconds
-    
-    if (pinLevel == 0) { // INT is active (low)
-        if (currentTime - m_lastIntTime > INT_STUCK_TIMEOUT_MS) {
-            ESP_LOGW(TAG, "⚠️  INT pin stuck low for %lu ms - forcing recovery", 
-                     currentTime - m_lastIntTime);
-            
-            // Force a complete drain and clear
-            EventBatch emergencyBatch = drainEventsToEmpty();
-            if (emergencyBatch.hasOverflow) handleOverflowRecovery();
-            if (emergencyBatch.hasKeyLock) handleKeyLockRecovery();
-            
-            // Clear interrupt status aggressively
-            writeRegister(REG_INT_STAT, 0xFF);
-            
-            // Update timing
-            m_lastIntTime = currentTime;
-            
-            ESP_LOGI(TAG, "🔧 Forced recovery completed, drained %d events", emergencyBatch.count);
-            return true;
-        }
-    } else {
-        // INT is high (inactive) - update timing
-        m_lastIntTime = currentTime;
-    }
-    
-    return false;
-}
 
-// Optimized I2C batch read for better performance during rapid button presses
-bool TCA8418Handler::readMultipleRegisters(uint8_t startReg, uint8_t* buffer, uint8_t count) {
-    // Use auto-increment feature (CFG_AI bit) for efficient sequential reads
-    esp_err_t ret = i2c_master_transmit_receive(m_i2cDevHandle, &startReg, 1, buffer, count, 1000);
-    
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "I2C batch read from reg 0x%02X (count=%d) failed: %s", 
-                 startReg, count, esp_err_to_name(ret));
+    const int pinLevel = gpio_get_level(m_interruptPin);
+    const uint32_t currentTime = esp_timer_get_time() / 1000; // Convert to milliseconds
+
+    if (pinLevel != 0) {
+        // INT deasserted (HIGH) => line healthy. Reset the low-duration baseline so
+        // the next assertion measures how long INT has been CONTINUOUSLY low.
+        m_lastIntTime = currentTime;
+        m_intPrevLow = false;
         return false;
     }
-    
-    ESP_LOGV(TAG, "I2C batch read successful: reg=0x%02X, count=%d", startReg, count);
-    return true;
+
+    // INT is asserted (LOW). Start the clock on the HIGH->LOW transition (or first
+    // observation) so the watchdog measures continuous low time, not the idle gap
+    // since the last event. Without this, a normal keypress after a long idle would
+    // read a huge age and trip a false "stuck" recovery that discards the press.
+    if (!m_intPrevLow) {
+        m_intPrevLow = true;
+        m_lastIntTime = currentTime;
+        return false;
+    }
+
+    if (currentTime - m_lastIntTime > INT_STUCK_TIMEOUT_MS) {
+        ESP_LOGW(TAG, "⚠️  INT pin stuck low for %lu ms - forcing recovery",
+                 currentTime - m_lastIntTime);
+
+        // Force a complete drain and clear
+        EventBatch emergencyBatch = drainEventsToEmpty();
+        if (emergencyBatch.hasOverflow) handleOverflowRecovery();
+        if (emergencyBatch.hasKeyLock) handleKeyLockRecovery();
+
+        // Clear interrupt status aggressively
+        writeRegister(REG_INT_STAT, 0xFF);
+
+        // Restart the clock after recovery so we don't immediately re-trigger.
+        m_lastIntTime = currentTime;
+
+        ESP_LOGI(TAG, "🔧 Forced recovery completed, drained %d events", emergencyBatch.count);
+        return true;
+    }
+
+    return false;
 }
