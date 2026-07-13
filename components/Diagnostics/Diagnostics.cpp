@@ -125,13 +125,16 @@ void Diagnostics::printCpuStatus() {
     const uint32_t deltaIdle1 = idle1Runtime - m_lastIdle1Runtime;
     const uint32_t deltaTotal = totalRuntime - m_lastTotalTime;
 
-    // NOTE: On dual-core, totalRuntime is the combined runtime across BOTH cores,
-    // while deltaIdle0/deltaIdle1 are single-core idle deltas. Dividing a single-core
-    // idle delta by the combined total under-reports idle (and over-reports busy) per
-    // core. This is a known pre-existing math quirk, left unchanged here.
+    // totalRuntime is the COMBINED run-time across all cores, so per-core wall time
+    // over the interval is deltaTotal / core count. Normalize each single-core idle
+    // delta against that (not the combined total) or a fully idle core reads ~50%
+    // busy on a 2-core chip. Clamp to [0,100] to absorb counter rounding.
     if (deltaTotal > 0 && m_lastTotalTime > 0) {
-        const float idle0Percent = static_cast<float>(deltaIdle0) / deltaTotal * 100.0f;
-        const float idle1Percent = static_cast<float>(deltaIdle1) / deltaTotal * 100.0f;
+        const float perCoreDelta = static_cast<float>(deltaTotal) / CONFIG_FREERTOS_NUMBER_OF_CORES;
+
+        auto clampPercent = [](float p) { return p < 0.0f ? 0.0f : (p > 100.0f ? 100.0f : p); };
+        const float idle0Percent = clampPercent(perCoreDelta > 0.0f ? static_cast<float>(deltaIdle0) / perCoreDelta * 100.0f : 0.0f);
+        const float idle1Percent = clampPercent(perCoreDelta > 0.0f ? static_cast<float>(deltaIdle1) / perCoreDelta * 100.0f : 0.0f);
 
         const float core0Usage = 100.0f - idle0Percent;
         const float core1Usage = 100.0f - idle1Percent;
