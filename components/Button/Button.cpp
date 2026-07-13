@@ -41,13 +41,15 @@ void Button::update() {
 }
 
 void Button::handlePress() {
-    const int64_t now = getMillis();
-    
+    handlePress(getMillis());
+}
+
+void Button::handlePress(const int64_t nowMs) {
     // Only update if not already pressed (debouncing handled by TCA8418)
     if (!m_state) {
         m_state = true;
         m_stateChanged = true;
-        m_pressedTime = now;
+        m_pressedTime = nowMs;
         m_longPressed = false;
         m_longPressReported = false;
         m_shortPressReported = false;

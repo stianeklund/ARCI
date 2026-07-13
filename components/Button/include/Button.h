@@ -11,7 +11,11 @@ public:
     
     // Event-driven state updates (called by MatrixButton or hardware interrupt)
     void update();  // Still needed for long press timing logic
-    void handlePress();   // Called when physical button press detected
+    void handlePress();               // Press using the current time as the press instant
+    void handlePress(int64_t nowMs);  // Press using a caller-supplied press instant (ms).
+                                       // Used when the event is delivered via a queue so the
+                                       // recorded press time reflects when the key was actually
+                                       // pressed, not when the consumer drained the event.
     void handleRelease(); // Called when physical button release detected
 
     // Accessor methods for button state

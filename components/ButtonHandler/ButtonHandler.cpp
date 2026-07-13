@@ -4,7 +4,6 @@
 
 #include "../../include/pin_definitions.h"
 #include "../RadioMacroManager/include/RadioMacroManager.h"
-#include "FrequencyFormatter.h"
 #include "NvsManager.h"
 #include "RadioManager.h"
 #include "ISerialChannel.h"
@@ -29,6 +28,22 @@ static const char *const vfoNames[]  = {"VFO A", "VFO B", "Memory"};
 static const int         voxDelays[] = {150, 300, 500, 1000};
 static const char *const antNames[]  = {"ANT1", "ANT2"};
 
+namespace
+{
+// POD event carried on ButtonHandler's internal key-event queue. Enqueued by the
+// TCA8418 keypad callbacks (keypad task); drained and applied by buttonTask.
+struct MatrixKeyEvent
+{
+    uint8_t which;                  // 1 = left/right PCB matrix, 2 = F-button matrix
+    TCA8418Handler::MatrixKey key;  // key identifier delivered by the keypad callback
+    bool pressed;                   // raw TCA8418 state: false = key down, true = key up
+    int64_t timestampUs;            // esp_timer_get_time() captured at enqueue
+};
+
+// Depth chosen so a brief buttonTask stall cannot drop realistic human key bursts.
+constexpr UBaseType_t kMatrixEventQueueDepth = 24;
+}  // namespace
+
 ButtonHandler::ButtonHandler(RadioManager *radioManager, radio::RadioMacroManager *macroManager, NvsManager *nvsManager) :
     m_radioManager(*radioManager), m_macroManager(*macroManager), m_nvsManager(*nvsManager), m_taskHandle(nullptr)
 {
@@ -37,6 +52,14 @@ ButtonHandler::ButtonHandler(RadioManager *radioManager, radio::RadioMacroManage
     if (m_stopSemaphore == nullptr)
     {
         ESP_LOGE(TAG, "Failed to create stop semaphore");
+    }
+
+    // Create the internal key-event queue. Keypad callbacks enqueue onto this;
+    // buttonTask is the sole consumer and sole mutator of button state.
+    m_matrixEventQueue = xQueueCreate(kMatrixEventQueueDepth, sizeof(MatrixKeyEvent));
+    if (m_matrixEventQueue == nullptr)
+    {
+        ESP_LOGE(TAG, "Failed to create matrix key-event queue - matrix buttons will be inert");
     }
 
     // Note: loadModeMemoryFromNvs() must be called explicitly after nvs_flash_init()
@@ -50,6 +73,13 @@ ButtonHandler::~ButtonHandler()
     {
         vSemaphoreDelete(m_stopSemaphore);
         m_stopSemaphore = nullptr;
+    }
+
+    // Safe to delete only after buttonTask (the sole consumer) has exited via stop().
+    if (m_matrixEventQueue != nullptr)
+    {
+        vQueueDelete(m_matrixEventQueue);
+        m_matrixEventQueue = nullptr;
     }
 }
 
@@ -101,8 +131,49 @@ void ButtonHandler::buttonTask(void *arg)
 {
     ButtonHandler *handler = static_cast<ButtonHandler *>(arg);
 
+    // buttonTask is the SOLE owner of all MatrixButton/Button state. Keypad
+    // callbacks only enqueue events; every mutation and action dispatch happens
+    // below. We block up to one 50 ms cycle for the next key event so presses are
+    // applied promptly, while still running the periodic long-press timing/poll at
+    // a steady 50 ms cadence (matching the previous vTaskDelay(50) behaviour).
+    int64_t lastPeriodicMs = esp_timer_get_time() / 1000;
+
     while (handler->m_running.load(std::memory_order_acquire))
     {
+        if (handler->m_matrixEventQueue != nullptr)
+        {
+            // Wait up to one cycle for an event, then drain any burst without blocking.
+            MatrixKeyEvent event;
+            if (xQueueReceive(handler->m_matrixEventQueue, &event, pdMS_TO_TICKS(50)) == pdTRUE)
+            {
+                do
+                {
+                    if (event.which == 2)
+                    {
+                        handler->applyMatrixButton2Event(event.key, event.pressed, event.timestampUs);
+                    }
+                    else
+                    {
+                        handler->applyMatrixButtonEvent(event.key, event.pressed, event.timestampUs);
+                    }
+                } while (xQueueReceive(handler->m_matrixEventQueue, &event, 0) == pdTRUE);
+            }
+        }
+        else
+        {
+            // Degraded mode (queue creation failed): keep the periodic cadence only.
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+
+        // Run the periodic 50 ms work (long-press timing + poll) at a steady cadence,
+        // regardless of how many events were just drained.
+        const int64_t nowMs = esp_timer_get_time() / 1000;
+        if (nowMs - lastPeriodicMs < 50)
+        {
+            continue;
+        }
+        lastPeriodicMs = nowMs;
+
         // Update matrix buttons for long press timing - no GPIO polling needed
         for (auto &button : handler->m_matrixButtons | std::views::values)
         {
@@ -154,8 +225,6 @@ void ButtonHandler::buttonTask(void *arg)
 
         // Check for UI mode timeout (auto-dismiss popups)
         handler->m_radioManager.checkUITimeout();
-
-        vTaskDelay(pdMS_TO_TICKS(50)); // Reduced frequency since no GPIO polling
     }
 
     // Signal stop() that we're exiting cleanly
@@ -181,38 +250,6 @@ void ButtonHandler::updateButtonStates()
     {
         button.update();
     }
-}
-
-void ButtonHandler::togglePowerState()
-{
-    // Get current state before making any changes
-    uint8_t currentState = m_radioManager.getOnOffState();
-    bool keepAliveState = m_radioManager.getState().keepAlive.load();
-    ESP_LOGI(TAG, "Power toggle requested - Current onOffState: %d, keepAlive: %d", currentState, keepAliveState);
-
-    if (currentState == 0)
-    {
-        ESP_LOGI(TAG, "Turning interface ON - sending PS1 command");
-        // Request power on via CAT
-        m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), "PS1;");
-        ESP_LOGI(TAG, "PS1 command sent to LocalCATHandler");
-    }
-    else
-    {
-        ESP_LOGI(TAG, "Turning interface OFF - sending PS0 command");
-        // Request power off via CAT
-        m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), "PS0;");
-        ESP_LOGI(TAG, "PS0 command sent to LocalCATHandler");
-    }
-
-    // Note: State update happens asynchronously in PS command handler
-    // LED will be updated automatically in the main loop
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    // Log the new state after processing
-    uint8_t newState = m_radioManager.getOnOffState();
-    bool newKeepAlive = m_radioManager.getState().keepAlive.load();
-    ESP_LOGI(TAG, "Power toggle completed - New onOffState: %d, keepAlive: %d", newState, newKeepAlive);
 }
 
 void ButtonHandler::handlePowerButton(MatrixButton &button)
@@ -280,30 +317,6 @@ void ButtonHandler::handlePowerButton(MatrixButton &button)
             ESP_LOGI(TAG, "UIBL255 sent - display backlight restored");
         }
     }
-}
-
-void ButtonHandler::setSplitFrequency(const int splitValue)
-{
-    if (!m_splitWaitingForNumeric)
-    {
-        return; // Not in split frequency entry mode
-    }
-
-    // Clear the waiting state since we're handling a number press
-    m_splitWaitingForNumeric = false;
-
-    // Get VFO A frequency from the radio
-    const uint64_t vfoAFreq = m_radioManager.getVfoAFrequency();
-
-    // Calculate new VFO B frequency by adding the splitValue kHz
-    const uint64_t newVfoB = vfoAFreq + (splitValue * 1000); // Convert kHz to Hz
-
-    // Send commands to set VFO B frequency using shared formatter
-    static thread_local FrequencyFormatter formatter;
-    m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), formatter.formatFB(newVfoB));
-
-    // Small delay to let the command be processed
-    vTaskDelay(pdMS_TO_TICKS(20));
 }
 
 // TCA8418 trigger methods - used by key mappings
@@ -426,8 +439,13 @@ void ButtonHandler::triggerFunctionButton3()
     if (!m_radioManager.getState().keepAlive.load())
         return;
 
-    // Cycle down through bands using BD command with shared band index
-    int currentBandIndex = m_radioManager.getState().bandDownSlotIndex;
+    // Cycle down through bands using BD command. bandNumber is the shared source of
+    // truth for the radio's current band: it is updated by the BU/BD command handler
+    // (local or CAT-initiated) and re-derived from FA/FB frequency readback, so both
+    // band buttons stay coherent with the radio instead of drifting from a private
+    // counter. BU/BD are set-only per the TS-590SG spec (no band readback), so the
+    // maintained bandNumber is the only current-band signal available.
+    int currentBandIndex = m_radioManager.getState().bandNumber.load(std::memory_order_relaxed);
     int nextBandIndex = (currentBandIndex == 0) ? 10 : currentBandIndex - 1; // Wrap from band 0 to band 10 (GENE)
 
     // Use BD command for band down
@@ -531,8 +549,11 @@ void ButtonHandler::triggerBandUpButton()
 
     m_radioManager.recordButtonActivity();
 
-    // Cycle up through bands using BU command with shared band index
-    int currentBandIndex = m_radioManager.getState().bandUpSlotIndex;
+    // Cycle up through bands using BU command. bandNumber is the shared source of
+    // truth (see triggerFunctionButton3), kept coherent by the BU/BD command handler
+    // and FA/FB frequency readback, so band-up decrements/increments from the radio's
+    // actual band rather than a private counter.
+    int currentBandIndex = m_radioManager.getState().bandNumber.load(std::memory_order_relaxed);
     int nextBandIndex = (currentBandIndex + 1) % 11; // Cycle through 0-10, wrap from band 10 (GENE) to band 0 (1.8MHz)
 
     // Use BU command for band up
@@ -548,9 +569,6 @@ void ButtonHandler::triggerBandUpButton()
         std::snprintf(mdCommand, sizeof(mdCommand), "MD%d;", targetMode);
         m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), mdCommand);
     }
-
-    // Update our internal state to reflect the change
-    m_radioManager.getState().bandUpSlotIndex = nextBandIndex;
 
     ESP_LOGI(TAG, "Matrix Mode key pressed: Band Up from %s to %s", bandNames[currentBandIndex],
              bandNames[nextBandIndex]);
@@ -1069,6 +1087,24 @@ void ButtonHandler::initializeMatrixButtons2()
 
 void ButtonHandler::handleMatrixButton2Event(const TCA8418Handler::MatrixKey key, const bool pressed)
 {
+    // Keypad-task context: enqueue only. All F-button state mutation and macro
+    // dispatch happens on buttonTask in applyMatrixButton2Event().
+    if (m_matrixEventQueue == nullptr)
+    {
+        return;
+    }
+
+    const MatrixKeyEvent event{2, key, pressed, esp_timer_get_time()};
+    if (xQueueSend(m_matrixEventQueue, &event, 0) != pdTRUE)
+    {
+        ESP_LOGW(TAG, "Matrix key-event queue full - dropping F-button 0x%02X %s",
+                 static_cast<uint8_t>(key), pressed ? "release" : "press");
+    }
+}
+
+void ButtonHandler::applyMatrixButton2Event(const TCA8418Handler::MatrixKey key, const bool pressed,
+                                            const int64_t pressTimeUs)
+{
     // F-buttons handler (TCA8418 #2) with short/long press detection
     // Routes to macro slots 0-5 (short press) or 6-11 (long press)
 
@@ -1081,7 +1117,7 @@ void ButtonHandler::handleMatrixButton2Event(const TCA8418Handler::MatrixKey key
 
     MatrixButton &button = it->second;
     bool previousTcaState = button.getLastTcaState();
-    button.updateState(pressed);
+    button.updateState(pressed, pressTimeUs / 1000);
 
     // Only process if state changed
     if (pressed == previousTcaState)
@@ -1196,6 +1232,26 @@ void ButtonHandler::handleMatrixButton2Event(const TCA8418Handler::MatrixKey key
 
 void ButtonHandler::handleMatrixButtonEvent(const TCA8418Handler::MatrixKey key, const bool pressed)
 {
+    // Keypad-task context: enqueue only. All button-state mutation and action
+    // dispatch happens on buttonTask in applyMatrixButtonEvent().
+    if (m_matrixEventQueue == nullptr)
+    {
+        return;
+    }
+
+    const MatrixKeyEvent event{1, key, pressed, esp_timer_get_time()};
+    if (xQueueSend(m_matrixEventQueue, &event, 0) != pdTRUE)
+    {
+        ESP_LOGW(TAG, "Matrix key-event queue full - dropping key 0x%02X %s",
+                 static_cast<uint8_t>(key), pressed ? "release" : "press");
+    }
+}
+
+void ButtonHandler::applyMatrixButtonEvent(const TCA8418Handler::MatrixKey key, const bool pressed,
+                                           const int64_t pressTimeUs)
+{
+    const int64_t pressTimeMs = pressTimeUs / 1000;
+
     // POWER button (0x0C) needs special handling - it should work even when interface is OFF
     if (key == TCA8418Handler::MatrixKey::KEY_0x0C)
     {
@@ -1203,7 +1259,7 @@ void ButtonHandler::handleMatrixButtonEvent(const TCA8418Handler::MatrixKey key,
         if (it != m_matrixButtons.end())
         {
             bool previousTcaState = it->second.getLastTcaState();
-            it->second.updateState(pressed);
+            it->second.updateState(pressed, pressTimeMs);
 
             if (pressed != previousTcaState)
             {
@@ -1246,7 +1302,7 @@ void ButtonHandler::handleMatrixButtonEvent(const TCA8418Handler::MatrixKey key,
         // Store the previous TCA state before updating
         bool previousTcaState = it->second.getLastTcaState();
 
-        it->second.updateState(pressed);
+        it->second.updateState(pressed, pressTimeMs);
 
         // Only handle button logic if there was an actual TCA8418 state change
         if (pressed != previousTcaState)
@@ -2577,21 +2633,22 @@ void ButtonHandler::handleVoxButton(MatrixButton &button)
         // Short press - toggle VOX on/off
         ESP_LOGI(TAG, "VOX button short press detected - toggling VOX");
 
-        // Note: We don't have VOX state tracked in RadioState, so we'll need to query first
-        // or maintain our own state. For now, we'll toggle based on a simple assumption
-        // and let the radio handle the actual state
-
-        static bool voxState = false; // Track VOX state locally
-        voxState = !voxState;
-
-        int voxMode = voxState ? 1 : 0; // 0=OFF, 1=ON
+        // voxEnabled in RadioState is the shared source of truth, so the toggle target
+        // tracks CAT-initiated VX changes instead of a private static that would drift.
+        // Write it back for immediate coherence after dispatching the command.
+        // NOTE: full CAT sync also requires the VX command/answer handler to store
+        // voxEnabled; that handler lives outside this file's scope.
+        auto &state = m_radioManager.getState();
+        const bool newVoxState = !state.voxEnabled.load(std::memory_order_relaxed);
+        int voxMode = newVoxState ? 1 : 0; // 0=OFF, 1=ON
 
         // Send VX command to toggle VOX
         char vxCommand[8];
         std::snprintf(vxCommand, sizeof(vxCommand), "VX%d;", voxMode);
         m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), vxCommand);
+        state.voxEnabled.store(newVoxState, std::memory_order_relaxed);
 
-        ESP_LOGI(TAG, "VOX button short press: VOX %s", voxState ? "ON" : "OFF");
+        ESP_LOGI(TAG, "VOX button short press: VOX %s", newVoxState ? "ON" : "OFF");
     }
 }
 

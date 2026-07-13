@@ -6,6 +6,7 @@
 #include "RadioManager.h"
 #include "TCA8418Handler.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
@@ -28,7 +29,7 @@ namespace radio {
  * - TCA8418 matrix button support with long/short press detection
  * - Integration with RadioManager for CAT command generation
  * - Support for complex button sequences via RadioMacroManager
- * - Power state control and split frequency functionality
+ * - Power state control via the matrix POWER key
  */
 class ButtonHandler {
 #ifdef CONFIG_RUN_UNIT_TESTS
@@ -88,23 +89,36 @@ private:
     // All GPIO buttons removed - using TCA8418 matrix buttons only
     // Kept for potential future ADC-based or special purpose buttons if needed
 
-    // Power state control
-    void togglePowerState();
-    
-    // Split frequency functionality
-    void setSplitFrequency(int splitValue);
-    bool m_splitWaitingForNumeric = false;
-
     // Display backlight state tracking
     bool m_displayBacklightOn = true;
 
     // TCA8418 Matrix button management
+    //
+    // OWNERSHIP: every MatrixButton/Button object in these two maps is mutated
+    // EXCLUSIVELY by buttonTask. The TCA8418 keypad callbacks run on the keypad
+    // task and only enqueue events onto m_matrixEventQueue; buttonTask drains the
+    // queue and performs all state mutation and action dispatch. Because there is
+    // a single owning task, the plain (non-atomic) Button fields — including the
+    // 64-bit m_pressedTime — are never read or written concurrently.
     std::map<TCA8418Handler::MatrixKey, MatrixButton> m_matrixButtons;      // TCA #1 (left/right PCB)
     std::map<TCA8418Handler::MatrixKey, MatrixButton> m_matrixButtons2;     // TCA #2 (F-buttons)
+
+    // Internal event queue: keypad callbacks (keypad task) -> buttonTask.
+    QueueHandle_t m_matrixEventQueue{nullptr};
+
     void initializeMatrixButtons();
     void initializeMatrixButtons2();  // F1-F6 buttons with long press support
+
+    // Keypad-task entry points (registered from main.cpp). These now ONLY enqueue
+    // an event; they must not touch any MatrixButton/Button state.
     void handleMatrixButtonEvent(TCA8418Handler::MatrixKey key, bool pressed);
     void handleMatrixButton2Event(TCA8418Handler::MatrixKey key, bool pressed);  // F-button handler
+
+    // buttonTask-side event processing: buttonTask drains m_matrixEventQueue and
+    // calls these to apply the mutations + action dispatch that previously ran
+    // inline in the keypad callbacks.
+    void applyMatrixButtonEvent(TCA8418Handler::MatrixKey key, bool pressed, int64_t pressTimeUs);
+    void applyMatrixButton2Event(TCA8418Handler::MatrixKey key, bool pressed, int64_t pressTimeUs);
 
     // TCA8418 Matrix button handlers
     void handleBandUpButton();
