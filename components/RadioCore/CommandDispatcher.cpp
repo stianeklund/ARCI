@@ -443,7 +443,9 @@ namespace radio {
                         const auto& readCmd = setToReadMap.at(command.command);
                         ESP_LOGD(CommandDispatcher::TAG, "Auto-querying after SET: %s -> %s",
                                  command.command.c_str(), readCmd.c_str());
-                        radioSerial.sendMessage(readCmd);
+                        // Route through the rate-paced TX queue so machine-generated
+                        // read-backs share the global wire-rate bound (avoids ?; floods).
+                        radioManager.sendRawRadioCommand(readCmd);
                     }
 
                     return true;
@@ -495,7 +497,8 @@ namespace radio {
                         const auto& readCmd = setToReadMap.at(command.command);
                         ESP_LOGD(CommandDispatcher::TAG, "Auto-querying after SET (fallback): %s -> %s",
                                  command.command.c_str(), readCmd.c_str());
-                        radioSerial.sendMessage(readCmd);
+                        // Route through the rate-paced TX queue (see non-fallback path).
+                        radioManager.sendRawRadioCommand(readCmd);
                     }
                     
                     return true;

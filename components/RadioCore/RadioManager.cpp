@@ -14,6 +14,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 #include "include/ForwardingPolicy.h"
 #include "FrequencyFormatter.h"
@@ -40,6 +41,7 @@
 #include "VoiceMessageCommandHandler.h"
 #include "include/CommandDispatcher.h"
 #include "MacroStorage.h"
+#include "DisplayLatencyProfiler.h"
 
 namespace radio
 {
@@ -272,6 +274,44 @@ namespace radio
         }
 #endif
 
+#ifndef CONFIG_RUN_UNIT_TESTS
+        // Radio-TX drainer: paces sends to the radio off every lock. Static queue so its
+        // storage is fixed at compile time (no heap growth). Unit-test builds skip this
+        // and send inline from sendRadioCommand, matching the inline boot/power-off paths.
+        radioTxQueue_ = xQueueCreateStatic(RADIO_TX_QUEUE_DEPTH, sizeof(RadioTxItem),
+                                           radioTxQueueStorage_, &radioTxQueueControl_);
+        if (radioTxQueue_ == nullptr)
+        {
+            // Non-fatal: sendRadioCommand degrades to a direct write when the queue is null.
+            ESP_LOGE(RadioManager::TAG, "Failed to create radio-TX queue; sends will bypass pacing");
+        }
+        else
+        {
+            // Priority 10: the drainer is blocked on the queue almost always and only does a
+            // short paced UART write when work arrives. No core affinity (main.cpp owns that).
+            result = xTaskCreate(radioTxDrainTask, "radio_tx", 4096, this, 10, &radioTxDrainTaskHandle_);
+            if (result != pdPASS)
+            {
+                ESP_LOGE(RadioManager::TAG, "Failed to create radio-TX drainer task");
+                vQueueDelete(radioTxQueue_);
+                radioTxQueue_ = nullptr;
+#ifdef CONFIG_RADIOCORE_MANUAL_KEEPALIVE
+                if (keepaliveTaskHandle_ != nullptr)
+                {
+                    vTaskDelete(keepaliveTaskHandle_);
+                    keepaliveTaskHandle_ = nullptr;
+                }
+#endif
+                if (txTimeoutTaskHandle_ != nullptr)
+                {
+                    vTaskDelete(txTimeoutTaskHandle_);
+                    txTimeoutTaskHandle_ = nullptr;
+                }
+                return ESP_FAIL;
+            }
+        }
+#endif
+
         ESP_LOGI(RadioManager::TAG, "RadioManager tasks started successfully");
         return ESP_OK;
     }
@@ -290,6 +330,19 @@ namespace radio
             ESP_LOGI(RadioManager::TAG, "Terminating manual keepalive task");
             vTaskDelete(keepaliveTaskHandle_);
             keepaliveTaskHandle_ = nullptr;
+        }
+#endif
+#ifndef CONFIG_RUN_UNIT_TESTS
+        if (radioTxDrainTaskHandle_ != nullptr)
+        {
+            ESP_LOGI(RadioManager::TAG, "Terminating radio-TX drainer task");
+            vTaskDelete(radioTxDrainTaskHandle_);
+            radioTxDrainTaskHandle_ = nullptr;
+        }
+        if (radioTxQueue_ != nullptr)
+        {
+            vQueueDelete(radioTxQueue_);
+            radioTxQueue_ = nullptr;
         }
 #endif
     }
@@ -980,6 +1033,12 @@ namespace radio
             ESP_LOGE(RadioManager::TAG, "❌ BLOCKED command too short: len=%zu", command.size());
             return;
         }
+        if (command.size() > RADIO_TX_CMD_MAX)
+        {
+            ESP_LOGE(RadioManager::TAG, "❌ BLOCKED command too long: len=%zu (max=%zu)", command.size(),
+                     RADIO_TX_CMD_MAX);
+            return;
+        }
         for (const char c : command)
         {
             if (c < 32 && c != ';')
@@ -995,38 +1054,45 @@ namespace radio
             ESP_LOGW(RadioManager::TAG, "Stack trace needed to find source of ID; command");
         }
 
-        // Global radio-TX rate limiter: enforce a minimum gap between ANY two sends,
-        // across all tasks, so the TS-590SG is not flooded (which yields ?; errors).
-        // Holding the lock across the pacing delay and the write is intentional: it
-        // serializes the shared UART TX path and keeps record+send atomic.
+#ifdef CONFIG_RUN_UNIT_TESTS
+        // Unit-test builds do not start the async drainer (see startTasks), so send
+        // inline for deterministic mock-serial assertions. Mirrors the inline
+        // boot / power-off paths that are guarded the same way. No pacing needed:
+        // tests are single-threaded against a mock and must not stall on vTaskDelay.
+        commandDispatcher_->recordCommandSentToRadio(command);
+        radioSerial_.sendMessage(command);
+#else
+        // Enqueue only; the drainer paces and writes. Never blocks the caller (which may
+        // hold dispatchMutex_): on a full queue we drop and account it, not park the lock.
+        if (radioTxQueue_ == nullptr)
         {
-            RtosLockGuard<RtosMutex> txLock(radioTxMutex_);
-            const uint64_t nowUs = esp_timer_get_time();
-            if (lastRadioTxUs_ != 0)
-            {
-                const uint64_t elapsedUs = nowUs - lastRadioTxUs_;
-                if (elapsedUs < RADIO_TX_MIN_GAP_US)
-                {
-                    // Round the remaining gap up to whole milliseconds for vTaskDelay.
-                    const uint32_t waitMs =
-                        static_cast<uint32_t>((RADIO_TX_MIN_GAP_US - elapsedUs + 999) / 1000);
-                    vTaskDelay(pdMS_TO_TICKS(waitMs));
-                }
-            }
-
-            // Track last command sent for error diagnostics (inside the lock so the
-            // recorded "last TX" and the actual write cannot diverge across tasks).
+            // Queue creation failed at startup: degrade to a direct write so commands
+            // are not silently lost. Rare; logged once at startup.
             commandDispatcher_->recordCommandSentToRadio(command);
             radioSerial_.sendMessage(command);
-            lastRadioTxUs_ = esp_timer_get_time();
+            return;
         }
-        if (state_.isTx.load() && state_.getTxOwner() == static_cast<int>(CommandSource::Remote))
+
+        RadioTxItem item{};
+        std::memcpy(item.data, command.data(), command.size());
+        item.len = static_cast<uint8_t>(command.size());
+        item.enqueueUs = esp_timer_get_time();
+
+        if (xQueueSend(radioTxQueue_, &item, 0) != pdTRUE)
         {
-            ESP_LOGD(RadioManager::TAG, "TXMON: remote TX active -> command '%.*s'", (int)command.size(),
-                     command.data());
+            DisplayLatencyProfiler::instance().markRadioTxDrop();
+            // Rate-limit the warning: a full queue is a burst symptom and would otherwise
+            // spam the log at the exact moment the system is already under load.
+            static uint64_t lastDropLogUs = 0;
+            const uint64_t nowUs = esp_timer_get_time();
+            if (nowUs - lastDropLogUs > 1'000'000) // at most once per second
+            {
+                lastDropLogUs = nowUs;
+                ESP_LOGW(RadioManager::TAG, "Radio-TX queue full, dropped command '%.*s' (len=%zu)",
+                         (int)command.size(), command.data(), command.size());
+            }
         }
-        ESP_LOGD(RadioManager::TAG, "SEND->RADIO: '%.*s' (len=%zu)", (int)command.size(), command.data(),
-                 command.size());
+#endif
     }
 
     void RadioManager::sendRadioCommand(const char *command) const
@@ -1037,6 +1103,59 @@ namespace radio
             return;
         }
         sendRadioCommand(std::string_view{command});
+    }
+
+    void RadioManager::radioTxDrainTask(void *pvParameters)
+    {
+        auto *self = static_cast<RadioManager *>(pvParameters);
+        ESP_LOGI(RadioManager::TAG, "Radio-TX drainer task started (min gap: %llu us)",
+                 static_cast<unsigned long long>(RADIO_TX_MIN_GAP_US));
+
+        RadioTxItem item{};
+        // Block until work arrives; the task is deleted externally at shutdown (same
+        // lifecycle as the other RadioManager tasks). lastRadioTxUs_ is owned solely by
+        // this task, so the min-gap pacing needs no lock.
+        while (true)
+        {
+            if (xQueueReceive(self->radioTxQueue_, &item, portMAX_DELAY) != pdTRUE)
+            {
+                continue;
+            }
+
+            // Enforce the global minimum gap between any two writes to the radio.
+            uint64_t pacingUs = 0;
+            const uint64_t nowUs = esp_timer_get_time();
+            if (self->lastRadioTxUs_ != 0)
+            {
+                const uint64_t elapsedUs = nowUs - self->lastRadioTxUs_;
+                if (elapsedUs < RADIO_TX_MIN_GAP_US)
+                {
+                    // Round the remaining gap up to whole milliseconds for vTaskDelay.
+                    const uint32_t waitMs =
+                        static_cast<uint32_t>((RADIO_TX_MIN_GAP_US - elapsedUs + 999) / 1000);
+                    const uint64_t pacingStartUs = esp_timer_get_time();
+                    vTaskDelay(pdMS_TO_TICKS(waitMs));
+                    pacingUs = esp_timer_get_time() - pacingStartUs;
+                }
+            }
+
+            const std::string_view command{item.data, item.len};
+            self->commandDispatcher_->recordCommandSentToRadio(command);
+            self->radioSerial_.sendMessage(command);
+            self->lastRadioTxUs_ = esp_timer_get_time();
+
+            // queueLatency now means enqueue -> wire (queue wait + this send's pacing).
+            DisplayLatencyProfiler::instance().markRadioTx(self->lastRadioTxUs_ - item.enqueueUs, pacingUs);
+
+            if (self->state_.isTx.load() &&
+                self->state_.getTxOwner() == static_cast<int>(CommandSource::Remote))
+            {
+                ESP_LOGD(RadioManager::TAG, "TXMON: remote TX active -> command '%.*s'", (int)command.size(),
+                         command.data());
+            }
+            ESP_LOGD(RadioManager::TAG, "SEND->RADIO: '%.*s' (len=%zu)", (int)command.size(), command.data(),
+                     command.size());
+        }
     }
 
     bool RadioManager::updateFrequency(const uint64_t newFreq)
@@ -1097,6 +1216,10 @@ namespace radio
         // Send commands individually with delay to prevent radio buffer overflow.
         // The TS-590SG can't process commands as fast as we can send them at 57600 baud,
         // resulting in ?; errors when batched. Individual pacing ensures reliable sync.
+        // NOTE: this self-pacing is also required to stay within the radio-TX queue depth:
+        // this task enqueues ~135 commands, far more than RADIO_TX_QUEUE_DEPTH (32). The
+        // per-command delay keeps the enqueue rate at/below the drainer's drain rate so the
+        // queue never fills and no boot command is dropped. Do not remove it.
         constexpr TickType_t INTER_COMMAND_DELAY_MS = 10;
 
         // Phase 1: core state queries

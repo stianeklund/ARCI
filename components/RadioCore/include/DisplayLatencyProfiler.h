@@ -120,6 +120,23 @@ class DisplayLatencyProfiler
         }
     }
 
+    // Called once per command actually written to the radio, from the radio-TX
+    // drainer task. queueLatencyUs = enqueue->wire latency (time the command spent
+    // waiting in the TX queue plus its own pacing); pacingUs = time this send spent
+    // in the drainer's min-gap vTaskDelay (0 if it did not have to wait).
+    void markRadioTx(uint64_t queueLatencyUs, uint64_t pacingUs)
+    {
+        radioTxCount_.fetch_add(1, std::memory_order_relaxed);
+        radioTxPacingUs_.fetch_add(pacingUs, std::memory_order_relaxed);
+        updateStats(radioTxQueueUs_, queueLatencyUs);
+    }
+
+    // Called when sendRadioCommand drops a command because the TX queue was full.
+    void markRadioTxDrop()
+    {
+        radioTxDropCount_.fetch_add(1, std::memory_order_relaxed);
+    }
+
     // Enable/disable logging output (tracking still occurs for minimal overhead)
     static constexpr bool LOGGING_ENABLED = true;
 
@@ -145,6 +162,10 @@ class DisplayLatencyProfiler
             resetStats(faToDisplayUs_);
             resetStats(displayIntervalUs_);
             resetStats(encoderIntervalUs_);
+            radioTxCount_.store(0, std::memory_order_relaxed);
+            radioTxPacingUs_.store(0, std::memory_order_relaxed);
+            radioTxDropCount_.store(0, std::memory_order_relaxed);
+            resetStats(radioTxQueueUs_);
             return;
         }
 
@@ -167,6 +188,23 @@ class DisplayLatencyProfiler
         const auto fwdStats = resetStats(faToDisplayUs_);
         const auto intervalStats = resetStats(displayIntervalUs_);
         const auto encIntervalStats = resetStats(encoderIntervalUs_);
+
+        // Radio-TX path load (logged independently of display activity)
+        const uint32_t rtxCount = radioTxCount_.exchange(0, std::memory_order_relaxed);
+        const uint64_t rtxPacing = radioTxPacingUs_.exchange(0, std::memory_order_relaxed);
+        const uint32_t rtxDrops = radioTxDropCount_.exchange(0, std::memory_order_relaxed);
+        const auto rtxStats = resetStats(radioTxQueueUs_);
+        if (rtxCount > 0 || rtxDrops > 0)
+        {
+            const uint32_t rtxAvg = rtxStats.count > 0 ? static_cast<uint32_t>(rtxStats.sum / rtxStats.count) : 0;
+            ESP_LOGI(TAG, "RadioTX: sends=%lu (%lu/s) pacing=%lums drops=%lu | queueLatency(ms) avg=%lu max=%lu",
+                     static_cast<unsigned long>(rtxCount),
+                     static_cast<unsigned long>(rtxCount / 10),
+                     static_cast<unsigned long>(rtxPacing / 1000),
+                     static_cast<unsigned long>(rtxDrops),
+                     static_cast<unsigned long>(rtxAvg / 1000),
+                     static_cast<unsigned long>(rtxStats.max / 1000));
+        }
 
         // Only log if there was any activity
         if (fwdCount == 0 && supCount == 0 && usbCount == 0 && encCount == 0)
@@ -288,6 +326,15 @@ class DisplayLatencyProfiler
     LatencyStats faToDisplayUs_;
     LatencyStats displayIntervalUs_;
     LatencyStats encoderIntervalUs_;
+
+    // Radio-TX path load (arci -> radio). queueLatency = time from sendRadioCommand
+    // enqueue to actual UART write in the drainer (queue wait + min-gap pacing).
+    // Backlog on this path delays the radio's serial output, including the
+    // unsolicited pushes the display depends on. drops = commands shed on queue-full.
+    std::atomic<uint32_t> radioTxCount_{0};
+    std::atomic<uint64_t> radioTxPacingUs_{0};
+    std::atomic<uint32_t> radioTxDropCount_{0};
+    LatencyStats radioTxQueueUs_;
 };
 
 } // namespace radio
