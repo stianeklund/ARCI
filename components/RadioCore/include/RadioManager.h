@@ -6,6 +6,9 @@
 #include <memory>
 #include <optional>
 #include <string_view>
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
 #include "rtos_mutex.h"
 #include "../../AntennaSwitch/include/AntennaSwitch.h"
 #include "../../CommonConstants/include/radio_constants.h"
@@ -785,13 +788,34 @@ namespace radio
         std::unique_ptr<CATHandler> macroHandler_; // For internal macro commands (Macro source)
         mutable RtosRecursiveMutex dispatchMutex_; // Serializes CAT command dispatch (recursive allows nested macro execution)
 
-        // Global radio-TX rate limiter. The TS-590SG rejects (?;) commands that
-        // arrive faster than it can process. All senders (boot sequence, transverter
-        // sync, AI enforcement, normal dispatch) funnel through sendRadioCommand, so
-        // per-task pacing alone does not bound the aggregate wire rate — this shared
-        // minimum-gap gate does. radioTxMutex_ guards lastRadioTxUs_ and serializes
-        // the record+write so diagnostics stay coherent across tasks.
-        mutable RtosMutex radioTxMutex_;
+        // Global radio-TX pacing queue (replaces the former mutex + inline-sleep gate).
+        // The TS-590SG rejects (?;) commands that arrive faster than it can process, so
+        // the aggregate wire rate to the radio must be bounded (commit f9ab2b6). The old
+        // gate held a mutex across a pacing vTaskDelay; because callers hold the recursive
+        // dispatchMutex_ (via dispatchMessageEx) while sending, that parked the global
+        // dispatch lock on a sleep and stalled radio_task's answer processing — and thus
+        // the remote display. Now sendRadioCommand only validates and enqueues (never
+        // blocks), and a single dedicated drainer task (radioTxDrainTask) owns the min-gap
+        // pacing and the UART write, off every lock. That keeps the aggregate rate bound
+        // while restoring the no-sleep-under-lock invariant (commit 0ac2d8d).
+        //
+        // CAT frames are short; 64 matches SerialHandler::MAX_MESSAGE_LENGTH (the wire cap).
+        static constexpr size_t RADIO_TX_CMD_MAX = 64;
+        struct RadioTxItem
+        {
+            char data[RADIO_TX_CMD_MAX];
+            uint8_t len;
+            uint64_t enqueueUs; // esp_timer at enqueue; drainer reports enqueue->wire latency
+        };
+        // Depth 32: at the 10 ms min gap (~100 cmds/s drain) this absorbs ~320 ms of burst
+        // backlog (e.g. the boot / EX-menu sync) before it must shed load.
+        static constexpr size_t RADIO_TX_QUEUE_DEPTH = 32;
+        QueueHandle_t radioTxQueue_ = nullptr;
+        StaticQueue_t radioTxQueueControl_{};                                   // static queue control block
+        uint8_t radioTxQueueStorage_[RADIO_TX_QUEUE_DEPTH * sizeof(RadioTxItem)]{}; // static item storage
+        TaskHandle_t radioTxDrainTaskHandle_ = nullptr;
+        static void radioTxDrainTask(void *pvParameters);
+        // Owned EXCLUSIVELY by radioTxDrainTask once tasks start, so it needs no lock.
         mutable uint64_t lastRadioTxUs_ = 0;
         static constexpr uint64_t RADIO_TX_MIN_GAP_US = 10'000; // 10 ms between sends
 

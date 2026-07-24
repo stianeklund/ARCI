@@ -822,6 +822,17 @@ static void createTaskOrAbort(TaskFunction_t fn, const char *name, uint32_t stac
     }
 }
 
+// Same as createTaskOrAbort but pins the task to a specific core.
+static void createPinnedTaskOrAbort(TaskFunction_t fn, const char *name, uint32_t stackWords, void *arg,
+                                    UBaseType_t priority, TaskHandle_t *handle, BaseType_t coreId)
+{
+    if (xTaskCreatePinnedToCore(fn, name, stackWords, arg, priority, handle, coreId) != pdPASS)
+    {
+        ESP_LOGE(TAG, "Boot failure: task '%s' creation failed (out of heap) - aborting", name);
+        abort();
+    }
+}
+
 void setup()
 {
     ESP_LOGI(TAG, "Starting setup");
@@ -1070,12 +1081,26 @@ void app_main()
     setup();
     diagnostics.start();
 
-    // Create tasks
-    createTaskOrAbort(usb_task, "usb_task", 8192, NULL, 10, &g_usbTaskHandle);
-    createTaskOrAbort(usb2_task, "usb2_task", 8192, NULL, 10, &g_usb2TaskHandle);
-    createTaskOrAbort(radio_task, "radio_task", 8192, NULL, 8, &g_radioTaskHandle);
-    createTaskOrAbort(display_task, "display_task", 6144, NULL, 8, &g_displayTaskHandle);
-    createTaskOrAbort(main_task, "main_task", 4096, NULL, 5, &g_mainTaskHandle);
+    // Create tasks.
+    //
+    // Priority/affinity invariant: the radio->display drain path (radio_task drains
+    // radio frames onto the display UART; display_task handles display-originated
+    // messages) must OUTRANK the USB CAT-client ingress tasks, or heavy client
+    // traffic can starve display forwarding. It also lives on core 1, away from
+    // WiFi/lwIP (which run on core 0 by default on the ESP32-S3), so network load
+    // cannot preempt the display path. Ingress and main stay unpinned.
+    constexpr UBaseType_t USB_TASK_PRIORITY = 10;      // CAT-client ingress (CDC 0/1)
+    constexpr UBaseType_t DRAIN_TASK_PRIORITY = 11;    // radio_task + display_task: outrank ingress
+    constexpr UBaseType_t MAIN_TASK_PRIORITY = 5;      // housekeeping
+    constexpr BaseType_t DRAIN_TASK_CORE = 1;          // away from WiFi/lwIP on core 0
+
+    createTaskOrAbort(usb_task, "usb_task", 8192, NULL, USB_TASK_PRIORITY, &g_usbTaskHandle);
+    createTaskOrAbort(usb2_task, "usb2_task", 8192, NULL, USB_TASK_PRIORITY, &g_usb2TaskHandle);
+    createPinnedTaskOrAbort(radio_task, "radio_task", 8192, NULL, DRAIN_TASK_PRIORITY, &g_radioTaskHandle,
+                            DRAIN_TASK_CORE);
+    createPinnedTaskOrAbort(display_task, "display_task", 6144, NULL, DRAIN_TASK_PRIORITY,
+                            &g_displayTaskHandle, DRAIN_TASK_CORE);
+    createTaskOrAbort(main_task, "main_task", 4096, NULL, MAIN_TASK_PRIORITY, &g_mainTaskHandle);
 
     // Configure diagnostics to monitor task stacks
     diagnostics.setTaskHandles(g_usbTaskHandle, g_usb2TaskHandle, g_radioTaskHandle, g_displayTaskHandle,
