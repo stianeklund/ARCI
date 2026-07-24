@@ -8,8 +8,8 @@ namespace antenna {
 const char* AntennaWebSocketClient::TAG = "AntennaWSClient";
 
 AntennaWebSocketClient::AntennaWebSocketClient() 
-    : wsClient_(nullptr), messageQueue_(nullptr), messageProcessorTask_(nullptr), 
-      reconnectTask_(nullptr), connectSemaphore_(nullptr), bufferMutex_(nullptr) {
+    : wsClient_(nullptr), messageQueue_(nullptr), messageProcessorTask_(nullptr),
+      connectSemaphore_(nullptr), bufferMutex_(nullptr) {
     ESP_LOGD(TAG, "AntennaWebSocketClient created");
     stats_.lastConnectTime = std::chrono::steady_clock::time_point{};
     stats_.lastMessageTime = std::chrono::steady_clock::time_point{};
@@ -532,8 +532,11 @@ void AntennaWebSocketClient::reconnectTaskFunction(void* pvParameters) {
         }
     }
     
-    client->reconnecting_.store(false);
     ESP_LOGI(client->TAG, "Reconnect task stopped");
+    client->reconnecting_.store(false);
+    // Last client access: after this store, stopReconnectTask/startReconnectTask
+    // may proceed while this task is still between here and vTaskDelete.
+    client->reconnectTaskRunning_.store(false);
     vTaskDelete(nullptr);
 }
 
@@ -574,36 +577,44 @@ void AntennaWebSocketClient::stopMessageProcessor() {
 }
 
 bool AntennaWebSocketClient::startReconnectTask() {
-    if (reconnectTask_) {
+    // Claim the running flag before creating the task so a second caller can
+    // never spawn a duplicate while xTaskCreate is in flight.
+    bool expected = false;
+    if (!reconnectTaskRunning_.compare_exchange_strong(expected, true)) {
         return true; // Already running
     }
-    
+    stopReconnect_.store(false); // may still be set from a previous stop
+
     BaseType_t result = xTaskCreate(
         reconnectTaskFunction,
         "ws_reconnect",
         4096,
         this,
         4,
-        &reconnectTask_
+        nullptr
     );
-    
-    return result == pdPASS;
+
+    if (result != pdPASS) {
+        reconnectTaskRunning_.store(false);
+        return false;
+    }
+    return true;
 }
 
 void AntennaWebSocketClient::stopReconnectTask() {
-    if (reconnectTask_) {
+    if (reconnectTaskRunning_.load()) {
         stopReconnect_.store(true);
 
         // Wait for task to actually exit (up to 1.5s)
         for (int i = 0; i < 15; ++i) {
             vTaskDelay(pdMS_TO_TICKS(100));
-            if (eTaskGetState(reconnectTask_) == eDeleted) {
+            if (!reconnectTaskRunning_.load()) {
                 break;
             }
         }
-
-        reconnectTask_ = nullptr;
-        // Note: Don't reset stopReconnect_ flag - task has exited
+        if (reconnectTaskRunning_.load()) {
+            ESP_LOGW(TAG, "Reconnect task did not exit within 1.5s");
+        }
     }
 }
 
