@@ -220,8 +220,10 @@ private:
     TaskHandle_t messageProcessorTask_;
     std::atomic<bool> stopMessageProcessor_{false};
     
-    // Connection management
-    TaskHandle_t reconnectTask_;
+    // Connection management. The reconnect task self-deletes, so no TaskHandle_t
+    // is kept (a stale handle would be a use-after-free in eTaskGetState); the
+    // task owns this flag and clears it as its final action before vTaskDelete.
+    std::atomic<bool> reconnectTaskRunning_{false};
     std::atomic<bool> stopReconnect_{false};
     SemaphoreHandle_t connectSemaphore_;
     
