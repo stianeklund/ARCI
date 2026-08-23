@@ -57,6 +57,7 @@ bool ToneSquelchCommandHandler::handleCommand(const RadioCommand& command,
             if (toneNumber >= MIN_TONE_NUMBER && toneNumber <= MAX_TONE_NUMBER) {
                 auto& state = radioManager.getState();
                 state.toneFrequency = static_cast<uint8_t>(toneNumber);
+                radioManager.getState().commandCache.update("CN", esp_timer_get_time());
                 routeAnswerResponse(command, formatResponse2D("CN", toneNumber), usbSerial, radioManager);
             }
             return true;
@@ -201,6 +202,7 @@ bool ToneSquelchCommandHandler::handleTN(const RadioCommand& command,
             // Update state from radio response
             auto& state = radioManager.getState();
             state.toneFrequency = static_cast<uint8_t>(toneNumber);
+            radioManager.getState().commandCache.update("TN", esp_timer_get_time());
             routeAnswerResponse(command, formatResponse2D("TN", toneNumber), usbSerial, radioManager);
         }
         return true;
@@ -292,6 +294,7 @@ bool ToneSquelchCommandHandler::handleSQ(const RadioCommand& cmd,
     if (cmd.type == CommandType::Answer) {
         int squelchLevel = parseSquelchLevel(cmd);
         if (squelchLevel >= MIN_SQUELCH_LEVEL && squelchLevel <= MAX_SQUELCH_LEVEL) {
+            rm.getState().commandCache.update("SQ", esp_timer_get_time());
             routeAnswerResponse(cmd, formatResponseSub3D("SQ", 0, squelchLevel), usbSerial, rm);
         }
         return true;

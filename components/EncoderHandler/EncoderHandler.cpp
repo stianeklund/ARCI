@@ -503,7 +503,6 @@ void EncoderHandler::task(const bool movementDetected)
             // Notify RadioManager that local tuning has started
             auto &state = m_radioManager->getState();
             state.isTuning.store(true);
-            state.tuningStartTime.store(currentTime);
             // Latch active VFO at start of turn; remain constant during this turn
             // Active VFO = TX VFO when transmitting, RX VFO when receiving
             const bool isTxActive = state.isTx.load();

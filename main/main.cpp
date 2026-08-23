@@ -9,6 +9,7 @@
 #include "EncoderHandler.h"
 #include "MultiEncoderHandler.h"
 #include "NvsManager.h"
+#include "PacedRadioChannel.h"
 #include "PCF8575Handler.h"
 #include "RadioMacroManager.h"
 #include "RadioManager.h"
@@ -78,6 +79,11 @@ namespace
 
     // --- Radio Core ---
     radio::RadioManager radioManager(radioSerial, usbSerial);
+    // Adapter so the display/USB2/TCP0/TCP1 CATHandlers below route their radio
+    // TX through RadioManager's paced queue instead of writing radioSerial
+    // directly (RadioManager's own 4 internal handlers get the equivalent
+    // treatment via its private pacedRadioSerial_ member; see PacedRadioChannel.h).
+    radio::PacedRadioChannel pacedRadioSerial(radioManager, radioSerial);
     std::unique_ptr<radio::CATHandler> displayCatHandler;  // Display CAT (lazy init)
     std::unique_ptr<radio::CATHandler> usb2CatHandler;     // USB2 CAT (lazy init)
     radio::RadioMacroManager radioMacroManager(radioManager);
@@ -521,6 +527,12 @@ void initializeUsbCdc()
                         if (sendResult != ESP_OK)
                         {
                             ESP_LOGW(TAG, "Display forward failed (%s)", esp_err_to_name(sendResult));
+                            // This path writes displaySerial directly (bypassing
+                            // RadioManager::sendToDisplay), so the dedup commit made by
+                            // shouldForwardToDisplay() above must be undone here too --
+                            // otherwise a delivery failure permanently suppresses the
+                            // next identical value (see ForwardingPolicy::invalidateDedup).
+                            radioManager.onDisplayForwardFailed(messageResult.second);
                         }
                     }
                 }
@@ -891,7 +903,7 @@ void setup()
 
             // Create TCP0 CAT handler
             tcp0CatHandler = std::make_unique<radio::CATHandler>(
-                radioManager.getCommandDispatcher(), radioManager, radioSerial, usbSerial, radio::CommandSource::Tcp0
+                radioManager.getCommandDispatcher(), radioManager, pacedRadioSerial, usbSerial, radio::CommandSource::Tcp0
             );
 
             // Wire TCP0 frame callback to dispatch to TCP0 CAT handler
@@ -935,7 +947,7 @@ void setup()
 
             // Create TCP1 CAT handler
             tcp1CatHandler = std::make_unique<radio::CATHandler>(
-                radioManager.getCommandDispatcher(), radioManager, radioSerial, usbSerial, radio::CommandSource::Tcp1
+                radioManager.getCommandDispatcher(), radioManager, pacedRadioSerial, usbSerial, radio::CommandSource::Tcp1
             );
 
             // Wire TCP1 frame callback to dispatch to TCP1 CAT handler
@@ -983,7 +995,7 @@ void setup()
     if (!displayCatHandler)
     {
         displayCatHandler =
-            std::make_unique<radio::CATHandler>(radioManager.getCommandDispatcher(), radioManager, radioSerial,
+            std::make_unique<radio::CATHandler>(radioManager.getCommandDispatcher(), radioManager, pacedRadioSerial,
                                                 displaySerial, radio::CommandSource::Display);
         ESP_LOGI(TAG, "Display CAT handler initialized");
     }
@@ -992,7 +1004,7 @@ void setup()
     if (!usb2CatHandler)
     {
         usb2CatHandler = std::make_unique<radio::CATHandler>(radioManager.getCommandDispatcher(), radioManager,
-                                                             radioSerial, usb2Serial,
+                                                             pacedRadioSerial, usb2Serial,
                                                              radio::CommandSource::UsbCdc1);
         ESP_LOGI(TAG, "USB2 CDC CAT handler initialized");
     }

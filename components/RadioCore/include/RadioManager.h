@@ -16,6 +16,7 @@
 #include "CommandDispatcher.h"
 #include "RadioState.h"
 #include "ISerialChannel.h"
+#include "PacedRadioChannel.h"
 
 namespace tcp_cat_bridge
 {
@@ -324,6 +325,17 @@ namespace radio
         ISerialChannel *getDisplaySerial() const;
         void sendToDisplay(std::string_view frames) const;
 
+        /**
+         * @brief Undo the display dedup commit for a frame that failed to reach the display
+         *
+         * sendToDisplay() calls this itself on a failed send. Exposed publicly so callers
+         * that write to displaySerial_ directly (e.g. main.cpp's radio_task, which mirrors
+         * radio Answers to the display outside of sendToDisplay) can report the same
+         * failure and keep dedup state consistent with what was actually delivered.
+         * @param frames The frame that failed to be delivered to the display
+         */
+        void onDisplayForwardFailed(std::string_view frames) const;
+
         // Optional TCP CAT bridges for network clients
         void setTcp0Bridge(tcp_cat_bridge::TcpCatBridge *bridge);
         void setTcp1Bridge(tcp_cat_bridge::TcpCatBridge *bridge);
@@ -560,6 +572,27 @@ namespace radio
          */
         bool updatePowerState(bool powerOn);
 
+        // === STUCK-TUNING WATCHDOG ===
+
+        /**
+         * @brief Pure decision helper for the stuck-tuning watchdog (txTimeoutTask).
+         *
+         * isTuning is normally cleared by the RX/TX0/TX1 Answer paths or the IF P8=RX
+         * branch, but a missed/raced Answer can leave it set forever, which makes
+         * ForwardingPolicy's tuning-suppression logic permanently block IF/FA/FB
+         * updates to the display. This watchdog is the backstop: if isTuning is set,
+         * we are not actively transmitting, and no encoder activity has been seen for
+         * over a second, the tune is considered abandoned.
+         *
+         * Static and pure (no I/O, no side effects) so it can be unit-tested directly
+         * against a RadioState fixture without needing the 1s task tick to fire.
+         *
+         * @param state Radio state to evaluate (read-only)
+         * @param nowUs Current timestamp (esp_timer_get_time()), passed in for testability
+         * @return true if isTuning should be cleared
+         */
+        static bool shouldClearStuckTuning(const RadioState &state, uint64_t nowUs);
+
         // === CAT HANDLER ACCESS ===
 
         /**
@@ -774,6 +807,12 @@ namespace radio
         RadioState state_;
         ISerialChannel &radioSerial_;
         ISerialChannel &usbSerial_;
+        // ISerialChannel adapter handed to the 4 CATHandlers below in place of
+        // radioSerial_ directly, so that command handlers calling sendMessage()
+        // on "the radio" (BaseCommandHandler::sendToRadio) go through the paced
+        // TX queue (sendRadioCommand) instead of writing the UART inline. See
+        // PacedRadioChannel.h.
+        PacedRadioChannel pacedRadioSerial_;
         ISerialChannel *displaySerial_ = nullptr; // Optional mirror sink for SET commands
         ISerialChannel *usbCdc1Serial_ = nullptr; // Optional second CDC output (CDC1)
         tcp_cat_bridge::TcpCatBridge *tcp0Bridge_ = nullptr; // Optional TCP port 0 bridge
@@ -807,9 +846,13 @@ namespace radio
             uint8_t len;
             uint64_t enqueueUs; // esp_timer at enqueue; drainer reports enqueue->wire latency
         };
-        // Depth 32: at the 10 ms min gap (~100 cmds/s drain) this absorbs ~320 ms of burst
-        // backlog (e.g. the boot / EX-menu sync) before it must shed load.
-        static constexpr size_t RADIO_TX_QUEUE_DEPTH = 32;
+        // Depth 64: at the 10 ms min gap (~100 cmds/s drain) this absorbs ~640 ms of burst
+        // backlog (e.g. the boot / EX-menu sync) before it must shed load. Doubled from the
+        // original 32 once PacedRadioChannel (see above) started routing every CAT handler's
+        // radio TX -- not just RadioManager's own internal sends -- through this one queue,
+        // widening the set of producers that can burst concurrently (panel + USB/TCP clients
+        // + boot sequence all landing here now instead of writing the UART inline).
+        static constexpr size_t RADIO_TX_QUEUE_DEPTH = 64;
         QueueHandle_t radioTxQueue_ = nullptr;
         StaticQueue_t radioTxQueueControl_{};                                   // static queue control block
         uint8_t radioTxQueueStorage_[RADIO_TX_QUEUE_DEPTH * sizeof(RadioTxItem)]{}; // static item storage
@@ -845,10 +888,21 @@ namespace radio
 
         // Boot sequence task (non-blocking paced command sending)
         static void bootSequenceTask(void *pvParameters);
+        // Re-arm guard: true while bootSequenceTask is in flight. Prevents
+        // performBootSequence() from spawning a second overlapping instance
+        // (e.g. a rapid power-cycle or reconnect) that would race the first
+        // task's paced sends against its own. compare_exchange false->true
+        // gates task creation in performBootSequence(); the task clears it as
+        // its last action before self-deleting, and performBootSequence()
+        // also clears it immediately if xTaskCreate itself fails.
+        mutable std::atomic<bool> bootSequenceRunning_{false};
 
         // One-shot tasks that run paced radio I/O off the dispatch lock
         static void powerOffTask(void *pvParameters);
         static void transverterSyncTask(void *pvParameters);
+        // Re-arm guard for transverterSyncTask; same pattern/rationale as
+        // bootSequenceRunning_ above.
+        mutable std::atomic<bool> transverterSyncRunning_{false};
 
         // Boot sequence queries baseline radio state.
         // Note: PS/AI are NOT included - handled separately by InterfaceSystemCommandHandler.
@@ -874,6 +928,10 @@ namespace radio
 
         static constexpr size_t EX_MENU_COUNT = 100;
 
+        // PacedRadioChannel::sendMessage() forwards into sendRadioCommand() so that
+        // command handlers writing through it are paced like every other radio TX.
+        friend class PacedRadioChannel;
+
         // Allocation-free radio send helpers
         void sendRadioCommand(std::string_view command) const;
         void sendRadioCommand(const char *command) const;
@@ -889,10 +947,12 @@ namespace radio
 
         // Utility methods
         static uint64_t getCurrentTimestamp();
-        void checkTuningTimeout();
 
         // Constants
         static constexpr uint64_t PENDING_TIMEOUT_US = 5000000; // 5 seconds
+        // Stuck-tuning watchdog threshold (see shouldClearStuckTuning). Checked on
+        // txTimeoutTask's 1s tick, so this is also the worst-case detection latency.
+        static constexpr uint64_t STUCK_TUNING_TIMEOUT_US = 1'000'000; // 1 second
         static constexpr const char *TAG = "RadioManager";
 
         // === Minimal origin-memory routing for query→answer pairing ===
