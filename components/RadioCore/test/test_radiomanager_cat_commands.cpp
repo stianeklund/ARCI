@@ -1174,6 +1174,126 @@ namespace {
         tearDownTestRadioManager();
     }
 
+    // --- Fix 2: display dedup must be invalidated when delivery actually fails ---
+    //
+    // shouldForwardToDisplay() commits the dedup slot (FA/FB/IF/SM/RM) before the
+    // caller writes the frame to the display. If that write fails, the slot must be
+    // rolled back (ForwardingPolicy::invalidateDedup via RadioManager::onDisplayForwardFailed)
+    // so an identical follow-up value is not wrongly suppressed forever.
+
+    void test_display_dedup_invalidated_on_FA_forward_failure() {
+        setUpTestRadioManager(); // displayAiMode defaults to AI2 (dedup path)
+
+        ErrorMockSerialHandler errorDisplaySerial;
+        testRadioManager->setDisplaySerial(&errorDisplaySerial);
+
+        auto &displayForwardState = testRadioManager->getState().accessForwardState(radio::CommandSource::Display);
+
+        // Unsolicited FA answer from the radio; delivery to the display will fail.
+        testRadioManager->getRemoteCATHandler().parseMessage("FA00014150000;");
+
+        // Without invalidateDedup, the dedup slot would be left committed to
+        // 14150000 even though the display never received it.
+        TEST_ASSERT_TRUE(displayForwardState.lastFAMessage.load() == UINT64_MAX); // avoid Unity 64-bit assert issues
+
+        // Swap in a working display serial and resend the SAME frequency. If the
+        // slot had been left committed, this identical value would be wrongly
+        // deduped away and never reach the display.
+        MockSerialHandler workingDisplaySerial;
+        testRadioManager->setDisplaySerial(&workingDisplaySerial);
+        testRadioManager->getRemoteCATHandler().parseMessage("FA00014150000;");
+
+        TEST_ASSERT_FALSE(workingDisplaySerial.sentMessages.empty());
+        TEST_ASSERT_EQUAL_STRING("FA00014150000;", workingDisplaySerial.sentMessages.back().c_str());
+
+        testRadioManager->setDisplaySerial(nullptr);
+        tearDownTestRadioManager();
+    }
+
+    void test_display_dedup_invalidated_on_SM_forward_failure() {
+        setUpTestRadioManager(); // displayAiMode defaults to AI2 (dedup path)
+
+        ErrorMockSerialHandler errorDisplaySerial;
+        testRadioManager->setDisplaySerial(&errorDisplaySerial);
+
+        auto &displayForwardState = testRadioManager->getState().accessForwardState(radio::CommandSource::Display);
+
+        // Unsolicited SM (S-meter) answer from the radio; delivery to the display will fail.
+        testRadioManager->getRemoteCATHandler().parseMessage("SM00005;");
+
+        // Without invalidateDedup, the dedup slot would be left committed to 5
+        // even though the display never received it.
+        TEST_ASSERT_EQUAL_INT(-1, displayForwardState.lastSMValue.load());
+
+        MockSerialHandler workingDisplaySerial;
+        testRadioManager->setDisplaySerial(&workingDisplaySerial);
+        testRadioManager->getRemoteCATHandler().parseMessage("SM00005;");
+
+        TEST_ASSERT_FALSE(workingDisplaySerial.sentMessages.empty());
+        TEST_ASSERT_EQUAL_STRING("SM00005;", workingDisplaySerial.sentMessages.back().c_str());
+
+        testRadioManager->setDisplaySerial(nullptr);
+        tearDownTestRadioManager();
+    }
+
+    void test_display_dedup_invalidated_on_IF_forward_failure() {
+        setUpTestRadioManager(); // displayAiMode defaults to AI2 (dedup path)
+
+        ErrorMockSerialHandler errorDisplaySerial;
+        testRadioManager->setDisplaySerial(&errorDisplaySerial);
+
+        auto &displayForwardState = testRadioManager->getState().accessForwardState(radio::CommandSource::Display);
+
+        const std::string ifFrame = "IF00014150000      000000003020010080;";
+
+        // Unsolicited IF status answer from the radio; delivery to the display will fail.
+        testRadioManager->getRemoteCATHandler().parseMessage(ifFrame);
+
+        // Without invalidateDedup, the dedup slot would be left committed to this
+        // frame's hash even though the display never received it.
+        TEST_ASSERT_TRUE(displayForwardState.lastIFMessage.load() == 0); // avoid Unity 64-bit assert issues
+
+        MockSerialHandler workingDisplaySerial;
+        testRadioManager->setDisplaySerial(&workingDisplaySerial);
+        testRadioManager->getRemoteCATHandler().parseMessage(ifFrame);
+
+        TEST_ASSERT_FALSE(workingDisplaySerial.sentMessages.empty());
+        TEST_ASSERT_EQUAL_STRING(ifFrame.c_str(), workingDisplaySerial.sentMessages.back().c_str());
+
+        testRadioManager->setDisplaySerial(nullptr);
+        tearDownTestRadioManager();
+    }
+
+    // --- Fix 1: shouldClearStuckTuning pure helper (stuck-tuning watchdog) ---
+    void test_shouldClearStuckTuning_helper() {
+        setUpTestRadioManager();
+        auto &state = testRadioManager->getState();
+
+        // Not tuning at all: never "stuck", regardless of activity age.
+        state.isTuning.store(false);
+        state.isTx.store(false);
+        state.lastEncoderActivityTime.store(0);
+        TEST_ASSERT_FALSE(radio::RadioManager::shouldClearStuckTuning(state, 10'000'000));
+
+        // Tuning while actively transmitting (e.g. TX_MODE_TUNE): not stuck, even
+        // with an old activity timestamp -- isTx means it's legitimately busy.
+        state.isTuning.store(true);
+        state.isTx.store(true);
+        state.lastEncoderActivityTime.store(0);
+        TEST_ASSERT_FALSE(radio::RadioManager::shouldClearStuckTuning(state, 10'000'000));
+
+        // Tuning, not transmitting, recent encoder activity (<1s ago): not yet stuck.
+        state.isTx.store(false);
+        state.lastEncoderActivityTime.store(500'000);
+        TEST_ASSERT_FALSE(radio::RadioManager::shouldClearStuckTuning(state, 900'000)); // 400ms elapsed
+
+        // Tuning, not transmitting, encoder activity >1s ago: stuck, should clear.
+        state.lastEncoderActivityTime.store(0);
+        TEST_ASSERT_TRUE(radio::RadioManager::shouldClearStuckTuning(state, 1'000'001));
+
+        tearDownTestRadioManager();
+    }
+
     void test_command_error_handling() {
         setUpTestRadioManager();
 
@@ -1820,6 +1940,10 @@ namespace {
         RUN_TEST(test_VX_VOX_commands);
         RUN_TEST(test_XT_XIT_commands);
         RUN_TEST(test_UIDE_display_communication_enable);
+        RUN_TEST(test_display_dedup_invalidated_on_FA_forward_failure);
+        RUN_TEST(test_display_dedup_invalidated_on_SM_forward_failure);
+        RUN_TEST(test_display_dedup_invalidated_on_IF_forward_failure);
+        RUN_TEST(test_shouldClearStuckTuning_helper);
 
         // Advanced test scenarios
         RUN_TEST(test_command_error_handling);

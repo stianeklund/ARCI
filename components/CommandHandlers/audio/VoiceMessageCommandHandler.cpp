@@ -104,6 +104,7 @@ bool VoiceMessageCommandHandler::handleLM(const RadioCommand& command,
         const int mode = getIntParam(command, 0, LM_STOP);
         const int channel = getIntParam(command, 1, 1);
         const auto response = buildCommand("LM", std::to_string(mode) + std::to_string(channel));
+        radioManager.getState().commandCache.update("LM", esp_timer_get_time());
         routeAnswerResponse(command, response, usbSerial, radioManager);
         return true;
     }
@@ -148,6 +149,7 @@ bool VoiceMessageCommandHandler::handleLM(const RadioCommand& command,
     if (command.type == CommandType::Answer) {
         const int vgsState = getIntParam(command, 0, VR_OFF);
         const auto response = buildCommand("VR", std::to_string(vgsState));
+        radioManager.getState().commandCache.update("VR", esp_timer_get_time());
         routeAnswerResponse(command, response, usbSerial, radioManager);
         return true;
     }
@@ -256,6 +258,7 @@ bool VoiceMessageCommandHandler::handlePB(const RadioCommand& command,
         const std::string response = std::string("PB") + static_cast<char>('0' + ch) + static_cast<char>('0' + q1) +
                                    static_cast<char>('0' + q2) +
                                    static_cast<char>('0' + q3) + ";";
+        radioManager.getState().commandCache.update("PB", esp_timer_get_time());
         routeAnswerResponse(command, response, usbSerial, radioManager);
         return true;
         }

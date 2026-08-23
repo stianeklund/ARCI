@@ -47,6 +47,23 @@ namespace radio
          */
         static bool shouldForwardToDisplay(std::string_view response, const RadioState &state, uint64_t currentTime);
 
+        /**
+         * @brief Undo a dedup commit for one sink after delivery of `response` failed
+         *
+         * shouldForward*() commits the dedup slot (see handleDeduplication) BEFORE the
+         * caller actually writes the frame to the sink. If that write fails (e.g. the
+         * display serial queue is full), the slot has already recorded "delivered" for
+         * a value that was never actually sent, so an identical follow-up value would be
+         * wrongly suppressed forever. This resets only the slot matching `response`'s
+         * prefix to a sentinel that no real value can match, so the next attempt (retry
+         * or next natural update) is forwarded instead of deduped away.
+         * Unknown/untracked prefixes are a no-op.
+         *
+         * @param response The frame that failed to be delivered
+         * @param sinkState The forwarding state for the sink the delivery failed on
+         */
+        static void invalidateDedup(std::string_view response, RadioState::InterfaceForwardState &sinkState);
+
     private:
         // Helper methods for specific forwarding logic
         static bool shouldForwardInAIMode(std::string_view response, uint8_t aiMode, const RadioState &state,

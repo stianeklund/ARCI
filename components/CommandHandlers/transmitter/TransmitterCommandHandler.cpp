@@ -390,6 +390,10 @@ namespace radio
                 ESP_LOGD(TAG, "🔄 RX ANSWER: Invalidated IF cache to reflect RX state");
             }
 
+            // Radio is the ultimate authority: an RX Answer means any in-progress tune
+            // is over. Mirrors the clear already done in the RX SET / Read-remote branches
+            // above (fix for isTuning otherwise sticking when only the Answer path fires).
+            state.isTuning.store(false);
             radioManager.forceReleasePrimaryControl();
             routeAnswerResponse(command, buildCommand("RX"), usbSerial, radioManager);
             return true;

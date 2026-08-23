@@ -543,6 +543,69 @@ namespace radio
         return true;
     }
 
+    void ForwardingPolicy::invalidateDedup(std::string_view response, RadioState::InterfaceForwardState &sinkState)
+    {
+        const std::string_view prefix = getCommandPrefix(response);
+
+        if (prefix == "FA")
+        {
+            sinkState.lastFAMessage.store(UINT64_MAX, std::memory_order_relaxed);
+            return;
+        }
+
+        if (prefix == "FB")
+        {
+            sinkState.lastFBMessage.store(UINT64_MAX, std::memory_order_relaxed);
+            return;
+        }
+
+        if (prefix == "IF")
+        {
+            sinkState.lastIFMessage.store(0, std::memory_order_relaxed);
+            return;
+        }
+
+        if (prefix == "SM")
+        {
+            sinkState.lastSMValue.store(-1, std::memory_order_relaxed);
+            // The rate-limit state was also committed at decision time; a failed
+            // delivery must not count as a forward there either, or the retried
+            // value is suppressed for a full SM rate-limit window.
+            sinkState.lastSMTime.store(0, std::memory_order_relaxed);
+            sinkState.lastForwardedWasSM.store(false, std::memory_order_relaxed);
+            return;
+        }
+
+        if (prefix == "RM")
+        {
+            // Reset only the meter slot this failed frame belongs to; the other two
+            // meter types' dedup state is untouched.
+            const auto rmValue = parseRmValue(response);
+            if (!rmValue.has_value())
+            {
+                return; // Can't identify which meter slot; nothing safe to invalidate
+            }
+
+            switch (rmValue->first)
+            {
+            case 1:
+                sinkState.lastRM1Value.store(-1, std::memory_order_relaxed);
+                break;
+            case 2:
+                sinkState.lastRM2Value.store(-1, std::memory_order_relaxed);
+                break;
+            case 3:
+                sinkState.lastRM3Value.store(-1, std::memory_order_relaxed);
+                break;
+            default:
+                break;
+            }
+            return;
+        }
+
+        // Unknown prefix: no dedup state tracked for it, nothing to invalidate.
+    }
+
     std::string_view ForwardingPolicy::getCommandPrefix(std::string_view response)
     {
         if (response.length() >= 2)

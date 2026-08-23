@@ -310,8 +310,7 @@ namespace radio
         // === Cache Line 1: Continuation of hot-path state ===
         std::atomic<uint64_t> vfoAPendingValue{0}; // Offset 64
         std::atomic<uint64_t> vfoBPendingValue{0}; // Offset 72
-        std::atomic<uint64_t> tuningStartTime{0}; // Offset 80
-        std::atomic<uint64_t> tuningStopTime{0}; // Offset 88 - When tuning ended (for grace period)
+        std::atomic<uint64_t> tuningStopTime{0}; // Offset 80 - When tuning ended (for grace period)
         std::atomic<uint64_t> lastButtonActivityTime{0}; // Offset 96
         std::atomic<uint64_t> lastEncoderActivityTime{0}; // Offset 104
         mutable std::atomic<uint64_t> lastUipsSendTime{0}; // UIPS1 debounce for display activity signaling

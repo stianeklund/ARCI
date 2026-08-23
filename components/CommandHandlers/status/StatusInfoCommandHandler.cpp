@@ -641,6 +641,11 @@ bool StatusInfoCommandHandler::handleIF(const RadioCommand& command,
                     const bool locallyTrackedAsTx = state.isTx.load();
                     const int currentOwner = state.getTxOwner();
 
+                    // Radio is the ultimate authority: whenever IF reports RX, any
+                    // in-progress tune is over, regardless of which ownership branch
+                    // below applies (mirrors the clear in the RX/TX0/TX1 Answer paths).
+                    state.isTuning.store(false);
+
                     // Force release TX ownership if:
                     // 1. Response came from radio, AND
                     // 2. We locally think we're in TX (state mismatch), AND

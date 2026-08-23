@@ -1,9 +1,10 @@
 idf_component_register(
     SRCS 
-        "RadioManager.cpp" 
-        "CATHandler.cpp" 
+        "RadioManager.cpp"
+        "CATHandler.cpp"
         "CommandDispatcher.cpp"
         "ForwardingPolicy.cpp"
+        "PacedRadioChannel.cpp"
     INCLUDE_DIRS 
         "include"
     REQUIRES

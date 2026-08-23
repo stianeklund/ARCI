@@ -130,7 +130,7 @@ namespace radio
     } // namespace
 
     RadioManager::RadioManager(ISerialChannel &radioSerial, ISerialChannel &usbSerial) :
-        radioSerial_(radioSerial), usbSerial_(usbSerial)
+        radioSerial_(radioSerial), usbSerial_(usbSerial), pacedRadioSerial_(*this, radioSerial)
     {
         commandDispatcher_ = std::make_unique<CommandDispatcher>();
 
@@ -143,18 +143,21 @@ namespace radio
         ESP_LOGD(RadioManager::TAG, "Initializing command handlers...");
         initializeCommandHandlers();
 
+        // Handlers are given pacedRadioSerial_ (not radioSerial_ directly) so that any
+        // handler calling sendToRadio()/sendMessage() on "the radio" is routed through
+        // the paced TX queue (see PacedRadioChannel.h) instead of writing the UART inline.
         ESP_LOGV(RadioManager::TAG, "Creating local CATHandler...");
-        localHandler_ =
-            std::make_unique<CATHandler>(*commandDispatcher_, *this, radioSerial_, usbSerial_, CommandSource::UsbCdc0);
+        localHandler_ = std::make_unique<CATHandler>(*commandDispatcher_, *this, pacedRadioSerial_, usbSerial_,
+                                                      CommandSource::UsbCdc0);
         ESP_LOGV(RadioManager::TAG, "Creating remote CATHandler...");
-        remoteHandler_ =
-            std::make_unique<CATHandler>(*commandDispatcher_, *this, radioSerial_, usbSerial_, CommandSource::Remote);
+        remoteHandler_ = std::make_unique<CATHandler>(*commandDispatcher_, *this, pacedRadioSerial_, usbSerial_,
+                                                       CommandSource::Remote);
         ESP_LOGV(RadioManager::TAG, "Creating panel CATHandler (Panel source)...");
-        panelHandler_ =
-            std::make_unique<CATHandler>(*commandDispatcher_, *this, radioSerial_, usbSerial_, CommandSource::Panel);
+        panelHandler_ = std::make_unique<CATHandler>(*commandDispatcher_, *this, pacedRadioSerial_, usbSerial_,
+                                                      CommandSource::Panel);
         ESP_LOGV(RadioManager::TAG, "Creating macro CATHandler (Macro source)...");
-        macroHandler_ =
-            std::make_unique<CATHandler>(*commandDispatcher_, *this, radioSerial_, usbSerial_, CommandSource::Macro);
+        macroHandler_ = std::make_unique<CATHandler>(*commandDispatcher_, *this, pacedRadioSerial_, usbSerial_,
+                                                      CommandSource::Macro);
 
         // Skip networked client init during unit tests
 #ifndef CONFIG_RUN_UNIT_TESTS
@@ -404,7 +407,28 @@ namespace radio
             return;
         }
 
-        displaySerial_->sendMessage(frames);
+        if (const esp_err_t err = displaySerial_->sendMessage(frames); err != ESP_OK)
+        {
+            // The dedup slot for this frame's prefix was already committed by
+            // ForwardingPolicy::shouldForwardToDisplay() before this write was attempted
+            // (commit-before-delivery). Since the write failed, undo that commit so an
+            // identical follow-up value isn't wrongly deduped away forever.
+            onDisplayForwardFailed(frames);
+
+            static uint64_t lastWarnUs = 0;
+            const uint64_t nowUs = esp_timer_get_time();
+            if (nowUs - lastWarnUs > 1'000'000) // at most once per second
+            {
+                lastWarnUs = nowUs;
+                ESP_LOGW(TAG, "Display forward failed: %s (frame='%.*s')", esp_err_to_name(err),
+                         static_cast<int>(frames.size()), frames.data());
+            }
+        }
+    }
+
+    void RadioManager::onDisplayForwardFailed(std::string_view frames) const
+    {
+        ForwardingPolicy::invalidateDedup(frames, state_.accessForwardState(CommandSource::Display));
     }
 
     void RadioManager::signalUserActivity()
@@ -1265,6 +1289,7 @@ namespace radio
             nvs->saveExtendedMenu();
         }
 
+        self->bootSequenceRunning_.store(false, std::memory_order_relaxed);
         vTaskDelete(nullptr); // Self-delete when done
     }
 
@@ -1273,8 +1298,21 @@ namespace radio
 #ifndef CONFIG_RUN_UNIT_TESTS
         if (state_.powerOn.load())
         {
+            bool expected = false;
+            if (!bootSequenceRunning_.compare_exchange_strong(expected, true, std::memory_order_relaxed))
+            {
+                static uint64_t lastSkipLogUs = 0;
+                const uint64_t nowUs = esp_timer_get_time();
+                if (nowUs - lastSkipLogUs > 1'000'000) // at most once per second
+                {
+                    lastSkipLogUs = nowUs;
+                    ESP_LOGI(TAG, "Boot sequence already in progress, skip re-arm");
+                }
+                return;
+            }
+
             // Spawn background task for non-blocking paced command sending
-            xTaskCreate(
+            const BaseType_t result = xTaskCreate(
                 bootSequenceTask,
                 "boot_seq",
                 4096, // Needs stack for sendRadioCommand + logging + NVS save
@@ -1282,6 +1320,11 @@ namespace radio
                 5, // Lower priority - sync can happen in background
                 nullptr
             );
+            if (result != pdPASS)
+            {
+                ESP_LOGW(TAG, "Failed to create boot sequence task");
+                bootSequenceRunning_.store(false, std::memory_order_relaxed);
+            }
         }
 #endif
     }
@@ -1320,19 +1363,38 @@ namespace radio
         auto *self = static_cast<RadioManager *>(pvParameters);
         // Runs the paced sync in its own task context, off the dispatch lock.
         self->syncTransverterMenuSettings();
+        self->transverterSyncRunning_.store(false, std::memory_order_relaxed);
         vTaskDelete(nullptr);
     }
 
     void RadioManager::syncTransverterMenuSettingsAsync() const
     {
 #ifndef CONFIG_RUN_UNIT_TESTS
-        xTaskCreate(
+        bool expected = false;
+        if (!transverterSyncRunning_.compare_exchange_strong(expected, true, std::memory_order_relaxed))
+        {
+            static uint64_t lastSkipLogUs = 0;
+            const uint64_t nowUs = esp_timer_get_time();
+            if (nowUs - lastSkipLogUs > 1'000'000) // at most once per second
+            {
+                lastSkipLogUs = nowUs;
+                ESP_LOGI(TAG, "Transverter menu sync already in progress, skip re-arm");
+            }
+            return;
+        }
+
+        const BaseType_t result = xTaskCreate(
             transverterSyncTask,
             "tvtr_sync",
             3072,
             const_cast<RadioManager *>(this),
             5, // Background pacing; same priority class as boot sequence
             nullptr);
+        if (result != pdPASS)
+        {
+            ESP_LOGW(TAG, "Failed to create transverter sync task");
+            transverterSyncRunning_.store(false, std::memory_order_relaxed);
+        }
 #else
         // Unit tests run without a spawnable scheduler context here: execute inline.
         syncTransverterMenuSettings();
@@ -1503,21 +1565,18 @@ namespace radio
         ESP_LOGD(RadioManager::TAG, "Power state change callback %s", callback ? "registered" : "cleared");
     }
 
-    void RadioManager::checkTuningTimeout()
+    bool RadioManager::shouldClearStuckTuning(const RadioState &state, uint64_t nowUs)
     {
-        static constexpr uint64_t TUNING_TIMEOUT_US = 500000; // 500ms timeout
-
-        if (state_.isTuning.load())
+        if (!state.isTuning.load(std::memory_order_relaxed))
         {
-            const uint64_t currentTime = esp_timer_get_time();
-            if (const uint64_t tuningStartTime = state_.tuningStartTime.load();
-                tuningStartTime > 0 && currentTime - tuningStartTime > TUNING_TIMEOUT_US)
-            {
-                ESP_LOGW(RadioManager::TAG, "Tuning timeout detected, clearing tuning flag");
-                state_.isTuning.store(false);
-                state_.tuningStartTime.store(0);
-            }
+            return false;
         }
+        if (state.isTx.load(std::memory_order_relaxed))
+        {
+            return false; // Actively transmitting (e.g. TX_MODE_TUNE): not stuck
+        }
+        const uint64_t lastActivity = state.lastEncoderActivityTime.load(std::memory_order_relaxed);
+        return (nowUs - lastActivity) > STUCK_TUNING_TIMEOUT_US;
     }
 
     bool RadioManager::updateSplitEnabled(const bool enabled)
@@ -2177,6 +2236,18 @@ namespace radio
                     }
                     radioManager->forceReleasePrimaryControl();
                 }
+            }
+
+            // Stuck-tuning watchdog (backstop for the RX/TX0/TX1 Answer paths and the IF
+            // P8=RX branch, which normally clear isTuning): runs on this task's existing
+            // 1s tick rather than a dedicated task. Self-limiting -- clearing isTuning
+            // makes shouldClearStuckTuning() false again on the next iteration, so no
+            // separate rate-limit is needed for the warning below.
+            if (shouldClearStuckTuning(radioManager->getState(), currentTime))
+            {
+                ESP_LOGW(RadioManager::TAG, "⏰ Stuck isTuning flag cleared (no encoder activity for >1s, not transmitting)");
+                radioManager->getState().isTuning.store(false);
+                radioManager->getState().tuningStopTime.store(0);
             }
 
             // Poll IF status frequently while TX is active to detect RX transition promptly
