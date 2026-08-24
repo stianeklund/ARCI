@@ -428,6 +428,10 @@ namespace radio
         std::atomic<int> txEqualizer{0}; // TX Equalizer
         std::atomic<int> rxEqualizer{0}; // RX Equalizer
         std::atomic<int> ifFilter{0}; // IF Filter
+        // Auto IF-filter follow on split+CW (UIAF). UI-synced with the display, session-only:
+        // deliberately NOT NVS-persisted here (the display owns persistence), so it resets to
+        // false on boot. Drives RadioManager::applyAutoFilterPolicy().
+        std::atomic<bool> autoFilterBSplitCw{false};
         std::atomic<int> dspFilterBandwidth{0}; // DSP filter bandwidth (FW command for CW/FSK/FM)
         std::atomic<int> fmNarrowMode{0}; // FM narrow mode (0=Normal, 1=Narrow)
         std::atomic<int> agcMode{0}; // AGC mode (0=OFF, 1=Slow, 2=Fast, 3=Restore)

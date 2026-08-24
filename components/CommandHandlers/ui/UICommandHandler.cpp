@@ -8,7 +8,7 @@ namespace radio
 {
 
     UICommandHandler::UICommandHandler() :
-        BaseCommandHandler({"UIPC", "UIML", "UICG", "UIRL", "UIRS", "UINL", "UIPI", "UIPO", "UINF", "UIIS", "UIDA", "UIRI", "UIMN", "UIBL", "UIXD", "UIPS", "UIDE", "UIKS"}, "UI Meta Commands (Panel-Display Only)")
+        BaseCommandHandler({"UIPC", "UIML", "UICG", "UIRL", "UIRS", "UINL", "UIPI", "UIPO", "UINF", "UIIS", "UIDA", "UIRI", "UIMN", "UIBL", "UIXD", "UIPS", "UIDE", "UIKS", "UIAF"}, "UI Meta Commands (Panel-Display Only)")
     {
     }
 
@@ -91,6 +91,10 @@ namespace radio
         if (cmd.command == "UIKS")
         {
             return handleUIKS(cmd, rm);
+        }
+        if (cmd.command == "UIAF")
+        {
+            return handleUIAF(cmd, rm);
         }
 
         return false;
@@ -854,6 +858,60 @@ namespace radio
         return false;
     }
 
+    bool UICommandHandler::handleUIAF(const RadioCommand &cmd, RadioManager &rm) const
+    {
+        // UIAF: Auto IF-Filter-B on Split+CW toggle
+        // Format: UIAFn; where n is 0 (disabled) or 1 (enabled)
+        // When enabled and the radio is in split CW, the IF filter follows the RX VFO
+        // (VFO A -> FL1;, VFO B -> FL2;). Leaving split/CW never reverts the filter.
+        auto &state = rm.getState();
+
+        if (isQuery(cmd))
+        {
+            const bool enabled = state.autoFilterBSplitCw.load(std::memory_order_relaxed);
+            const std::string response = formatUIAF(enabled);
+            sendToDisplayOnly(response, rm);
+            ESP_LOGI(TAG, "UIAF query: auto IF-filter on split+CW is %s", enabled ? "enabled" : "disabled");
+            return true;
+        }
+
+        if (isSet(cmd))
+        {
+            const int value = getIntParam(cmd, 0, -1);
+            if (value != 0 && value != 1)
+            {
+                ESP_LOGW(TAG, "Invalid UIAF value: %d (must be 0 or 1)", value);
+                return false;
+            }
+
+            state.autoFilterBSplitCw.store(value == 1, std::memory_order_relaxed);
+            ESP_LOGI(TAG, "UIAF set: auto IF-filter on split+CW %s", value ? "enabled" : "disabled");
+
+            // Send confirmation to display
+            const std::string response = formatUIAF(value == 1);
+            sendToDisplayOnly(response, rm);
+
+            // Apply immediately so enabling while already in split+CW selects the right
+            // filter now instead of waiting for the next mode/split/VFO transition
+            rm.applyAutoFilterPolicy();
+
+            return true;
+        }
+
+        if (cmd.type == CommandType::Answer)
+        {
+            const int value = getIntParam(cmd, 0, -1);
+            if (value == 0 || value == 1)
+            {
+                state.autoFilterBSplitCw.store(value == 1, std::memory_order_relaxed);
+                ESP_LOGD(TAG, "UIAF answer from display: %d", value);
+            }
+            return true;
+        }
+
+        return false;
+    }
+
     bool UICommandHandler::handleUIPS(const RadioCommand &cmd, RadioManager &rm) const
     {
         // UIPS: Panel Status / Display Wake command
@@ -1125,6 +1183,11 @@ namespace radio
     std::string UICommandHandler::formatUIXD(const bool enabled)
     {
         return enabled ? "UIXD1;" : "UIXD0;";
+    }
+
+    std::string UICommandHandler::formatUIAF(const bool enabled)
+    {
+        return enabled ? "UIAF1;" : "UIAF0;";
     }
 
     std::string UICommandHandler::formatUIPS(const bool active)

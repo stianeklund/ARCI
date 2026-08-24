@@ -1,6 +1,7 @@
 #include <string>
 #include <vector>
 #include <array>
+#include <algorithm>
 #include <charconv>
 #include "../../SerialHandler/include/SerialHandler.h"
 #include "../include/RadioManager.h"
@@ -659,6 +660,112 @@ namespace {
         testRadioManager->getLocalCATHandler().parseMessage("FL;");
         testRadioManager->getLocalCATHandler().parseMessage("FL1;");
         testRadioManager->getLocalCATHandler().parseMessage("FL2;");
+        tearDownTestRadioManager();
+    }
+
+    // === UIAF: auto IF-filter follow on split + CW ===
+
+    // Put the radio into split CW with the given RX VFO while the policy is disabled,
+    // so no automatic filter change happens during setup.
+    void setUpAutoFilterScenario(const uint8_t rxVfo, const int initialFilter) {
+        auto &state = testRadioManager->getState();
+        state.autoFilterBSplitCw.store(false);
+        state.currentTxVfo.store(rxVfo == 0 ? 1 : 0); // opposite VFO -> split active
+        testRadioManager->updateRxVfo(rxVfo);
+        testRadioManager->updateMode(3); // CW
+        state.ifFilter.store(initialFilter);
+        testRadioManager->resetMockSerials();
+    }
+
+    bool sentFilterCommand(const std::string &expected) {
+        return std::any_of(mockRadioSerial.sentMessages.begin(), mockRadioSerial.sentMessages.end(),
+                           [&expected](const std::string &msg) { return msg.find(expected) != std::string::npos; });
+    }
+
+    bool sentAnyFilterCommand() {
+        return sentFilterCommand("FL1;") || sentFilterCommand("FL2;");
+    }
+
+    void test_uiaf_enable_applies_filter_immediately() {
+        setUpTestRadioManager();
+        setUpAutoFilterScenario(1, 1); // RX on VFO B, filter currently A
+
+        testRadioManager->getLocalCATHandler().parseMessage("UIAF1;");
+
+        TEST_ASSERT_TRUE(testRadioManager->getState().autoFilterBSplitCw.load());
+        TEST_ASSERT_TRUE(sentFilterCommand("FL2;"));
+        TEST_ASSERT_EQUAL_INT(2, testRadioManager->getState().ifFilter.load());
+
+        testRadioManager->getState().autoFilterBSplitCw.store(false);
+        tearDownTestRadioManager();
+    }
+
+    void test_uiaf_filter_follows_rx_vfo() {
+        setUpTestRadioManager();
+        setUpAutoFilterScenario(1, 2); // RX on VFO B, filter already B
+        testRadioManager->getState().autoFilterBSplitCw.store(true);
+        testRadioManager->resetMockSerials();
+
+        // Move RX to VFO A with TX on VFO B -> still split
+        testRadioManager->getState().currentTxVfo.store(1);
+        testRadioManager->updateRxVfo(0);
+        TEST_ASSERT_TRUE(sentFilterCommand("FL1;"));
+        TEST_ASSERT_EQUAL_INT(1, testRadioManager->getState().ifFilter.load());
+
+        // Back to VFO B
+        testRadioManager->resetMockSerials();
+        testRadioManager->getState().currentTxVfo.store(0);
+        testRadioManager->updateRxVfo(1);
+        TEST_ASSERT_TRUE(sentFilterCommand("FL2;"));
+        TEST_ASSERT_EQUAL_INT(2, testRadioManager->getState().ifFilter.load());
+
+        testRadioManager->getState().autoFilterBSplitCw.store(false);
+        tearDownTestRadioManager();
+    }
+
+    void test_uiaf_leaving_split_does_not_revert_filter() {
+        setUpTestRadioManager();
+        setUpAutoFilterScenario(1, 2); // RX on VFO B, filter B
+        testRadioManager->getState().autoFilterBSplitCw.store(true);
+
+        // TX follows RX -> simplex, split off
+        testRadioManager->updateTxVfo(1);
+        testRadioManager->resetMockSerials();
+        testRadioManager->updateSplitEnabled(false);
+
+        TEST_ASSERT_FALSE(sentAnyFilterCommand());
+        TEST_ASSERT_EQUAL_INT(2, testRadioManager->getState().ifFilter.load());
+
+        testRadioManager->getState().autoFilterBSplitCw.store(false);
+        tearDownTestRadioManager();
+    }
+
+    void test_uiaf_disabled_never_changes_filter() {
+        setUpTestRadioManager();
+        setUpAutoFilterScenario(1, 1); // RX on VFO B, filter A, policy disabled
+
+        testRadioManager->updateRxVfo(0);
+        testRadioManager->getState().currentTxVfo.store(0);
+        testRadioManager->updateRxVfo(1);
+        testRadioManager->updateMode(3);
+
+        TEST_ASSERT_FALSE(sentAnyFilterCommand());
+        TEST_ASSERT_EQUAL_INT(1, testRadioManager->getState().ifFilter.load());
+        tearDownTestRadioManager();
+    }
+
+    void test_uiaf_cw_rev_also_triggers() {
+        setUpTestRadioManager();
+        setUpAutoFilterScenario(1, 1); // RX on VFO B, filter A (helper sets mode to CW)
+        testRadioManager->getState().autoFilterBSplitCw.store(true);
+        testRadioManager->resetMockSerials();
+
+        testRadioManager->updateMode(7); // CW-REV
+
+        TEST_ASSERT_TRUE(sentFilterCommand("FL2;"));
+        TEST_ASSERT_EQUAL_INT(2, testRadioManager->getState().ifFilter.load());
+
+        testRadioManager->getState().autoFilterBSplitCw.store(false);
         tearDownTestRadioManager();
     }
 
@@ -1887,6 +1994,11 @@ namespace {
         RUN_TEST(test_DN_microphone_down_commands);
         RUN_TEST(test_FB_VFO_B_frequency_commands);
         RUN_TEST(test_FL_IF_filter_commands);
+        RUN_TEST(test_uiaf_enable_applies_filter_immediately);
+        RUN_TEST(test_uiaf_filter_follows_rx_vfo);
+        RUN_TEST(test_uiaf_leaving_split_does_not_revert_filter);
+        RUN_TEST(test_uiaf_disabled_never_changes_filter);
+        RUN_TEST(test_uiaf_cw_rev_also_triggers);
         RUN_TEST(test_FR_function_receive_commands);
         RUN_TEST(test_FS_fine_step_commands);
         RUN_TEST(test_FT_function_transmit_commands);

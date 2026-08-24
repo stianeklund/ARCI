@@ -512,6 +512,16 @@ namespace radio
          */
         bool updateSplitEnabled(bool enabled);
 
+        /**
+         * @brief Apply the auto IF-filter policy (UIAF)
+         *
+         * When enabled, split is active (RX VFO != TX VFO) and the mode is CW, the IF filter
+         * follows the RX VFO: VFO A -> FL1;, VFO B -> FL2;. When any precondition is no longer
+         * met the policy simply stops adjusting - it never reverts to a default filter.
+         * Called after mode/split/RX-VFO transitions and when the option is switched on.
+         */
+        void applyAutoFilterPolicy() const;
+
         // RIT/XIT control methods
         /**
          * @brief Check if RIT is enabled
