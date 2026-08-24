@@ -725,6 +725,7 @@ namespace radio
         if (oldMode != mode)
         {
             ESP_LOGD(RadioManager::TAG, "Mode updated: %d -> %d", oldMode, mode);
+            applyAutoFilterPolicy();
             return true;
         }
         return false;
@@ -767,6 +768,7 @@ namespace radio
             // Split mode should only be set explicitly via updateSplitEnabled() or SP commands
             // Automatic detection causes incorrect split mode during simple VFO toggles
 
+            applyAutoFilterPolicy();
             return true;
         }
         return false;
@@ -1585,9 +1587,56 @@ namespace radio
         {
             ESP_LOGI(RadioManager::TAG, "🔀 SPLIT: Split mode updated: %s -> %s", oldSplit ? "ON" : "OFF",
                      enabled ? "ON" : "OFF");
+            applyAutoFilterPolicy();
             return true;
         }
         return false;
+    }
+
+    void RadioManager::applyAutoFilterPolicy() const
+    {
+        // UIAF: in split CW the IF filter follows the RX VFO (A -> FL1, B -> FL2).
+        // Leaving split/CW or disabling the option just stops adjusting - never reverts.
+        constexpr int MODE_CW = 3;     // TS-590SG MD value for CW
+        constexpr int MODE_CW_REV = 7; // TS-590SG MD value for CW-REV
+
+        if (!state_.autoFilterBSplitCw.load(std::memory_order_relaxed))
+        {
+            return;
+        }
+        if (!state_.isInSplitMode())
+        {
+            return;
+        }
+        const int mode = state_.mode.load();
+        if (mode != MODE_CW && mode != MODE_CW_REV)
+        {
+            return;
+        }
+
+        const uint8_t rxVfo = state_.currentRxVfo.load(std::memory_order_relaxed);
+        int targetFilter = 0;
+        if (rxVfo == 0)
+        {
+            targetFilter = 1; // RX on VFO A -> IF filter A
+        }
+        else if (rxVfo == 1)
+        {
+            targetFilter = 2; // RX on VFO B -> IF filter B
+        }
+        else
+        {
+            return; // Memory channel: no VFO to follow
+        }
+
+        if (state_.ifFilter.load() == targetFilter)
+        {
+            return;
+        }
+
+        ESP_LOGI(RadioManager::TAG, "Auto filter: split+CW RX VFO %s -> IF filter %s",
+                 rxVfo == 0 ? "A" : "B", targetFilter == 1 ? "A" : "B");
+        sendLocal(targetFilter == 1 ? "FL1;" : "FL2;");
     }
 
     bool RadioManager::updateRitEnabled(const bool enabled)
