@@ -210,6 +210,12 @@ void ButtonHandler::buttonTask(void *arg)
                 case TCA8418Handler::MatrixKey::KEY_0x27:  // MODE
                     handler->handleModeMatrixButton(button);
                     break;
+                case TCA8418Handler::MatrixKey::KEY_0x1B:  // BND+ (long press = band slot up)
+                    handler->handleBandUpButton(button);
+                    break;
+                case TCA8418Handler::MatrixKey::KEY_0x1C:  // BND- (long press = band slot down)
+                    handler->handleBandDownButton(button);
+                    break;
                 default:
                     break;
                 }
@@ -1305,10 +1311,10 @@ void ButtonHandler::applyMatrixButtonEvent(const TCA8418Handler::MatrixKey key, 
                 handleXitButton(it->second);             // XIT (0x2F)
                 break;
             case TCA8418Handler::MatrixKey::KEY_0x1B:
-                if (pressed) handleBandUpButton();       // BND+ (0x1B)
+                handleBandUpButton(it->second);          // BND+ (0x1B)
                 break;
             case TCA8418Handler::MatrixKey::KEY_0x1C:
-                if (pressed) handleBandDownButton();     // BND- (0x1C)
+                handleBandDownButton(it->second);        // BND- (0x1C)
                 break;
             case TCA8418Handler::MatrixKey::KEY_0x1D:
                 if (pressed) handleClearButton();        // CLR (0x1D)
@@ -1327,8 +1333,19 @@ void ButtonHandler::applyMatrixButtonEvent(const TCA8418Handler::MatrixKey key, 
 }
 
 // TCA8418 Matrix button handler implementations
-void ButtonHandler::handleBandDownButton()
+void ButtonHandler::handleBandDownButton(MatrixButton &button)
 {
+    // Long press steps down through the band stacking register slots of the
+    // CURRENT band; short press changes band.
+    if (button.wasLongPressed())
+    {
+        cycleBandMemorySlot(false);
+        return;
+    }
+
+    if (!button.wasShortPressed())
+        return;
+
     if (!m_radioManager.getState().keepAlive.load())
         return;
 
@@ -1385,8 +1402,19 @@ void ButtonHandler::handleBandDownButton()
     m_radioManager.requestFrequencyUpdate();
 }
 
-void ButtonHandler::handleBandUpButton()
+void ButtonHandler::handleBandUpButton(MatrixButton &button)
 {
+    // Long press steps up through the band stacking register slots of the
+    // CURRENT band; short press changes band.
+    if (button.wasLongPressed())
+    {
+        cycleBandMemorySlot(true);
+        return;
+    }
+
+    if (!button.wasShortPressed())
+        return;
+
     if (!m_radioManager.getState().keepAlive.load())
         return;
 
@@ -1440,6 +1468,52 @@ void ButtonHandler::handleBandUpButton()
 
     // Invalidate frequency cache and request fresh FA/FB from radio
     // This ensures display updates quickly after band change
+    m_radioManager.requestFrequencyUpdate();
+}
+
+// Cycle the TS-590SG band stacking register slots (3 per band) without leaving the band.
+// Sending BU/BD with the band number the radio is ALREADY on steps to the next/previous
+// stacking register slot instead of changing band - same as repeatedly pressing a band key
+// on the front panel. Verified on hardware against a TS-590SG.
+//
+// Deliberately sends no MD: every slot carries its own mode, and forcing the remembered
+// per-band mode would clobber exactly the behaviour we want. bandNumber is likewise left
+// untouched - the band does not change, and decodeBandFromFreq() on the FA/FB readback
+// keeps it coherent.
+void ButtonHandler::cycleBandMemorySlot(const bool up)
+{
+    if (!m_radioManager.getState().keepAlive.load())
+        return;
+
+    // Check panel lock state - block button when locked
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
+    {
+        ESP_LOGD(TAG, "Band slot cycle blocked - panel is LOCKED");
+        return;
+    }
+
+    m_radioManager.recordButtonActivity();
+
+    // Resolve the current band from the cached RX VFO frequency (non-blocking)
+    const uint8_t  rxVfo = m_radioManager.getState().currentRxVfo.load();
+    const uint64_t currentFreq =
+        (rxVfo == 1) ? m_radioManager.getVfoBFrequency() : m_radioManager.getVfoAFrequency();
+    m_radioManager.decodeBandFromFreq(currentFreq);
+
+    const int bandIndex = m_radioManager.getState().bandNumber.load(std::memory_order_relaxed);
+    if (bandIndex < 0 || bandIndex > 10)
+    {
+        ESP_LOGW(TAG, "Band slot cycle aborted - band index %d out of range (freq %llu Hz)", bandIndex, currentFreq);
+        return;
+    }
+
+    char command[8];
+    std::snprintf(command, sizeof(command), "%s%02d;", up ? "BU" : "BD", bandIndex);
+    m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), command);
+
+    ESP_LOGI(TAG, "🎛️ Band slot cycle %s on %s: %s", up ? "up" : "down", bandNames[bandIndex], command);
+
+    // Invalidate frequency cache and request fresh FA/FB so the display follows the new slot
     m_radioManager.requestFrequencyUpdate();
 }
 

@@ -26,6 +26,11 @@ public:
 
     // Test helpers for trigger methods
     void testTriggerSplitButton() { triggerSplitButton(); }
+
+    // Matrix BND+/BND- handlers are private; expose them so tests can drive a real
+    // MatrixButton through the short/long press state machine.
+    void testHandleBandUpButton(MatrixButton &button) { handleBandUpButton(button); }
+    void testHandleBandDownButton(MatrixButton &button) { handleBandDownButton(button); }
     void testTriggerTransverterMacroButton() { triggerTransverterMacroButton(); }
 };
 
@@ -844,6 +849,114 @@ void test_dispatch_cycle_reads_live_state_not_stale() {
                               "dispatchCycleLocked must not emit NB1; from a stale pre-read of noiseBlanker=0");
 }
 
+// ---------------------------------------------------------------------------
+// Band memory slot cycling on BND+ / BND- (matrix keys 0x1B / 0x1C)
+//
+// Short press = band change (BU/BD with the NEXT band number).
+// Long press  = band stacking register slot step (BU/BD with the CURRENT band
+// number, no MD, band number untouched).
+//
+// TCA8418 convention: updateState(false) = key down, updateState(true) = key up.
+// The long press is produced by handing updateState() a press instant in the past
+// so Button::update() sees the 500 ms threshold already met - no vTaskDelay needed.
+// ---------------------------------------------------------------------------
+static constexpr uint64_t kBand21MHzFreq = 21005000;  // 15m -> band index 6
+static constexpr int      kBand21MHzIndex = 6;
+
+static bool radioSentFrameWithPrefix(const char *prefix) {
+    const std::string p(prefix);
+    for (const auto &msg : mockRadioSerial->sentMessages) {
+        if (msg.rfind(p, 0) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void seedBand21MHz() {
+    radioManager->getState().keepAlive.store(true);
+    radioManager->getState().panelLock.store(false, std::memory_order_relaxed);
+    radioManager->getState().currentRxVfo.store(0);
+    radioManager->updateVfoAFrequency(kBand21MHzFreq);
+    radioManager->getState().bandNumber.store(kBand21MHzIndex, std::memory_order_relaxed);
+    clearMessages();
+}
+
+static void matrixLongPress(MatrixButton &button) {
+    const int64_t nowMs = esp_timer_get_time() / 1000;
+    button.updateState(false, nowMs - 600);  // pressed 600 ms ago -> long press already due
+    button.update();
+}
+
+static void matrixShortPress(MatrixButton &button) {
+    const int64_t nowMs = esp_timer_get_time() / 1000;
+    button.updateState(false, nowMs);  // key down
+    button.updateState(true, nowMs);   // key up (short press completes on release)
+}
+
+void test_band_up_long_press_cycles_slot_in_current_band() {
+    seedBand21MHz();
+
+    MatrixButton bandUp(TCA8418Handler::MatrixKey::KEY_0x1B, 50, 500);
+    matrixLongPress(bandUp);
+    buttonHandler->testHandleBandUpButton(bandUp);
+
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("BU06;"),
+                             "Long press BND+ on 21 MHz must emit BU06; (slot step within band 6)");
+    TEST_ASSERT_FALSE_MESSAGE(radioSentFrame("BU07;"),
+                              "Long press BND+ must not change band (BU07; is the band-up frame)");
+}
+
+void test_band_down_long_press_cycles_slot_in_current_band() {
+    seedBand21MHz();
+
+    MatrixButton bandDown(TCA8418Handler::MatrixKey::KEY_0x1C, 50, 500);
+    matrixLongPress(bandDown);
+    buttonHandler->testHandleBandDownButton(bandDown);
+
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("BD06;"),
+                             "Long press BND- on 21 MHz must emit BD06; (slot step within band 6)");
+    TEST_ASSERT_FALSE_MESSAGE(radioSentFrame("BD05;"),
+                              "Long press BND- must not change band (BD05; is the band-down frame)");
+}
+
+void test_band_slot_cycle_sends_no_mode_command() {
+    seedBand21MHz();
+
+    MatrixButton bandUp(TCA8418Handler::MatrixKey::KEY_0x1B, 50, 500);
+    matrixLongPress(bandUp);
+    buttonHandler->testHandleBandUpButton(bandUp);
+
+    // Each stacking register slot carries its own mode; an MD would clobber it.
+    TEST_ASSERT_FALSE_MESSAGE(radioSentFrameWithPrefix("MD"),
+                              "Band slot cycle must not send any MD command");
+}
+
+void test_band_slot_cycle_leaves_band_number_unchanged() {
+    seedBand21MHz();
+
+    MatrixButton bandUp(TCA8418Handler::MatrixKey::KEY_0x1B, 50, 500);
+    matrixLongPress(bandUp);
+    buttonHandler->testHandleBandUpButton(bandUp);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(kBand21MHzIndex,
+                                  radioManager->getState().bandNumber.load(std::memory_order_relaxed),
+                                  "Band slot cycle must leave bandNumber untouched");
+}
+
+void test_band_up_short_press_still_changes_band() {
+    seedBand21MHz();
+
+    MatrixButton bandUp(TCA8418Handler::MatrixKey::KEY_0x1B, 50, 500);
+    matrixShortPress(bandUp);
+    buttonHandler->testHandleBandUpButton(bandUp);
+
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("BU07;"),
+                             "Short press BND+ on 21 MHz must still change band (BU07;)");
+    TEST_ASSERT_FALSE_MESSAGE(radioSentFrame("BU06;"),
+                              "Short press BND+ must not emit the slot-cycle frame BU06;");
+}
+
 extern "C" void run_button_handler_tests(void) {
     buttonHandlerSetUp();
     ESP_LOGI("ButtonHandlerTests", "RUNNING TESTS..");
@@ -887,6 +1000,13 @@ extern "C" void run_button_handler_tests(void) {
     RUN_TEST(test_dispatch_cycle_nb_active_skips_off);
     RUN_TEST(test_dispatch_cycle_nb_clamps_invalid_state);
     RUN_TEST(test_dispatch_cycle_reads_live_state_not_stale);
+
+    // Band memory slot cycling (long press BND+/BND-)
+    RUN_TEST(test_band_up_long_press_cycles_slot_in_current_band);
+    RUN_TEST(test_band_down_long_press_cycles_slot_in_current_band);
+    RUN_TEST(test_band_slot_cycle_sends_no_mode_command);
+    RUN_TEST(test_band_slot_cycle_leaves_band_number_unchanged);
+    RUN_TEST(test_band_up_short_press_still_changes_band);
     buttonHandlerTearDown();
 }
 
