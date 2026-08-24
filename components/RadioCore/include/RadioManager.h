@@ -907,7 +907,7 @@ namespace radio
         // Boot sequence queries baseline radio state.
         // Note: PS/AI are NOT included - handled separately by InterfaceSystemCommandHandler.
         // Commands that may return ?; in certain modes are avoided or placed last.
-        static constexpr size_t BOOT_SEQUENCE_SIZE = 22;
+        static constexpr size_t BOOT_SEQUENCE_SIZE = 24;
         static constexpr std::array<const char *, BOOT_SEQUENCE_SIZE> bootSequence_{
             // Core state: VFO, mode, frequencies
             "IF;", "FR;", "FT;", "MD;", "FA;", "FB;",
@@ -915,6 +915,9 @@ namespace radio
             "FL;", "SH;", "SL;",
             // TX/RX settings
             "PC;", "SQ0;", "XT;", "RT;",
+            // Gain knobs: panel encoders accumulate from cached state, so RF/AF
+            // gain must be primed from the radio or the first click jumps to ~0.
+            "AG0;", "RG;",
             // Button states for panel sync
             "PA;", "RA;", "NB;", "NR;", "NT;", "VX;",
             // Optional (may fail in some modes)

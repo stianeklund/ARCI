@@ -142,13 +142,13 @@ bool GainLevelCommandHandler::handleAG(const RadioCommand& command,
         const uint64_t adjustTime = state.afGainAdjustTime.load();
         constexpr uint64_t ADJUST_TIMEOUT_US = 500000; // 500ms timeout
         
-        if (state.isAdjustingAfGain.load() && (now - adjustTime) < ADJUST_TIMEOUT_US) {
-            ESP_LOGD(TAG, "Skipping AG answer update during potentiometer adjustment (prevents flicker)");
-            // Clear flag after timeout
-            if ((now - adjustTime) >= ADJUST_TIMEOUT_US) {
-                state.isAdjustingAfGain.store(false);
+        if (state.isAdjustingAfGain.load()) {
+            if ((now - adjustTime) < ADJUST_TIMEOUT_US) {
+                ESP_LOGD(TAG, "Skipping AG answer update during potentiometer adjustment (prevents flicker)");
+                return true; // Command was handled, just not processed
             }
-            return true; // Command was handled, just not processed
+            // Adjustment window expired - accept radio values again
+            state.isAdjustingAfGain.store(false);
         }
         
         const int gain = parseGainValue(command);
@@ -220,13 +220,13 @@ bool GainLevelCommandHandler::handleRG(const RadioCommand& command,
         const uint64_t adjustTime = state.rfGainAdjustTime.load();
         constexpr uint64_t ADJUST_TIMEOUT_US = 500000; // 500ms timeout
         
-        if (state.isAdjustingRfGain.load() && (now - adjustTime) < ADJUST_TIMEOUT_US) {
-            ESP_LOGD(TAG, "Skipping RG answer update during potentiometer adjustment (prevents flicker)");
-            // Clear flag after timeout
-            if ((now - adjustTime) >= ADJUST_TIMEOUT_US) {
-                state.isAdjustingRfGain.store(false);
+        if (state.isAdjustingRfGain.load()) {
+            if ((now - adjustTime) < ADJUST_TIMEOUT_US) {
+                ESP_LOGD(TAG, "Skipping RG answer update during potentiometer adjustment (prevents flicker)");
+                return true; // Command was handled, just not processed
             }
-            return true; // Command was handled, just not processed
+            // Adjustment window expired - accept radio values again
+            state.isAdjustingRfGain.store(false);
         }
         
         const int gain = parseGainValue(command);

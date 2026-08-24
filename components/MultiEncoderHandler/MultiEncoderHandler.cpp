@@ -316,6 +316,27 @@ int32_t MultiEncoderHandler::getAccelMultiplier(uint8_t band, EncoderId encoderI
     }
 }
 
+bool MultiEncoderHandler::ensureGainPrimed(const char *cacheKey, const char *readCommand,
+                                          std::atomic<uint64_t> &lastQueryTime) {
+    // Re-query at most this often while waiting for the radio to answer.
+    constexpr uint64_t PRIME_QUERY_THROTTLE_US = 500000;
+
+    const auto &state = m_radioManager->getState();
+    if (state.commandCache.get(cacheKey) != 0) {
+        return true;
+    }
+
+    const uint64_t now = esp_timer_get_time();
+    const uint64_t lastQuery = lastQueryTime.load();
+    if (lastQuery == 0 || (now - lastQuery) >= PRIME_QUERY_THROTTLE_US) {
+        lastQueryTime.store(now);
+        m_radioManager->dispatchMessage(m_radioManager->getPanelCATHandler(), readCommand);
+        ESP_LOGI(TAG, "%s not cached - querying radio (%s), ignoring this detent",
+                 cacheKey, readCommand);
+    }
+    return false;
+}
+
 void MultiEncoderHandler::configureDefaultCallbacks() {
     // Guard window for AF gain switch press (ignore rotation within 150ms)
     static constexpr uint64_t AF_SWITCH_GUARD_US = 150000;
@@ -336,7 +357,11 @@ void MultiEncoderHandler::configureDefaultCallbacks() {
 
         switch (encoderId) {
         case EncoderId::RF_GAIN: {
-            // RF Gain encoder: 0-255 range, accumulate delta
+            // RF Gain encoder: 0-255 range, accumulate delta.
+            // Drop the detent if the radio's value was never read (would jump to ~0).
+            if (!ensureGainPrimed("RG", "RG;", m_rfGainPrimeQueryTime)) {
+                return;
+            }
             int rfGainValue = state.rfGain.load();
             rfGainValue += static_cast<int>(delta);
             if (rfGainValue < 0) rfGainValue = 0;
@@ -355,6 +380,11 @@ void MultiEncoderHandler::configureDefaultCallbacks() {
             const uint64_t now = esp_timer_get_time();
             if ((now - m_afGainSwitchPressTime.load()) < AF_SWITCH_GUARD_US) {
                 ESP_LOGV(TAG, "AF_GAIN rotation ignored (within 150ms of switch press)");
+                return;
+            }
+
+            // Drop the detent if the radio's value was never read (would jump to ~0).
+            if (!ensureGainPrimed("AG", "AG0;", m_afGainPrimeQueryTime)) {
                 return;
             }
 
