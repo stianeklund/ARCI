@@ -118,8 +118,12 @@ private:
     void applyMatrixButton2Event(TCA8418Handler::MatrixKey key, bool pressed, int64_t pressTimeUs);
 
     // TCA8418 Matrix button handlers
-    void handleBandUpButton();
-    void handleBandDownButton();
+    void handleBandUpButton(MatrixButton &button);
+    void handleBandDownButton(MatrixButton &button);
+
+    // Long-press companion to the BND+/BND- band change: steps through the
+    // TS-590SG band stacking register slots (3 per band) without leaving the band.
+    void cycleBandMemorySlot(bool up);
     void handleNotchButton(MatrixButton &button);
     void handleLockButton();
     void handleVfoToggleButton();
