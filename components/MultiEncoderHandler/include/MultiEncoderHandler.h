@@ -145,6 +145,26 @@ private:
     int m_savedAfGainValue{128};
     std::atomic<uint64_t> m_afGainSwitchPressTime{0};
 
+    // Last time a gain-prime query (AG0;/RG;) was sent because cached state was
+    // missing. Throttles re-queries while the radio has not answered yet.
+    std::atomic<uint64_t> m_rfGainPrimeQueryTime{0};
+    std::atomic<uint64_t> m_afGainPrimeQueryTime{0};
+
+    /**
+     * @brief Ensure a gain value is known before applying an encoder delta.
+     *
+     * Panel encoders accumulate from RadioState, so acting on a value that was
+     * never read from the radio would jump the gain to ~0. When no cached value
+     * exists, query the radio (throttled) and drop this detent instead.
+     *
+     * @param cacheKey CAT cache key ("AG" or "RG")
+     * @param readCommand Read command to send ("AG0;" or "RG;")
+     * @param lastQueryTime Per-encoder throttle timestamp
+     * @return true if a cached value exists and the delta may be applied
+     */
+    bool ensureGainPrimed(const char *cacheKey, const char *readCommand,
+                          std::atomic<uint64_t> &lastQueryTime);
+
     // PCF8575 pin mapping for EC11E #1 (AF/RF Gain)
     // PCB layout: P0=A1, P1=A2, P2=B1, P3=B2, P4=D1 (interleaved A signals, then B signals)
     // Note: A1/B1 = outer shaft (AF Gain), A2/B2 = inner shaft (RF Gain)
