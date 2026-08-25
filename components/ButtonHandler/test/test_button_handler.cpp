@@ -718,11 +718,11 @@ void test_dispatch_toggle_vox_inverts_state() {
 }
 
 void test_dispatch_toggle_txatu_inverts_state() {
-    // AC<v><v>0; -> seed false -> AC110;, seed true -> AC000;.
+    // AC0<v>0; -> seed false -> AC010;, seed true -> AC000;.
     radioManager->getState().txAtIn.store(false);
     clearMessages();
     radioManager->dispatchToggle(radioManager->getPanelCATHandler(), radio::ToggleTarget::TxAtu);
-    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("AC110;"), "Expected AC110; when txAtIn seeded false");
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("AC010;"), "Expected AC010; when txAtIn seeded false");
 
     radioManager->getState().txAtIn.store(true);
     clearMessages();

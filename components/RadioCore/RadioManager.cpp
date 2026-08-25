@@ -597,6 +597,10 @@ namespace radio
         if (oldFreq != frequency)
         {
             ESP_LOGD(RadioManager::TAG, "VFO A frequency updated: %llu -> %llu", oldFreq, frequency);
+            if (state_.currentRxVfo.load(std::memory_order_relaxed) == 0)
+            {
+                applyCurrentBandTunerSetting();
+            }
             return true;
         }
         return false;
@@ -618,6 +622,10 @@ namespace radio
         if (oldFreq != frequency)
         {
             ESP_LOGD(RadioManager::TAG, "VFO B frequency updated: %llu -> %llu", oldFreq, frequency);
+            if (state_.currentRxVfo.load(std::memory_order_relaxed) == 1)
+            {
+                applyCurrentBandTunerSetting();
+            }
             return true;
         }
         return false;
@@ -769,6 +777,7 @@ namespace radio
             // Automatic detection causes incorrect split mode during simple VFO toggles
 
             applyAutoFilterPolicy();
+            applyCurrentBandTunerSetting();
             return true;
         }
         return false;
@@ -978,9 +987,9 @@ namespace radio
             break;
         case ToggleTarget::TxAtu:
         {
-            // AC<RX><TX>0; RX path follows TX path, no tuning start.
+            // AC<P1><TX>0; P1 is reported RX-AT state and cannot be set.
             const int v = state_.txAtIn.load() ? 0 : 1;
-            std::snprintf(cmd, sizeof(cmd), "AC%d%d0;", v, v);
+            std::snprintf(cmd, sizeof(cmd), "AC0%d0;", v);
             break;
         }
         case ToggleTarget::Antenna:
@@ -1465,8 +1474,13 @@ namespace radio
         if (frequencyHz == 0)
             return;
 
-        // Determine band number based on frequency and store in RadioManager state
-        int bandNumber = 10; // Default to general coverage (GENE)
+        state_.bandNumber.store(bandFromFrequency(frequencyHz), std::memory_order_relaxed);
+    }
+
+    int RadioManager::bandFromFrequency(const uint64_t frequencyHz)
+    {
+        // Default to general coverage (GENE).
+        int bandNumber = 10;
         if (frequencyHz >= 1800000 && frequencyHz <= 2000000)
         {
             bandNumber = 0;
@@ -1508,7 +1522,88 @@ namespace radio
             bandNumber = 9;
         }
 
-        state_.bandNumber.store(bandNumber, std::memory_order_relaxed);
+        return bandNumber;
+    }
+
+    void RadioManager::setCurrentBandTunerEnabled(const bool enabled)
+    {
+        const uint64_t frequency = state_.getCurrentRxFrequency();
+        if (frequency == 0)
+        {
+            ESP_LOGW(TAG, "Ignoring ATU band preference because the receive frequency is unknown");
+            return;
+        }
+        const int band = bandFromFrequency(frequency);
+        const uint16_t bit = static_cast<uint16_t>(1U << band);
+
+        const uint16_t previousConfigured = state_.tunerConfiguredBands.fetch_or(bit, std::memory_order_relaxed);
+        uint16_t previousEnabled = 0;
+        if (enabled)
+        {
+            previousEnabled = state_.tunerEnabledBands.fetch_or(bit, std::memory_order_relaxed);
+        }
+        else
+        {
+            previousEnabled =
+                state_.tunerEnabledBands.fetch_and(static_cast<uint16_t>(~bit), std::memory_order_relaxed);
+        }
+
+        const bool wasEnabled = (previousEnabled & bit) != 0;
+        if ((previousConfigured & bit) == 0 || wasEnabled != enabled)
+        {
+            persistTunerBandSettings();
+            ESP_LOGI(TAG, "Saved ATU %s for band %d", enabled ? "IN" : "THRU", band);
+        }
+    }
+
+    void RadioManager::applyCurrentBandTunerSetting()
+    {
+        const uint64_t frequency = state_.getCurrentRxFrequency();
+        if (frequency == 0)
+        {
+            return;
+        }
+
+        const int band = bandFromFrequency(frequency);
+        const uint16_t bit = static_cast<uint16_t>(1U << band);
+        const uint16_t configured = state_.tunerConfiguredBands.load(std::memory_order_relaxed);
+        // A band that has never been configured is deliberately bypassed. That lets
+        // enabling the ATU on one band turn it off automatically on every other band.
+        const bool enabled = (configured & bit) != 0 &&
+                             (state_.tunerEnabledBands.load(std::memory_order_relaxed) & bit) != 0;
+        // On boot there is no AC response cached yet. In that case the default false
+        // state is not evidence that the physical tuner is bypassed, so still issue
+        // the command to restore the persisted policy.
+        if (state_.commandCache.get("AC") != 0 &&
+            state_.txAtIn.load(std::memory_order_relaxed) == enabled)
+        {
+            return;
+        }
+
+        state_.txAtIn.store(enabled, std::memory_order_relaxed);
+        // AC...0 explicitly stops a tune operation. Do not infer ATU completion from
+        // RX; which only reports the transmitter state and may arrive independently.
+        state_.atTuning.store(false, std::memory_order_relaxed);
+        state_.commandCache.update("AC", getCurrentTimestamp());
+        sendRadioCommand(enabled ? "AC010;" : "AC000;");
+        ESP_LOGI(TAG, "Applied saved ATU %s for band %d", enabled ? "IN" : "THRU", band);
+    }
+
+    void RadioManager::persistTunerBandSettings() const
+    {
+        if (nvsManager_ == nullptr)
+        {
+            return;
+        }
+
+        auto* nvs = static_cast<NvsManager*>(nvsManager_);
+        const esp_err_t err = nvs->saveTunerBandSettings(
+            state_.tunerConfiguredBands.load(std::memory_order_relaxed),
+            state_.tunerEnabledBands.load(std::memory_order_relaxed));
+        if (err != ESP_OK)
+        {
+            ESP_LOGW(TAG, "Failed to persist ATU band settings: %s", esp_err_to_name(err));
+        }
     }
 
     void RadioManager::decodeBandFromFreq(const std::string_view frequency)
@@ -1595,7 +1690,7 @@ namespace radio
 
     void RadioManager::applyAutoFilterPolicy() const
     {
-        // UIAF: in split CW the IF filter follows the RX VFO (A -> FL1, B -> FL2).
+        // UIFF: in split CW the IF filter follows the RX VFO (A -> FL1, B -> FL2).
         // Leaving split/CW or disabling the option just stops adjusting - never reverts.
         constexpr int MODE_CW = 3;     // TS-590SG MD value for CW
         constexpr int MODE_CW_REV = 7; // TS-590SG MD value for CW-REV

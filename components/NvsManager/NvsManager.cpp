@@ -177,6 +177,12 @@ esp_err_t NvsManager::saveRadioState() {
     err = nvs_set_i32(guard.handle, "vhf_linear_amp", state.vhfLinearAmpControl.load(std::memory_order_relaxed));
     if (err != ESP_OK) return err;
 
+    err = nvs_set_u16(guard.handle, "atu_bands", state.tunerConfiguredBands.load(std::memory_order_relaxed));
+    if (err != ESP_OK) return err;
+
+    err = nvs_set_u16(guard.handle, "atu_enabled", state.tunerEnabledBands.load(std::memory_order_relaxed));
+    if (err != ESP_OK) return err;
+
     err = nvs_commit(guard.handle);
     if (err != ESP_OK) return err;
 
@@ -222,13 +228,57 @@ esp_err_t NvsManager::loadRadioState() {
     if (err == ESP_OK) {
         state.mode.store(mode);
     } else if (err != ESP_ERR_NVS_NOT_FOUND) {
+        nvs_close(my_handle);
+        return err;
+    }
+
+    uint16_t tunerConfiguredBands = 0;
+    err = nvs_get_u16(my_handle, "atu_bands", &tunerConfiguredBands);
+    if (err == ESP_OK) {
+        state.tunerConfiguredBands.store(tunerConfiguredBands, std::memory_order_relaxed);
+    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
+        nvs_close(my_handle);
+        return err;
+    }
+
+    uint16_t tunerEnabledBands = 0;
+    err = nvs_get_u16(my_handle, "atu_enabled", &tunerEnabledBands);
+    if (err == ESP_OK) {
+        state.tunerEnabledBands.store(tunerEnabledBands, std::memory_order_relaxed);
+    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
+        nvs_close(my_handle);
         return err;
     }
 
     nvs_close(my_handle);
+    // The cached AC state is unknown after reboot, so this deliberately sends the
+    // configured policy even when the default in-memory state happens to match it.
+    m_radioManager.applyCurrentBandTunerSetting();
     return ESP_OK;
 #else
     ESP_LOGI(TAG, "NVS load requested but persistence is disabled, using default state");
+    return ESP_OK;
+#endif
+}
+
+esp_err_t NvsManager::saveTunerBandSettings(const uint16_t configuredBands, const uint16_t enabledBands) {
+#ifdef CONFIG_ENABLE_NVS_PERSISTENCE
+    NvsHandleGuard guard;
+    esp_err_t err = nvs_open(STORAGE_NAMESPACE, NVS_READWRITE, &guard.handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open NVS for ATU band settings: %s", esp_err_to_name(err));
+        return err;
+    }
+    guard.open = true;
+
+    err = nvs_set_u16(guard.handle, "atu_bands", configuredBands);
+    if (err != ESP_OK) return err;
+    err = nvs_set_u16(guard.handle, "atu_enabled", enabledBands);
+    if (err != ESP_OK) return err;
+    return nvs_commit(guard.handle);
+#else
+    (void)configuredBands;
+    (void)enabledBands;
     return ESP_OK;
 #endif
 }

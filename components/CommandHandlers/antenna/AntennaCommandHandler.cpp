@@ -43,13 +43,21 @@ bool AntennaCommandHandler::handleAC(const RadioCommand& command,
                 return false;
             }
 
-            // Update local state
-            state.rxAtIn = rxAt == 1;
+            // P1 (RX-AT) is read-only on the TS-590SG. Keep its last reported
+            // value; only P2 and P3 are applied by an AC Set command.
             state.txAtIn = txAt == 1;
             state.atTuning = tuning == 1;
             state.commandCache.update("AC", esp_timer_get_time());
 
-            ESP_LOGD(TAG, "Set AC: RX-AT=%s, TX-AT=%s, Tuning=%s",
+            // Starting a tune with TX-AT IN (AC111) also enables the tuner for this
+            // band. Do not treat AC001 as a request to save THRU: its zero TX-AT bit
+            // merely starts a tune cycle, rather than changing the user's preference.
+            if (tuning == 0 || txAt == 1)
+            {
+                radioManager.setCurrentBandTunerEnabled(txAt == 1);
+            }
+
+            ESP_LOGD(TAG, "Set AC: RX-AT request=%s (read-only), TX-AT=%s, Tuning=%s",
                      rxAt ? "IN" : "THRU",
                      txAt ? "IN" : "THRU",
                      tuning ? "START" : "STOP");
@@ -77,6 +85,10 @@ bool AntennaCommandHandler::handleAC(const RadioCommand& command,
                 state.txAtIn = params.txAt == 1;
                 state.atTuning = params.tuning == 1;
                 state.commandCache.update("AC", esp_timer_get_time());
+                if (params.tuning == 0 || params.txAt == 1)
+                {
+                    radioManager.setCurrentBandTunerEnabled(params.txAt == 1);
+                }
                 ESP_LOGD(TAG, "Updated AC from radio");
             }
 
