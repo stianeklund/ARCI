@@ -30,7 +30,7 @@ namespace radio
      * - UIPS: Panel status / display wake (0=idle/sleep, 1=active/awake)
      * - UIDE: Display communication enable/disable (0=disabled, 1=enabled)
      * - UIKS: Keying Speed UI (slider for KS command, 4-60 WPM)
-     * - UIAF: Auto IF-Filter-B on Split+CW toggle (0=OFF, 1=ON)
+     * - UIFF: IF-filter follow on Split+CW toggle (0=OFF, 1=ON)
      *
      * Command format: UIxxPPP; where xx is the control type and PPP is the value
      *
@@ -67,7 +67,7 @@ namespace radio
         static std::string formatUIPS(bool active);  // Panel status: UIPS0; or UIPS1;
         static std::string formatUIDE(bool enabled); // Display communication: UIDE0; or UIDE1;
         static std::string formatUIKS(int value);    // Keying speed: UIKS020;
-        static std::string formatUIAF(bool enabled); // Auto IF-filter on split+CW: UIAF0; or UIAF1;
+        static std::string formatUIFF(bool enabled); // IF-filter follow on split+CW: UIFF0; or UIFF1;
 
         static constexpr auto TAG = "UICommandHandler";
 
@@ -91,7 +91,7 @@ namespace radio
         bool handleUIPS(const RadioCommand &cmd, RadioManager &rm) const;
         bool handleUIDE(const RadioCommand &cmd, RadioManager &rm) const;
         bool handleUIKS(const RadioCommand &cmd, RadioManager &rm) const;
-        bool handleUIAF(const RadioCommand &cmd, RadioManager &rm) const;
+        bool handleUIFF(const RadioCommand &cmd, RadioManager &rm) const;
 
         // Helper to send UI command to display only
         static void sendToDisplayOnly(const std::string &cmd, RadioManager &rm);

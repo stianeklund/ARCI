@@ -422,6 +422,60 @@ namespace {
         tearDownTestRadioManager();
     }
 
+    void test_AC_tuner_setting_follows_current_band() {
+        setUpTestRadioManager();
+        auto& state = testRadioManager->getState();
+        state.currentRxVfo.store(0);
+        testRadioManager->updateVfoAFrequency(14074000); // 20 m
+        state.tunerConfiguredBands.store(0);
+        state.tunerEnabledBands.store(0);
+        mockRadioSerial.sentMessages.clear();
+
+        // AC010; sets TX-AT IN; RX-AT is read-only on the TS-590SG.
+        testRadioManager->getLocalCATHandler().parseMessage("AC010;");
+        const uint16_t twentyMeters = static_cast<uint16_t>(1U << 4);
+        TEST_ASSERT_EQUAL_UINT16(twentyMeters, state.tunerConfiguredBands.load());
+        TEST_ASSERT_EQUAL_UINT16(twentyMeters, state.tunerEnabledBands.load());
+
+        // An unconfigured band defaults to bypass and is applied on the RX band change.
+        mockRadioSerial.sentMessages.clear();
+        testRadioManager->updateVfoAFrequency(7100000);
+        TEST_ASSERT_EQUAL_STRING("AC000;", mockRadioSerial.sentMessages.back().c_str());
+
+        // Returning to the configured band restores TX-AT IN without attempting
+        // to set RX-AT.
+        mockRadioSerial.sentMessages.clear();
+        testRadioManager->updateVfoAFrequency(14074000);
+        TEST_ASSERT_EQUAL_STRING("AC010;", mockRadioSerial.sentMessages.back().c_str());
+        tearDownTestRadioManager();
+    }
+
+    void test_AC_tune_start_enables_band_and_does_not_block_band_change() {
+        setUpTestRadioManager();
+        auto& state = testRadioManager->getState();
+        state.currentRxVfo.store(0);
+        testRadioManager->updateVfoAFrequency(14074000); // 20 m
+        state.tunerConfiguredBands.store(0);
+        state.tunerEnabledBands.store(0);
+        state.atTuning.store(false);
+        mockRadioSerial.sentMessages.clear();
+
+        // The panel's long press sends AC111; it must record that this band uses ATU.
+        testRadioManager->getLocalCATHandler().parseMessage("AC111;");
+        const uint16_t twentyMeters = static_cast<uint16_t>(1U << 4);
+        TEST_ASSERT_EQUAL_UINT16(twentyMeters, state.tunerConfiguredBands.load());
+        TEST_ASSERT_EQUAL_UINT16(twentyMeters, state.tunerEnabledBands.load());
+        TEST_ASSERT_TRUE(state.atTuning.load());
+
+        // An ATU completion response is optional. The later band policy uses AC...0
+        // directly, so it is not blocked by the unresolved AC111 tune action.
+        mockRadioSerial.sentMessages.clear();
+        testRadioManager->updateVfoAFrequency(7100000);
+        TEST_ASSERT_EQUAL_STRING("AC000;", mockRadioSerial.sentMessages.back().c_str());
+        TEST_ASSERT_FALSE(state.atTuning.load());
+        tearDownTestRadioManager();
+    }
+
     void test_AG_AF_gain_commands() {
         setUpTestRadioManager();
 
@@ -663,7 +717,7 @@ namespace {
         tearDownTestRadioManager();
     }
 
-    // === UIAF: auto IF-filter follow on split + CW ===
+    // === UIFF: IF-filter follow on split + CW ===
 
     // Put the radio into split CW with the given RX VFO while the policy is disabled,
     // so no automatic filter change happens during setup.
@@ -686,11 +740,11 @@ namespace {
         return sentFilterCommand("FL1;") || sentFilterCommand("FL2;");
     }
 
-    void test_uiaf_enable_applies_filter_immediately() {
+    void test_uiff_enable_applies_filter_immediately() {
         setUpTestRadioManager();
         setUpAutoFilterScenario(1, 1); // RX on VFO B, filter currently A
 
-        testRadioManager->getLocalCATHandler().parseMessage("UIAF1;");
+        testRadioManager->getLocalCATHandler().parseMessage("UIFF1;");
 
         TEST_ASSERT_TRUE(testRadioManager->getState().autoFilterBSplitCw.load());
         TEST_ASSERT_TRUE(sentFilterCommand("FL2;"));
@@ -700,7 +754,7 @@ namespace {
         tearDownTestRadioManager();
     }
 
-    void test_uiaf_filter_follows_rx_vfo() {
+    void test_uiff_filter_follows_rx_vfo() {
         setUpTestRadioManager();
         setUpAutoFilterScenario(1, 2); // RX on VFO B, filter already B
         testRadioManager->getState().autoFilterBSplitCw.store(true);
@@ -723,7 +777,7 @@ namespace {
         tearDownTestRadioManager();
     }
 
-    void test_uiaf_leaving_split_does_not_revert_filter() {
+    void test_uiff_leaving_split_does_not_revert_filter() {
         setUpTestRadioManager();
         setUpAutoFilterScenario(1, 2); // RX on VFO B, filter B
         testRadioManager->getState().autoFilterBSplitCw.store(true);
@@ -740,7 +794,7 @@ namespace {
         tearDownTestRadioManager();
     }
 
-    void test_uiaf_disabled_never_changes_filter() {
+    void test_uiff_disabled_never_changes_filter() {
         setUpTestRadioManager();
         setUpAutoFilterScenario(1, 1); // RX on VFO B, filter A, policy disabled
 
@@ -754,7 +808,7 @@ namespace {
         tearDownTestRadioManager();
     }
 
-    void test_uiaf_cw_rev_also_triggers() {
+    void test_uiff_cw_rev_also_triggers() {
         setUpTestRadioManager();
         setUpAutoFilterScenario(1, 1); // RX on VFO B, filter A (helper sets mode to CW)
         testRadioManager->getState().autoFilterBSplitCw.store(true);
@@ -1981,6 +2035,8 @@ namespace {
         RUN_TEST(test_transverter_state_transitions);
 
         RUN_TEST(test_AC_antenna_tuner_commands);
+        RUN_TEST(test_AC_tuner_setting_follows_current_band);
+        RUN_TEST(test_AC_tune_start_enables_band_and_does_not_block_band_change);
         RUN_TEST(test_AG_AF_gain_commands);
         RUN_TEST(test_AI_auto_information_commands);
         RUN_TEST(test_BC_beat_cancel_commands);
@@ -1994,11 +2050,11 @@ namespace {
         RUN_TEST(test_DN_microphone_down_commands);
         RUN_TEST(test_FB_VFO_B_frequency_commands);
         RUN_TEST(test_FL_IF_filter_commands);
-        RUN_TEST(test_uiaf_enable_applies_filter_immediately);
-        RUN_TEST(test_uiaf_filter_follows_rx_vfo);
-        RUN_TEST(test_uiaf_leaving_split_does_not_revert_filter);
-        RUN_TEST(test_uiaf_disabled_never_changes_filter);
-        RUN_TEST(test_uiaf_cw_rev_also_triggers);
+        RUN_TEST(test_uiff_enable_applies_filter_immediately);
+        RUN_TEST(test_uiff_filter_follows_rx_vfo);
+        RUN_TEST(test_uiff_leaving_split_does_not_revert_filter);
+        RUN_TEST(test_uiff_disabled_never_changes_filter);
+        RUN_TEST(test_uiff_cw_rev_also_triggers);
         RUN_TEST(test_FR_function_receive_commands);
         RUN_TEST(test_FS_fine_step_commands);
         RUN_TEST(test_FT_function_transmit_commands);

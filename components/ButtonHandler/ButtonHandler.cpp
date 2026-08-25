@@ -2619,7 +2619,8 @@ void ButtonHandler::handleAntennaTunerButton(MatrixButton &button)
         // Long press - start antenna tuning cycle
         ESP_LOGI(TAG, "Antenna Tuner button long press detected");
 
-        // AC111; enables RX-AT IN, TX-AT IN, and starts tuning
+        // AC111; enables TX-AT and starts tuning. P1 is required as 1 to start
+        // the tune action, although RX-AT itself is read-only.
         m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), "AC111;");
 
         ESP_LOGI(TAG, "Antenna Tuner button long press: Starting tuning cycle");

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include "sdkconfig.h"
 #include "esp_err.h"
 #include "RadioManager.h"
@@ -13,6 +14,9 @@ public:
     esp_err_t saveRadioState();
     esp_err_t loadRadioState();
     void setupPowerStateCallback();
+
+    /** Persist ARCI's per-band antenna-tuner policy immediately. */
+    esp_err_t saveTunerBandSettings(uint16_t configuredBands, uint16_t enabledBands);
 
     // Startup sequence: load -> sync with radio -> save
     esp_err_t loadAndSyncOnStartup();

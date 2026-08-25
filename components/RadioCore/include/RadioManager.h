@@ -58,7 +58,7 @@ namespace radio
         Rit,         // RT
         Xit,         // XT
         Vox,         // VX
-        TxAtu,       // AC (TX-AT in/thru; RX path mirrors TX)
+        TxAtu,       // AC (TX-AT in/thru; RX-AT cannot be set)
         Antenna,     // AN (main antenna P1 only; P2/P3 = 9 = no change)
     };
 
@@ -226,6 +226,15 @@ namespace radio
          * @param frequency Frequency string to decode
          */
         void decodeBandFromFreq(std::string_view frequency);
+
+        /**
+         * Record the current receive band's desired ATU IN/THRU state and persist it.
+         * Bands without a recorded preference default to THRU.
+         */
+        void setCurrentBandTunerEnabled(bool enabled);
+
+        /** Apply the configured ATU state for the current receive band, if any. */
+        void applyCurrentBandTunerSetting();
 
         // Runtime toggle for transverter offset behavior (affects display and USB CDC)
         bool isTransverterOffsetEnabled() const { return state_.transverterOffsetEnabled.load(std::memory_order_relaxed); }
@@ -513,7 +522,7 @@ namespace radio
         bool updateSplitEnabled(bool enabled);
 
         /**
-         * @brief Apply the auto IF-filter policy (UIAF)
+         * @brief Apply the auto IF-filter policy (UIFF)
          *
          * When enabled, split is active (RX VFO != TX VFO) and the mode is CW, the IF filter
          * follows the RX VFO: VFO A -> FL1;, VFO B -> FL2;. When any precondition is no longer
@@ -954,6 +963,9 @@ namespace radio
         bool updateMode(int8_t newMode);
         bool updateSplit(bool newSplit);
         bool updateTx(bool newTx);
+
+        static int bandFromFrequency(uint64_t frequencyHz);
+        void persistTunerBandSettings() const;
 
         // Command system initialization (moved from Cat)
         void initializeCommandHandlers();

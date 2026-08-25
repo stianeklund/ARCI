@@ -379,6 +379,11 @@ namespace radio
         std::atomic<bool> rxAtIn{false}; // RX ATU in/thru
         std::atomic<bool> txAtIn{false}; // TX ATU in/thru
         std::atomic<bool> atTuning{false}; // ATU tuning active
+        // ARCI extension: bands with an explicitly configured ATU state and the
+        // corresponding IN bits. Bit positions follow bandNumber (0=1.8 MHz,
+        // ... 9=50 MHz, 10=general coverage).
+        std::atomic<uint16_t> tunerConfiguredBands{0};
+        std::atomic<uint16_t> tunerEnabledBands{0};
 
         // Memory and channel (atomic for thread safety)
         std::atomic<uint16_t> memoryChannel{0}; // Current memory channel
@@ -428,7 +433,7 @@ namespace radio
         std::atomic<int> txEqualizer{0}; // TX Equalizer
         std::atomic<int> rxEqualizer{0}; // RX Equalizer
         std::atomic<int> ifFilter{0}; // IF Filter
-        // Auto IF-filter follow on split+CW (UIAF). UI-synced with the display, session-only:
+        // Auto IF-filter follow on split+CW (UIFF). UI-synced with the display, session-only:
         // deliberately NOT NVS-persisted here (the display owns persistence), so it resets to
         // false on boot. Drives RadioManager::applyAutoFilterPolicy().
         std::atomic<bool> autoFilterBSplitCw{false};
