@@ -350,6 +350,12 @@ void MultiEncoderHandler::configureDefaultCallbacks() {
             return;
         }
 
+        // Check panel lock state - block all multi-encoder input when locked
+        if (m_radioManager->getState().panelLock.load(std::memory_order_relaxed)) {
+            ESP_LOGV(TAG, "Panel is LOCKED, ignoring encoder %d input", static_cast<int>(encoderId));
+            return;
+        }
+
         // Signal user activity to wake display (debounced UIPS1)
         m_radioManager->signalUserActivity();
 
@@ -473,6 +479,12 @@ void MultiEncoderHandler::configureDefaultCallbacks() {
     setSwitchCallback([this](EncoderId encoderId, bool isPressed) {
         // Only act on button press, not release
         if (!isPressed) {
+            return;
+        }
+
+        // Check panel lock state - block all multi-encoder switches when locked
+        if (m_radioManager->getState().panelLock.load(std::memory_order_relaxed)) {
+            ESP_LOGV(TAG, "Panel is LOCKED, ignoring encoder %d switch", static_cast<int>(encoderId));
             return;
         }
 
