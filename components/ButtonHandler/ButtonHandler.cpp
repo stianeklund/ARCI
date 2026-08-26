@@ -1063,6 +1063,16 @@ void ButtonHandler::applyMatrixButton2Event(const TCA8418Handler::MatrixKey key,
         return;
     }
 
+    // Check panel lock state - F-buttons blocked when locked
+    if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
+    {
+        if (pressed)
+        {
+            ESP_LOGD(TAG, "F-button 0x%02X blocked - panel is LOCKED", static_cast<uint8_t>(key));
+        }
+        return;
+    }
+
     // Process short vs long press after timing logic runs
     if (!button.hasStateChanged())
     {
@@ -1218,15 +1228,14 @@ void ButtonHandler::applyMatrixButtonEvent(const TCA8418Handler::MatrixKey key, 
         return;
     }
 
-    // Check panel lock state - allow only LOCK and Power buttons when locked
+    // Check panel lock state - allow only LOCK (ENT, 0x31) and POWER (0x0C) buttons when locked
     if (m_radioManager.getState().panelLock.load(std::memory_order_relaxed))
     {
-        // Allow MODE button (0x27, used as LOCK) and POWER button (0x0C) when panel is locked
-        if (key != TCA8418Handler::MatrixKey::KEY_0x27 && key != TCA8418Handler::MatrixKey::KEY_0x0C)
+        if (key != TCA8418Handler::MatrixKey::KEY_0x31 && key != TCA8418Handler::MatrixKey::KEY_0x0C)
         {
             if (pressed)
             { // Only log on button press to avoid spam
-                ESP_LOGD(TAG, "Button 0x%02X blocked - panel is LOCKED (press MODE button to unlock)",
+                ESP_LOGD(TAG, "Button 0x%02X blocked - panel is LOCKED (press ENT button to unlock)",
                          static_cast<uint8_t>(key));
             }
             return;
@@ -1323,7 +1332,7 @@ void ButtonHandler::applyMatrixButtonEvent(const TCA8418Handler::MatrixKey key, 
                 if (!pressed) handleSplitButton();       // SPLIT (0x30) - triggers on release
                 break;
             case TCA8418Handler::MatrixKey::KEY_0x31:
-                // ENT button - no specific handler yet
+                handleLockButton(it->second);            // ENT long-press used as LOCK (0x31)
                 break;
             default:
                 break;
@@ -1678,21 +1687,21 @@ void ButtonHandler::handleNotchButton(MatrixButton &button)
     }
 }
 
-void ButtonHandler::handleLockButton()
+void ButtonHandler::handleLockButton(MatrixButton &button)
 {
+    if (!button.wasLongPressed())
+        return;
+
     if (!m_radioManager.getState().keepAlive.load())
         return;
 
-    // Toggle panel lock state
-    bool currentLock = m_radioManager.getState().panelLock;
-    bool newLock = !currentLock;
+    // Local-only panel lock: blocks panel input without telling the radio
+    // (radio's own LK state is a separate, independent thing).
+    auto &state = m_radioManager.getState();
+    const bool newLock = !state.panelLock.load(std::memory_order_relaxed);
+    state.panelLock.store(newLock, std::memory_order_relaxed);
 
-    // Format: LKP1P2; where P1=0/1 (OFF/ON), P2=0 (always 0) per TS-590SG specification
-    char lockCommand[8];
-    std::snprintf(lockCommand, sizeof(lockCommand), "LK%d0;", newLock ? 1 : 0);
-    m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), lockCommand);
-
-    ESP_LOGI(TAG, "Panel Lock button pressed (0x04): %s -> %s", currentLock ? "ON" : "OFF", newLock ? "ON" : "OFF");
+    ESP_LOGI(TAG, "Panel Lock long press (ENT/0x31): %s", newLock ? "LOCKED" : "UNLOCKED");
 }
 
 void ButtonHandler::handleAEqualsBMatrixButton(MatrixButton &button)

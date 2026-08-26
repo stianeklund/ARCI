@@ -125,7 +125,7 @@ private:
     // TS-590SG band stacking register slots (3 per band) without leaving the band.
     void cycleBandMemorySlot(bool up);
     void handleNotchButton(MatrixButton &button);
-    void handleLockButton();
+    void handleLockButton(MatrixButton &button);
     void handleVfoToggleButton();
     void handleNoiseReductionButton(MatrixButton &button);
     void handleRitButton(MatrixButton &button);

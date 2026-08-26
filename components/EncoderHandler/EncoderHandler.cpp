@@ -354,6 +354,26 @@ void EncoderHandler::task(const bool movementDetected)
             // remote CAT is not locked out. Owner-scoped: no-op unless Panel owns it.
             m_radioManager->releasePrimaryControl(radio::CommandSource::Panel);
         }
+
+        // Resync baseline to the current physical position so rotation that
+        // happens while locked is discarded instead of jumping the frequency
+        // by the whole backlog the instant the panel is unlocked.
+        if (m_usePcnt)
+        {
+            int cnt = 0;
+            if (pcnt_unit_get_count(m_pcntUnit, &cnt) == ESP_OK)
+            {
+                m_lastPcntCount = cnt;
+            }
+        }
+        else
+        {
+            portENTER_CRITICAL(&m_spinlock);
+            m_lastReportedPosition = m_position;
+            portEXIT_CRITICAL(&m_spinlock);
+        }
+        m_edgeRemainder = 0;
+
         return;
     }
 
