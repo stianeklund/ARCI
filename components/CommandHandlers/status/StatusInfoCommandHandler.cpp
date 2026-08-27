@@ -262,29 +262,23 @@ bool StatusInfoCommandHandler::handleSM(const RadioCommand& command,
     if (isQuery(command)) {
         const auto &state = radioManager.getState();
 
-        // AI-mode aware handling: Check AI mode of requesting source
-        uint8_t aiMode = 0;
-        if (command.source == CommandSource::UsbCdc0) {
-            aiMode = state.usbCdc0AiMode.load();
-        } else if (command.source == CommandSource::UsbCdc1) {
-            aiMode = state.usbCdc1AiMode.load();
-        } else if (command.source == CommandSource::Display) {
-            aiMode = state.displayAiMode.load();
-        }
-
-        // In AI2/AI4 modes: answer immediately from cached value, don't poll radio
-        if (aiMode == 2 || aiMode == 4) {
-            const std::string response = formatSMeterResponse(state.meterSmRaw);
-            respondToSource(command, response, usbSerial, radioManager);
-            ESP_LOGD(TAG, "SM query in AI%d mode: answered from cache (%d) without polling",
-                     aiMode, state.meterSmRaw.load());
+        // Polling is determined by the PHYSICAL radio's AI collector mode, not by
+        // the requesting interface's virtual AI preference. In AI2/AI4 the radio
+        // supplies unsolicited SM updates, so every client reads the latest received
+        // value from ARCI's cache and must never generate an SM0; radio poll.
+        const uint8_t radioAiMode = state.aiMode.load();
+        if (radioAiMode == 2 || radioAiMode == 4) {
+            respondToSource(command, formatSMeterResponse(state.meterSmRaw.load()), usbSerial, radioManager);
+            ESP_LOGD(TAG, "SM query served from physical AI%d stream cache (%d)",
+                     radioAiMode, state.meterSmRaw.load());
             return true;
         }
 
-        // For AI0/AI1: use standard cache+refresh logic with appropriate TTL
+        // Physical AI is off: use the normal cache/refresh path, which may issue
+        // a coalesced SM0; read when the cached value is stale or missing.
         return handleLocalQueryStandard(
             command, radioSerial, usbSerial, radioManager,
-            "SM", TTL_REALTIME, // 500ms TTL for fresh data
+            "SM", TTL_REALTIME,
             [this](const RadioState& state) {
                 // Return real cached SM value from radio
                 return formatSMeterResponse(state.meterSmRaw);

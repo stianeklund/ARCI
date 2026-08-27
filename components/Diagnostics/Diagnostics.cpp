@@ -251,8 +251,8 @@ void Diagnostics::task() {
             ESP_LOGI(TAG, "Question Mark Errors (?;): %zu", dispatcherStats.questionMarkErrors);
             ESP_LOGI(TAG, "E Errors (E;): %zu", dispatcherStats.eErrors);
             ESP_LOGI(TAG, "O Errors (O;): %zu", dispatcherStats.oErrors);
-            ESP_LOGI(TAG, "Error Bursts Detected: %zu", dispatcherStats.errorBursts);
-            ESP_LOGI(TAG, "Average Error Interval: %llu ms", dispatcherStats.averageErrorInterval / 1000);
+            ESP_LOGI(TAG, "Distinct Error Bursts: %zu", dispatcherStats.errorBursts);
+            ESP_LOGI(TAG, "Overall Average Error Interval: %llu ms", dispatcherStats.averageErrorInterval / 1000);
 
             const uint64_t currentTime = esp_timer_get_time();
             const char* source = dispatcherStats.lastCommandSource[0] == '\0'
@@ -261,6 +261,8 @@ void Diagnostics::task() {
                 const uint64_t commandAge = (currentTime - dispatcherStats.lastCommandBeforeErrorTime) / 1000;
                 ESP_LOGI(TAG, "Last Command Before Error: %s from %s (sent %llu ms ago)",
                          dispatcherStats.lastCommandBeforeError, source, commandAge);
+            } else if (dispatcherStats.lastCommandBeforeError[0] == '\0') {
+                ESP_LOGI(TAG, "Last Command Before Error: no recent ARCI->radio command; attribution unavailable");
             } else {
                 ESP_LOGI(TAG, "Last Command Before Error: %s from %s (timestamp unknown)",
                          dispatcherStats.lastCommandBeforeError, source);
@@ -272,7 +274,7 @@ void Diagnostics::task() {
             }
 
             if (dispatcherStats.averageErrorInterval > 0 && dispatcherStats.averageErrorInterval < 5000000) {
-                ESP_LOGW(TAG, "⚠️  HIGH ERROR RATE: Errors occurring every %llu ms (< 5s)",
+                ESP_LOGW(TAG, "⚠️  HIGH OVERALL ERROR RATE: Mean interval %llu ms (< 5s)",
                          dispatcherStats.averageErrorInterval / 1000);
             }
         } else {

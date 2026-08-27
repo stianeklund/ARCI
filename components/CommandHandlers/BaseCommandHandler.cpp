@@ -456,8 +456,8 @@ namespace radio {
             // redundant for auto-reported state. Widen the effective freshness window
             // to a safety-net TTL so cached state is served without re-polling the radio
             // on every client read, while keeping worst-case staleness bounded. Live
-            // meters (TTL_REALTIME, e.g. SM) are NOT auto-reported, so they are excluded
-            // and keep their short TTL / normal refresh behaviour.
+            // meters (TTL_REALTIME, e.g. SM) are excluded here and are handled by
+            // their command handler according to the physical radio's AI mode.
             uint64_t effectiveTtlUs = ttlUs;
             if (ttlUs != TTL_REALTIME) {
                 const uint8_t radioAiMode = state.aiMode.load();

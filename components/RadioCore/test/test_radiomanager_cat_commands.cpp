@@ -1181,10 +1181,33 @@ namespace {
     void test_SM_S_meter_commands() {
         setUpTestRadioManager();
 
+        auto &state = testRadioManager->getState();
+
+        // The physical radio's AI mode controls polling. Even an AI0 client must
+        // be served from the unsolicited stream cache while the radio is in AI2.
+        state.aiMode.store(2);
+        state.usbCdc0AiMode.store(0);
+        state.meterSmRaw.store(12);
         testRadioManager->getLocalCATHandler().parseMessage("SM0;");
+        TEST_ASSERT_TRUE_MESSAGE(mockRadioSerial.sentMessages.empty(),
+                                 "Physical AI2 must suppress SM0 radio polling");
+        TEST_ASSERT_EQUAL_UINT32(1, mockUsbSerial.sentMessages.size());
+        TEST_ASSERT_EQUAL_STRING("SM0012;", mockUsbSerial.sentMessages.back().c_str());
+
+        // With physical AI off and no cache, the normal query path polls the radio.
+        mockRadioSerial.clearSentMessages();
+        mockUsbSerial.clearSentMessages();
+        testRadioManager->clearCommandCache();
+        state.aiMode.store(0);
+        testRadioManager->getLocalCATHandler().parseMessage("SM0;");
+        TEST_ASSERT_EQUAL_UINT32(1, mockRadioSerial.sentMessages.size());
+        TEST_ASSERT_EQUAL_STRING("SM0;", mockRadioSerial.sentMessages.back().c_str());
+        TEST_ASSERT_TRUE(mockUsbSerial.sentMessages.empty());
 
         // Simulate S-meter response
         testRadioManager->getRemoteCATHandler().parseMessage("SM0050;");
+        TEST_ASSERT_EQUAL_UINT32(1, mockUsbSerial.sentMessages.size());
+        TEST_ASSERT_EQUAL_STRING("SM0050;", mockUsbSerial.sentMessages.back().c_str());
         tearDownTestRadioManager();
     }
 

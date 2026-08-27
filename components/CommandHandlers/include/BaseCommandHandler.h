@@ -365,7 +365,7 @@ public:
     // redundant for auto-reported state, so in AI mode the effective freshness window
     // is widened to this safety-net TTL: cached state is served without re-polling the
     // radio, while worst-case staleness stays bounded. Does NOT apply to TTL_REALTIME
-    // meters (e.g. SM), which the radio does not auto-report.
+    // meters (e.g. SM), which are handled according to the physical radio's AI mode.
     static constexpr uint64_t AI_BROADCAST_SAFETY_TTL = 30000000; // 30s
 
 private:
