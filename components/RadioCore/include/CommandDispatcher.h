@@ -44,8 +44,10 @@ struct DispatcherStatistics {
     char lastCommandBeforeError[CMD_BUF_SIZE]{};  // Command that preceded the error (fixed buffer, no heap)
     char lastCommandSource[CMD_BUF_SIZE]{};       // Source interface of the command (fixed buffer, no heap)
     uint64_t lastCommandBeforeErrorTime{0}; // Timestamp of the command that preceded the error (microseconds)
-    uint64_t averageErrorInterval{0};    // Running average of error intervals
-    size_t errorBursts{0};               // Number of error bursts detected
+    uint64_t firstErrorTime{0};          // First error timestamp, used for the true overall interval
+    uint64_t averageErrorInterval{0};    // Overall mean interval between errors
+    size_t errorBursts{0};               // Number of distinct <5s burst groups detected
+    bool inErrorBurst{false};            // Prevents counting every error inside one burst as a new burst
 
     // Helper to get string_view of the fixed buffers
     std::string_view lastCommandBeforeErrorView() const { return {lastCommandBeforeError}; }
@@ -69,8 +71,10 @@ struct DispatcherStatistics {
           lastErrorTime(other.lastErrorTime),
           lastCommandTime(other.lastCommandTime),
           lastCommandBeforeErrorTime(other.lastCommandBeforeErrorTime),
+          firstErrorTime(other.firstErrorTime),
           averageErrorInterval(other.averageErrorInterval),
-          errorBursts(other.errorBursts) {
+          errorBursts(other.errorBursts),
+          inErrorBurst(other.inErrorBurst) {
         std::memcpy(lastCommandBeforeError, other.lastCommandBeforeError, CMD_BUF_SIZE);
         std::memcpy(lastCommandSource, other.lastCommandSource, CMD_BUF_SIZE);
     }
@@ -93,8 +97,10 @@ struct DispatcherStatistics {
             std::memcpy(lastCommandBeforeError, other.lastCommandBeforeError, CMD_BUF_SIZE);
             std::memcpy(lastCommandSource, other.lastCommandSource, CMD_BUF_SIZE);
             lastCommandBeforeErrorTime = other.lastCommandBeforeErrorTime;
+            firstErrorTime = other.firstErrorTime;
             averageErrorInterval = other.averageErrorInterval;
             errorBursts = other.errorBursts;
+            inErrorBurst = other.inErrorBurst;
         }
         return *this;
     }
@@ -121,8 +127,10 @@ struct DispatcherStatistics {
         lastCommandBeforeError[0] = '\0';
         lastCommandSource[0] = '\0';
         lastCommandBeforeErrorTime = 0;
+        firstErrorTime = 0;
         averageErrorInterval = 0;
         errorBursts = 0;
+        inErrorBurst = false;
     }
 
     void recordError(std::string_view errorType, std::string_view lastCmd, std::string_view lastSource, const uint64_t currentTime) {
@@ -131,26 +139,44 @@ struct DispatcherStatistics {
         else if (errorType == "E") eErrors++;
         else if (errorType == "O") oErrors++;
 
-        // Calculate interval and detect patterns
+        if (firstErrorTime == 0) {
+            firstErrorTime = currentTime;
+        }
+
+        // Calculate the true overall mean interval and detect distinct burst groups.
+        // The former 3:1 EWMA was dominated by the most recent intra-burst gaps, so
+        // diagnostics could claim "every 52 ms" while the actual lifetime rate was
+        // only about two errors per minute.
         if (lastErrorTime > 0) {
             uint64_t interval = currentTime - lastErrorTime;
-            if (averageErrorInterval == 0) {
-                averageErrorInterval = interval;
-            } else {
-                // Simple moving average
-                averageErrorInterval = (averageErrorInterval * 3 + interval) / 4;
-            }
+            averageErrorInterval = (currentTime - firstErrorTime) / (totalErrorResponses - 1);
 
-            // Detect error bursts (errors < 5 seconds apart)
+            // Count a run of closely spaced errors as one burst, not one burst per
+            // additional error in that run.
             if (interval < 5000000) {
-                errorBursts++;
+                if (!inErrorBurst) {
+                    errorBursts++;
+                    inErrorBurst = true;
+                }
+            } else {
+                inErrorBurst = false;
             }
         }
 
         lastErrorTime = currentTime;
-        storeToBuf(lastCommandBeforeError, lastCmd);
-        storeToBuf(lastCommandSource, lastSource);
-        lastCommandBeforeErrorTime = lastCommandTime;  // Store when the problematic command was sent
+        // A radio rejection should follow its command promptly. Do not pin a random
+        // command from tens of minutes ago onto an unsolicited/corrupt '?;' frame.
+        static constexpr uint64_t COMMAND_ASSOCIATION_WINDOW_US = 2'000'000;
+        if (lastCommandTime > 0 && currentTime >= lastCommandTime &&
+            currentTime - lastCommandTime <= COMMAND_ASSOCIATION_WINDOW_US) {
+            storeToBuf(lastCommandBeforeError, lastCmd);
+            storeToBuf(lastCommandSource, lastSource);
+            lastCommandBeforeErrorTime = lastCommandTime;
+        } else {
+            lastCommandBeforeError[0] = '\0';
+            lastCommandSource[0] = '\0';
+            lastCommandBeforeErrorTime = 0;
+        }
     }
 
     void recordCommandSent(const uint64_t currentTime) {
