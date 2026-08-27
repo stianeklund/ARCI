@@ -243,7 +243,7 @@ namespace radio {
 
         // Log PS queries at DEBUG level (answers are too frequent to log)
         if (command.command == "PS" && command.type == CommandType::Read) {
-            ESP_LOGD(CommandDispatcher::TAG, "PS query from %s",
+            ESP_LOGV(CommandDispatcher::TAG, "PS query from %s",
                      command.source == CommandSource::Remote ? "Remote" : "Local");
         }
 
@@ -268,7 +268,7 @@ namespace radio {
             }
         }
 
-        ESP_LOGD(CommandDispatcher::TAG, "Dispatching command: '%s' (type: %s, source: %s, depth: %lu)",
+        ESP_LOGV(CommandDispatcher::TAG, "Dispatching command: '%s' (type: %s, source: %s, depth: %lu)",
                  command.command.c_str(),
                  command.type == CommandType::Set ? "Set" :
                  command.type == CommandType::Read ? "Read" : "Answer",
@@ -280,7 +280,7 @@ namespace radio {
         if (command.command == ";") {
             if (command.isUsb()) {
                 // Usb wakeup/keepalive from USB: respond with ID (no error marker needed)
-                ESP_LOGI(CommandDispatcher::TAG, "Usb ';' received: %s responding with ID",  command.originalMessage.data());
+                ESP_LOGV(CommandDispatcher::TAG, "USB ';' received; responding with ID");
 
                 // Build ID response from Kconfig
                 auto idResp = std::string("ID");
@@ -324,13 +324,14 @@ namespace radio {
             size_t totalErrors, qErrors, eErrorsCnt, oErrorsCnt;
             uint64_t avgInterval;
             size_t bursts;
+            bool highErrorRateStarted;
             {
                 RtosLockGuard<RtosMutex> lock(statsMutex_);
                 std::memcpy(lastCmdCopy, stats_.lastCommandBeforeError, DispatcherStatistics::CMD_BUF_SIZE);
                 std::memcpy(lastSourceCopy, stats_.lastCommandSource, DispatcherStatistics::CMD_BUF_SIZE);
                 lastErrorTimeCopy = stats_.lastErrorTime;
                 lastCmdTimeCopy = stats_.lastCommandTime;
-                stats_.recordError(command.command, lastCmdCopy, lastSourceCopy, currentTime);
+                highErrorRateStarted = stats_.recordError(command.command, lastCmdCopy, lastSourceCopy, currentTime);
                 // Capture post-recordError stats for logging
                 totalErrors = stats_.totalErrorResponses;
                 qErrors = stats_.questionMarkErrors;
@@ -344,45 +345,51 @@ namespace radio {
             const uint64_t timeSinceLastCmd = lastCmdTimeCopy > 0 ?
                 currentTime - lastCmdTimeCopy : 0;
 
+            if (highErrorRateStarted) {
+                ESP_LOGW(CommandDispatcher::TAG,
+                         "High radio error rate: %zu responses within %llums (latest='%s;', lastCmd='%s')",
+                         DispatcherStatistics::ERROR_RATE_SAMPLE_COUNT,
+                         static_cast<unsigned long long>(DispatcherStatistics::ERROR_RATE_WINDOW_US / 1000),
+                         command.command.c_str(), lastCmdCopy[0] == '\0' ? "unknown" : lastCmdCopy);
+            } else if (command.command == "E" || command.command == "O") {
+                ESP_LOGW(CommandDispatcher::TAG, "Radio communication error '%s;' after '%s'",
+                         command.command.c_str(), lastCmdCopy[0] == '\0' ? "unknown" : lastCmdCopy);
+            }
+
             // '?;' can be an unsolicited high-rate radio response. Its counters and
             // interval/burst statistics are reported periodically by Diagnostics;
             // printing this block for every frame can itself disturb the CAT stream.
             // Keep detailed per-frame context behind DEBUG. E;/O; remain visible at
             // normal levels because they are exceptional and normally rare.
-            const bool logErrorDetails = command.command != "?" ||
-                                         esp_log_level_get(CommandDispatcher::TAG) >= ESP_LOG_DEBUG;
+            const bool logErrorDetails = esp_log_level_get(CommandDispatcher::TAG) >= ESP_LOG_VERBOSE;
             if (logErrorDetails) {
-                ESP_LOGI(CommandDispatcher::TAG, "=== ERROR RESPONSE DETECTED ===");
-                ESP_LOGI(CommandDispatcher::TAG, "Error Type: '%s;'", command.command.c_str());
-                ESP_LOGI(CommandDispatcher::TAG, "Last Command Sent: '%s' (from %s)", lastCmdCopy,
+                ESP_LOGV(CommandDispatcher::TAG, "=== ERROR RESPONSE DETECTED ===");
+                ESP_LOGV(CommandDispatcher::TAG, "Error Type: '%s;'", command.command.c_str());
+                ESP_LOGV(CommandDispatcher::TAG, "Last Command Sent: '%s' (from %s)", lastCmdCopy,
                          lastSourceCopy[0] == '\0' ? "unknown" : lastSourceCopy);
-                ESP_LOGI(CommandDispatcher::TAG, "Time Since Last Cmd: %.1fms", timeSinceLastCmd / 1000.0);
-                ESP_LOGI(CommandDispatcher::TAG, "Error Interval: %.1fms",
+                ESP_LOGV(CommandDispatcher::TAG, "Time Since Last Cmd: %.1fms", timeSinceLastCmd / 1000.0);
+                ESP_LOGV(CommandDispatcher::TAG, "Error Interval: %.1fms",
                          (lastErrorTimeCopy > 0) ? (currentTime - lastErrorTimeCopy) / 1000.0 : 0.0);
-                ESP_LOGI(CommandDispatcher::TAG, "Total Errors: %zu (?;=%zu E;=%zu O;=%zu)",
+                ESP_LOGV(CommandDispatcher::TAG, "Total Errors: %zu (?;=%zu E;=%zu O;=%zu)",
                          totalErrors, qErrors, eErrorsCnt, oErrorsCnt);
 
                 if (std::strstr(lastCmdCopy, "RM") != nullptr) {
-                    ESP_LOGW(CommandDispatcher::TAG, "RM command causing errors - may need to disable RM polling");
+                    ESP_LOGV(CommandDispatcher::TAG, "Error followed RM command");
                 }
 
                 if (totalErrors > 1) {
-                    ESP_LOGI(CommandDispatcher::TAG, "Error Pattern: Avg interval=%.1fms, Bursts=%zu",
+                    ESP_LOGV(CommandDispatcher::TAG, "Error Pattern: Avg interval=%.1fms, Bursts=%zu",
                              avgInterval / 1000.0, bursts);
-                    if (totalErrors > 10 && std::strstr(lastCmdCopy, "RM") != nullptr) {
-                        ESP_LOGE(CommandDispatcher::TAG,
-                                 "HIGH ERROR COUNT with RM commands - consider disabling RM polling");
-                    }
                 }
 
                 if (timeSinceLastCmd > 0 && timeSinceLastCmd < 100000) {
-                    ESP_LOGW(CommandDispatcher::TAG, "WARNING: Fast error (%.1fms after command)",
+                    ESP_LOGV(CommandDispatcher::TAG, "Fast error (%.1fms after command)",
                              timeSinceLastCmd / 1000.0);
                 }
-                ESP_LOGI(CommandDispatcher::TAG, "===============================");
+                ESP_LOGV(CommandDispatcher::TAG, "===============================");
             }
             
-            ESP_LOGD(CommandDispatcher::TAG,
+            ESP_LOGV(CommandDispatcher::TAG,
                      "Processing error response '%s;' from radio",
                      command.command.c_str());
             
@@ -391,18 +398,18 @@ namespace radio {
             // the radio's legitimate error response to their command (e.g., MR for an
             // empty channel).  Suppress unsolicited '?;' to avoid flooding clients.
             if (command.command != "?") {
-                ESP_LOGD(CommandDispatcher::TAG, "Forwarding error response '%s;' to USB", command.command.c_str());
+                ESP_LOGV(CommandDispatcher::TAG, "Forwarding error response '%s;' to USB", command.command.c_str());
                 radioManager.sendDirectResponse(command.originalMessage);
             } else if (std::strlen(lastCmdCopy) >= 2) {
                 const std::string_view prefix{lastCmdCopy, 2};
                 if (radioManager.getState().queryTracker.wasRecentlyQueried(prefix, currentTime)) {
-                    ESP_LOGI(CommandDispatcher::TAG, "Forwarding '?;' to CDC0 — response to pending query '%.*s'", 2, lastCmdCopy);
+                    ESP_LOGV(CommandDispatcher::TAG, "Forwarding '?;' to CDC0 — response to pending query '%.*s'", 2, lastCmdCopy);
                     radioManager.sendDirectResponse("?;");
                 } else {
-                    ESP_LOGD(CommandDispatcher::TAG, "Suppressing '?;' — no pending query for '%.*s'", 2, lastCmdCopy);
+                    ESP_LOGV(CommandDispatcher::TAG, "Suppressing '?;' — no pending query for '%.*s'", 2, lastCmdCopy);
                 }
             } else {
-                ESP_LOGD(CommandDispatcher::TAG, "Suppressing '?;' — no command context");
+                ESP_LOGV(CommandDispatcher::TAG, "Suppressing '?;' — no command context");
             }
             stats_.commandsHandled++;
             return true;
@@ -412,7 +419,7 @@ namespace radio {
         if (command.command.size() == 2) {
             const size_t hashIdx = compactHash(command.command[0], command.command[1]);
             if (ICommandHandler* handler = commandMap_[hashIdx]; handler != nullptr) {
-                ESP_LOGD(CommandDispatcher::TAG, "Found handler for '%s', calling handleCommand", command.command.c_str());
+                ESP_LOGV(CommandDispatcher::TAG, "Found handler for '%s', calling handleCommand", command.command.c_str());
 
                 // Record command timing if it's a local command (will be sent to radio)
                 if (command.isUsb()) {
@@ -422,13 +429,13 @@ namespace radio {
                         DispatcherStatistics::storeToBuf(stats_.lastCommandSource, RadioCommand::sourceName(command.source));
                         stats_.recordCommandSent(esp_timer_get_time());
                     }
-                    ESP_LOGD(CommandDispatcher::TAG, "LOCAL->RADIO: '%s' (via %s)",
+                    ESP_LOGV(CommandDispatcher::TAG, "LOCAL->RADIO: '%s' (via %s)",
                              command.originalMessage.c_str(), handler->getDescription().data());
                 }
 
                 if (handler->handleCommand(command, radioSerial, usbSerial, radioManager)) {
                     stats_.commandsHandled++;
-                    ESP_LOGD(CommandDispatcher::TAG, "Command '%s' handled successfully via perfect hash", command.command.c_str());
+                    ESP_LOGV(CommandDispatcher::TAG, "Command '%s' handled successfully via perfect hash", command.command.c_str());
                     // Mirror local SET commands to display (if present) to keep UI in sync
                     // Skip FA/FB Panel commands - EncoderHandler already sends to display with correct transverter offset
                     if ((command.isUsb() || command.source == CommandSource::Panel) && command.type == CommandType::Set) {
@@ -436,7 +443,7 @@ namespace radio {
                                                     (command.command == "FA" || command.command == "FB");
                         if (!isPanelFreqCmd) {
                             if (auto* disp = radioManager.getDisplaySerial(); disp && disp != &usbSerial) {
-                                ESP_LOGD(CommandDispatcher::TAG, "Mirroring SET to display: %s", command.originalMessage.c_str());
+                                ESP_LOGV(CommandDispatcher::TAG, "Mirroring SET to display: %s", command.originalMessage.c_str());
                                 disp->sendMessage(command.originalMessage);
                             }
                         }
@@ -445,7 +452,7 @@ namespace radio {
                     // Auto-query after SET commands when not in AI2/AI4 mode
                     if (shouldAutoQuery(command, radioManager)) {
                         const auto& readCmd = setToReadMap.at(command.command);
-                        ESP_LOGD(CommandDispatcher::TAG, "Auto-querying after SET: %s -> %s",
+                        ESP_LOGV(CommandDispatcher::TAG, "Auto-querying after SET: %s -> %s",
                                  command.command.c_str(), readCmd.c_str());
                         // Route through the rate-paced TX queue so machine-generated
                         // read-backs share the global wire-rate bound (avoids ?; floods).
@@ -476,7 +483,7 @@ namespace radio {
                         DispatcherStatistics::storeToBuf(stats_.lastCommandSource, RadioCommand::sourceName(command.source));
                         stats_.recordCommandSent(esp_timer_get_time());
                     }
-                    ESP_LOGD(CommandDispatcher::TAG, "LOCAL->RADIO: '%s' (via fallback handler)",
+                    ESP_LOGV(CommandDispatcher::TAG, "LOCAL->RADIO: '%s' (via fallback handler)",
                              command.originalMessage.c_str());
                 }
                 
@@ -490,7 +497,7 @@ namespace radio {
                                                     (command.command == "FA" || command.command == "FB");
                         if (!isPanelFreqCmd) {
                             if (auto* disp = radioManager.getDisplaySerial(); disp && disp != &usbSerial) {
-                                ESP_LOGD(CommandDispatcher::TAG, "Mirroring SET to display: %s", command.originalMessage.c_str());
+                                ESP_LOGV(CommandDispatcher::TAG, "Mirroring SET to display: %s", command.originalMessage.c_str());
                                 disp->sendMessage(command.originalMessage);
                             }
                         }
@@ -499,7 +506,7 @@ namespace radio {
                     // Auto-query after SET commands when not in AI2/AI4 mode
                     if (shouldAutoQuery(command, radioManager)) {
                         const auto& readCmd = setToReadMap.at(command.command);
-                        ESP_LOGD(CommandDispatcher::TAG, "Auto-querying after SET (fallback): %s -> %s",
+                        ESP_LOGV(CommandDispatcher::TAG, "Auto-querying after SET (fallback): %s -> %s",
                                  command.command.c_str(), readCmd.c_str());
                         // Route through the rate-paced TX queue (see non-fallback path).
                         radioManager.sendRawRadioCommand(readCmd);

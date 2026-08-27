@@ -718,12 +718,12 @@ namespace radio
                 return false;
             }
 
-            ESP_LOGI(TAG, "🔧 FR SET: Setting RX VFO to %d (source: %s)", vfo, cmd.isLocal() ? "Local" : "Remote");
+            ESP_LOGD(TAG, "FR set: RX VFO=%d source=%s", vfo, cmd.isLocal() ? "Local" : "Remote");
 
             if (shouldSendToRadio(cmd))
             {
                 const std::string cmdStr = buildCommand("FR", std::to_string(vfo));
-                ESP_LOGI(TAG, "📤 FR SEND: Sending to radio: %s", cmdStr.c_str());
+                ESP_LOGV(TAG, "FR send to radio: %s", cmdStr.c_str());
                 sendToRadio(radioSerial, cmdStr);
             }
 
@@ -735,7 +735,7 @@ namespace radio
         if (cmd.type == CommandType::Answer)
         {
             const int vfo = parseVfoValue(cmd);
-            ESP_LOGI(TAG, "📥 FR ANSWER: Received from radio: %s (parsed VFO=%d)", cmd.originalMessage.c_str(), vfo);
+            ESP_LOGV(TAG, "FR answer: %s parsedVfo=%d", cmd.originalMessage.c_str(), vfo);
 
             if (vfo >= 0 && vfo <= 2)
             {
@@ -798,12 +798,12 @@ namespace radio
             // TS-590 semantics: FT parameter is absolute TX VFO selection
             // 0 = VFO A, 1 = VFO B
             const int actualTxVfo = ftParam;
-            ESP_LOGI(TAG, "🔧 FT SET: TX VFO set to %s (param=%d)", actualTxVfo ? "B" : "A", ftParam);
+            ESP_LOGD(TAG, "FT set: TX VFO=%s param=%d", actualTxVfo ? "B" : "A", ftParam);
 
             if (shouldSendToRadio(cmd))
             {
                 const std::string cmdStr = buildCommand("FT", std::to_string(ftParam));
-                ESP_LOGI(TAG, "📤 FT SEND: Sending to radio: %s", cmdStr.c_str());
+                ESP_LOGV(TAG, "FT send to radio: %s", cmdStr.c_str());
                 sendToRadio(radioSerial, cmdStr);
             }
 
@@ -815,7 +815,7 @@ namespace radio
         if (cmd.type == CommandType::Answer)
         {
             const int ftParam = parseVfoValue(cmd);
-            ESP_LOGI(TAG, "📥 FT ANSWER: Received from radio: %s (parsed param=%d)", cmd.originalMessage.c_str(),
+            ESP_LOGV(TAG, "FT answer: %s parsedParam=%d", cmd.originalMessage.c_str(),
                      ftParam);
 
             if (ftParam == 0 || ftParam == 1)
@@ -1387,12 +1387,12 @@ namespace radio
                 const bool xitOn = state.xitOn.load();
                 const bool ritXitActive = ritOn || xitOn;
 
-                ESP_LOGI(TAG, "RD SET Debug: scanActive=%s, ritOn=%s, xitOn=%s, param='%s'", scanActive ? "YES" : "NO",
+                ESP_LOGD(TAG, "RD set: scan=%s rit=%s xit=%s param='%s'", scanActive ? "YES" : "NO",
                          ritOn ? "YES" : "NO", xitOn ? "YES" : "NO", paramStr.c_str());
 
                 if (scanActive || ritXitActive)
                 {
-                    ESP_LOGI(TAG, "Sending RD command to radio: RD%s;", paramStr.c_str());
+                    ESP_LOGV(TAG, "RD send to radio: RD%s;", paramStr.c_str());
                     sendToRadio(radioSerial, buildCommand("RD", paramStr));
                 }
                 else
@@ -1624,7 +1624,7 @@ namespace radio
         // XO: Transverter frequency offset
         if (isQuery(cmd))
         {
-            ESP_LOGI(TAG, "🔍 XO QUERY: source=%d, isUsb=%s, isTcp=%s", static_cast<int>(cmd.source),
+            ESP_LOGV(TAG, "XO query: source=%d isUsb=%s isTcp=%s", static_cast<int>(cmd.source),
                      cmd.isUsb() ? "true" : "false", cmd.isTcp() ? "true" : "false");
             if (cmd.isCatClient())
             {
@@ -1632,12 +1632,12 @@ namespace radio
                 const uint64_t timestamp = esp_timer_get_time();
                 rm.getState().queryTracker.recordQuery("XO", timestamp);
                 rm.noteQueryOrigin("XO", cmd.source, timestamp);
-                ESP_LOGI(TAG, "🔍 XO QUERY: Recorded query for XO at time %llu", timestamp);
+                ESP_LOGV(TAG, "XO query recorded at %llu", timestamp);
             }
             if (shouldSendToRadio(cmd))
             {
                 const std::string xoCommand = buildCommand("XO");
-                ESP_LOGI(TAG, "🔍 XO QUERY: Sending '%s' to radio", xoCommand.c_str());
+                ESP_LOGV(TAG, "XO send to radio: '%s'", xoCommand.c_str());
                 sendToRadio(radioSerial, xoCommand);
             }
             return true;

@@ -55,8 +55,8 @@ static const char *TAG = "EncoderHandler";
 
 // Verbose logging macro - compiles out in production builds
 #if CONFIG_ENCODER_VERBOSE_LOGS
-#define ENCODER_LOGV(format, ...) ESP_LOGI(TAG, format, ##__VA_ARGS__)
-#define ENCODER_LOGD(format, ...) ESP_LOGI(TAG, format, ##__VA_ARGS__)
+#define ENCODER_LOGV(format, ...) ESP_LOGV(TAG, format, ##__VA_ARGS__)
+#define ENCODER_LOGD(format, ...) ESP_LOGD(TAG, format, ##__VA_ARGS__)
 #else
 #define ENCODER_LOGV(format, ...)                                                                                      \
     do                                                                                                                 \
@@ -407,7 +407,7 @@ void EncoderHandler::task(const bool movementDetected)
                     const uint32_t totalEdges = m_edgeCountForValidation;
                     const float timeSeconds = (lastMovementTime - m_lastValidationResetTime) / 1000000.0f;
                     const float edgesPerSec = totalEdges / timeSeconds;
-                    ESP_LOGI(TAG, "PCNT validation: %u edges in %.1fs (%.0f edges/sec)", totalEdges, timeSeconds,
+                    ESP_LOGV(TAG, "PCNT validation: %u edges in %.1fs (%.0f edges/sec)", totalEdges, timeSeconds,
                              edgesPerSec);
                     m_edgeCountForValidation = 0;
                     m_lastValidationResetTime = lastMovementTime;
@@ -495,7 +495,7 @@ void EncoderHandler::task(const bool movementDetected)
     // Require minimum encoder steps before sending frequency update (configurable)
     if (std::abs(delta) < CONFIG_ENCODER_MIN_STEPS_THRESHOLD)
     {
-        ESP_LOGI(TAG, "Encoder delta too small (%ld < %d), waiting for more steps", delta,
+        ESP_LOGV(TAG, "Encoder delta too small (%ld < %d), waiting for more steps", delta,
                  CONFIG_ENCODER_MIN_STEPS_THRESHOLD);
         return;
     }

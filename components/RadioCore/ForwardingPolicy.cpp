@@ -350,27 +350,26 @@ namespace radio
                 // Without this, the 5s TTL window would leak unsolicited updates
                 // (e.g. encoder-driven FA changes) to AI0 interfaces.
                 sinkState.localQueryTracker.invalidate(prefix);
-                ESP_LOGD(TAG, "AI0 forwarding query response: %.*s", (int)prefix.length(), prefix.data());
+                ESP_LOGV(TAG, "AI0 forwarding query response: %.*s", (int)prefix.length(), prefix.data());
                 return true;
             }
-            ESP_LOGD(TAG, "AI0 suppressing unsolicited: %.*s", (int)prefix.length(), prefix.data());
+            ESP_LOGV(TAG, "AI0 suppressing unsolicited: %.*s", (int)prefix.length(), prefix.data());
             return false;
         }
 
         // For non-AI0 modes, use the global query tracker
         const bool recentlyQueried = state.queryTracker.wasRecentlyQueried(prefix, currentTime);
 
-        // DEBUG: Add special logging for IF responses
+        // Detailed forwarding decisions are protocol trace data, not failures.
         if (prefix == "IF")
         {
-            ESP_LOGE(TAG, "🔍 IF NON-AI CHECK: prefix='%.*s', recentlyQueried=%s", (int)prefix.length(), prefix.data(),
+            ESP_LOGV(TAG, "IF non-AI check: prefix='%.*s' recentlyQueried=%s", (int)prefix.length(), prefix.data(),
                      recentlyQueried ? "YES" : "NO");
         }
 
-        // DEBUG: Add special logging for XO responses
         if (prefix == "XO")
         {
-            ESP_LOGI(TAG, "🔍 XO NON-AI CHECK: prefix='%.*s', recentlyQueried=%s, aiMode=%d", (int)prefix.length(),
+            ESP_LOGV(TAG, "XO non-AI check: prefix='%.*s' recentlyQueried=%s aiMode=%d", (int)prefix.length(),
                      prefix.data(), recentlyQueried ? "YES" : "NO", aiMode);
         }
 

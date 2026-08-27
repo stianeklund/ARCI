@@ -1479,6 +1479,32 @@ namespace {
         tearDownTestRadioManager();
     }
 
+    void test_error_rate_warning_uses_live_rolling_window() {
+        radio::DispatcherStatistics stats;
+        constexpr uint64_t startUs = 1'000'000;
+
+        // Nine errors inside five seconds do not cross the warning threshold.
+        for (size_t i = 0; i < 9; ++i) {
+            TEST_ASSERT_FALSE(stats.recordError("?", "PS;", "Internal", startUs + i * 400'000));
+        }
+
+        // The tenth recent sample starts the abnormal condition exactly once.
+        TEST_ASSERT_TRUE(stats.recordError("?", "PS;", "Internal", startUs + 9 * 400'000));
+        TEST_ASSERT_FALSE(stats.recordError("?", "PS;", "Internal", startUs + 9 * 400'000 + 10'000));
+        TEST_ASSERT_EQUAL_UINT32(10, stats.recentErrorCount(startUs + 9 * 400'000 + 10'000));
+
+        // An old burst ages out and cannot keep the condition active indefinitely.
+        const uint64_t nextBurstUs = startUs + 10'000'000;
+        TEST_ASSERT_FALSE(stats.recordError("?", "AI;", "Internal", nextBurstUs));
+        TEST_ASSERT_EQUAL_UINT32(1, stats.recentErrorCount(nextBurstUs));
+
+        // A genuinely new burst is allowed to warn once when it reaches ten samples.
+        for (size_t i = 1; i < 9; ++i) {
+            TEST_ASSERT_FALSE(stats.recordError("?", "AI;", "Internal", nextBurstUs + i * 100'000));
+        }
+        TEST_ASSERT_TRUE(stats.recordError("?", "AI;", "Internal", nextBurstUs + 900'000));
+    }
+
     void test_command_error_handling() {
         setUpTestRadioManager();
 
@@ -2136,6 +2162,7 @@ namespace {
         RUN_TEST(test_display_dedup_invalidated_on_SM_forward_failure);
         RUN_TEST(test_display_dedup_invalidated_on_IF_forward_failure);
         RUN_TEST(test_shouldClearStuckTuning_helper);
+        RUN_TEST(test_error_rate_warning_uses_live_rolling_window);
 
         // Advanced test scenarios
         RUN_TEST(test_command_error_handling);

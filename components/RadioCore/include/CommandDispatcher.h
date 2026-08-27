@@ -7,6 +7,7 @@
 #include <string_view>
 #include <memory>
 #include <atomic>
+#include <array>
 #include <cstring>
 #include "rtos_mutex.h"
 
@@ -48,6 +49,12 @@ struct DispatcherStatistics {
     uint64_t averageErrorInterval{0};    // Overall mean interval between errors
     size_t errorBursts{0};               // Number of distinct <5s burst groups detected
     bool inErrorBurst{false};            // Prevents counting every error inside one burst as a new burst
+    static constexpr size_t ERROR_RATE_SAMPLE_COUNT = 10;
+    static constexpr uint64_t ERROR_RATE_WINDOW_US = 5'000'000;
+    std::array<uint64_t, ERROR_RATE_SAMPLE_COUNT> recentErrorTimes{};
+    size_t recentErrorWriteIndex{0};
+    size_t recentErrorSamples{0};
+    bool highErrorRateActive{false};
 
     // Helper to get string_view of the fixed buffers
     std::string_view lastCommandBeforeErrorView() const { return {lastCommandBeforeError}; }
@@ -74,7 +81,11 @@ struct DispatcherStatistics {
           firstErrorTime(other.firstErrorTime),
           averageErrorInterval(other.averageErrorInterval),
           errorBursts(other.errorBursts),
-          inErrorBurst(other.inErrorBurst) {
+          inErrorBurst(other.inErrorBurst),
+          recentErrorTimes(other.recentErrorTimes),
+          recentErrorWriteIndex(other.recentErrorWriteIndex),
+          recentErrorSamples(other.recentErrorSamples),
+          highErrorRateActive(other.highErrorRateActive) {
         std::memcpy(lastCommandBeforeError, other.lastCommandBeforeError, CMD_BUF_SIZE);
         std::memcpy(lastCommandSource, other.lastCommandSource, CMD_BUF_SIZE);
     }
@@ -101,6 +112,10 @@ struct DispatcherStatistics {
             averageErrorInterval = other.averageErrorInterval;
             errorBursts = other.errorBursts;
             inErrorBurst = other.inErrorBurst;
+            recentErrorTimes = other.recentErrorTimes;
+            recentErrorWriteIndex = other.recentErrorWriteIndex;
+            recentErrorSamples = other.recentErrorSamples;
+            highErrorRateActive = other.highErrorRateActive;
         }
         return *this;
     }
@@ -131,9 +146,14 @@ struct DispatcherStatistics {
         averageErrorInterval = 0;
         errorBursts = 0;
         inErrorBurst = false;
+        recentErrorTimes.fill(0);
+        recentErrorWriteIndex = 0;
+        recentErrorSamples = 0;
+        highErrorRateActive = false;
     }
 
-    void recordError(std::string_view errorType, std::string_view lastCmd, std::string_view lastSource, const uint64_t currentTime) {
+    // Returns true only when a live burst first crosses 10 errors in 5 seconds.
+    bool recordError(std::string_view errorType, std::string_view lastCmd, std::string_view lastSource, const uint64_t currentTime) {
         totalErrorResponses++;
         if (errorType == "?") questionMarkErrors++;
         else if (errorType == "E") eErrors++;
@@ -164,6 +184,18 @@ struct DispatcherStatistics {
         }
 
         lastErrorTime = currentTime;
+        recentErrorTimes[recentErrorWriteIndex] = currentTime;
+        recentErrorWriteIndex = (recentErrorWriteIndex + 1) % ERROR_RATE_SAMPLE_COUNT;
+        if (recentErrorSamples < ERROR_RATE_SAMPLE_COUNT) recentErrorSamples++;
+
+        bool highRateNow = false;
+        if (recentErrorSamples == ERROR_RATE_SAMPLE_COUNT) {
+            // Once full, writeIndex points at the oldest retained sample.
+            const uint64_t oldest = recentErrorTimes[recentErrorWriteIndex];
+            highRateNow = currentTime >= oldest && currentTime - oldest <= ERROR_RATE_WINDOW_US;
+        }
+        const bool highRateStarted = highRateNow && !highErrorRateActive;
+        highErrorRateActive = highRateNow;
         // A radio rejection should follow its command promptly. Do not pin a random
         // command from tens of minutes ago onto an unsolicited/corrupt '?;' frame.
         static constexpr uint64_t COMMAND_ASSOCIATION_WINDOW_US = 2'000'000;
@@ -177,6 +209,19 @@ struct DispatcherStatistics {
             lastCommandSource[0] = '\0';
             lastCommandBeforeErrorTime = 0;
         }
+        return highRateStarted;
+    }
+
+    size_t recentErrorCount(const uint64_t currentTime) const {
+        size_t count = 0;
+        for (size_t i = 0; i < recentErrorSamples; ++i) {
+            const uint64_t timestamp = recentErrorTimes[i];
+            if (timestamp > 0 && currentTime >= timestamp &&
+                currentTime - timestamp <= ERROR_RATE_WINDOW_US) {
+                count++;
+            }
+        }
+        return count;
     }
 
     void recordCommandSent(const uint64_t currentTime) {

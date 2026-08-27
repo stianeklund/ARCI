@@ -197,13 +197,21 @@ class DisplayLatencyProfiler
         if (rtxCount > 0 || rtxDrops > 0)
         {
             const uint32_t rtxAvg = rtxStats.count > 0 ? static_cast<uint32_t>(rtxStats.sum / rtxStats.count) : 0;
-            ESP_LOGI(TAG, "RadioTX: sends=%lu (%lu/s) pacing=%lums drops=%lu | queueLatency(ms) avg=%lu max=%lu",
-                     static_cast<unsigned long>(rtxCount),
-                     static_cast<unsigned long>(rtxCount / 10),
-                     static_cast<unsigned long>(rtxPacing / 1000),
-                     static_cast<unsigned long>(rtxDrops),
-                     static_cast<unsigned long>(rtxAvg / 1000),
-                     static_cast<unsigned long>(rtxStats.max / 1000));
+            const bool abnormal = rtxDrops > 0 || rtxStats.max >= 100'000;
+            if (abnormal)
+            {
+                ESP_LOGW(TAG, "RadioTX abnormal: sends=%lu rate=%lu/s pacing=%lums drops=%lu queueMs(avg=%lu max=%lu)",
+                         static_cast<unsigned long>(rtxCount), static_cast<unsigned long>(rtxCount / 10),
+                         static_cast<unsigned long>(rtxPacing / 1000), static_cast<unsigned long>(rtxDrops),
+                         static_cast<unsigned long>(rtxAvg / 1000), static_cast<unsigned long>(rtxStats.max / 1000));
+            }
+            else
+            {
+                ESP_LOGD(TAG, "RadioTX: sends=%lu rate=%lu/s pacing=%lums drops=0 queueMs(avg=%lu max=%lu)",
+                         static_cast<unsigned long>(rtxCount), static_cast<unsigned long>(rtxCount / 10),
+                         static_cast<unsigned long>(rtxPacing / 1000),
+                         static_cast<unsigned long>(rtxAvg / 1000), static_cast<unsigned long>(rtxStats.max / 1000));
+            }
         }
 
         // Only log if there was any activity
@@ -213,7 +221,7 @@ class DisplayLatencyProfiler
         }
 
         // Main summary line - now includes encoder direct sends
-        ESP_LOGI(TAG, "FA Display: fwd=%lu sup=%lu enc=%lu | USB0: %lu",
+        ESP_LOGD(TAG, "FA: display(fwd=%lu sup=%lu enc=%lu) USB0=%lu",
                  static_cast<unsigned long>(fwdCount),
                  static_cast<unsigned long>(supCount),
                  static_cast<unsigned long>(encCount),
@@ -222,7 +230,7 @@ class DisplayLatencyProfiler
         // Suppression breakdown (only if suppressions occurred)
         if (supCount > 0)
         {
-            ESP_LOGI(TAG, "  Suppress: tuning=%lu grace=%lu debounce=%lu dedup=%lu rate=%lu pending=%lu",
+            ESP_LOGV(TAG, "FA suppress: tuning=%lu grace=%lu debounce=%lu dedup=%lu rate=%lu pending=%lu",
                      static_cast<unsigned long>(supTuning), static_cast<unsigned long>(supGrace),
                      static_cast<unsigned long>(supDebounce), static_cast<unsigned long>(supDedup),
                      static_cast<unsigned long>(supRate), static_cast<unsigned long>(supPending));
@@ -232,7 +240,7 @@ class DisplayLatencyProfiler
         if (encCount > 0 && encIntervalStats.count > 0)
         {
             const uint32_t avgEncInterval = static_cast<uint32_t>(encIntervalStats.sum / encIntervalStats.count);
-            ESP_LOGI(TAG, "  Encoder->Display(ms): avg=%lu min=%lu max=%lu (count=%lu)",
+            ESP_LOGV(TAG, "Encoder->Display ms: avg=%lu min=%lu max=%lu count=%lu",
                      static_cast<unsigned long>(avgEncInterval / 1000),
                      static_cast<unsigned long>(encIntervalStats.min / 1000),
                      static_cast<unsigned long>(encIntervalStats.max / 1000),
@@ -247,7 +255,7 @@ class DisplayLatencyProfiler
             const uint32_t avgInterval =
                 intervalStats.count > 0 ? static_cast<uint32_t>(intervalStats.sum / intervalStats.count) : 0;
 
-            ESP_LOGI(TAG, "  RadioEcho(us): process=%lu fwd=%lu | Interval(ms): avg=%lu min=%lu max=%lu",
+            ESP_LOGV(TAG, "RadioEcho us: process=%lu fwd=%lu intervalMs(avg=%lu min=%lu max=%lu)",
                      static_cast<unsigned long>(avgProc), static_cast<unsigned long>(avgFwd),
                      static_cast<unsigned long>(avgInterval / 1000),
                      static_cast<unsigned long>(intervalStats.min / 1000),
