@@ -381,9 +381,11 @@ void SerialHandler::processReceivedData(const uint8_t *data, const size_t len) {
             }
         }
 
-        // Only build string if we need to log (error detected or debug enabled)
-        const bool needsLogging = hasEOError || hasQuestionError ||
-                                  esp_log_level_get(TAG) >= ESP_LOG_DEBUG;
+        // Bare '?;' responses are counted by CommandDispatcher and summarized by
+        // Diagnostics. They can arrive in bursts, so only build/log their raw UART
+        // context when this tag is explicitly set to DEBUG.
+        const bool debugLogging = esp_log_level_get(TAG) >= ESP_LOG_DEBUG;
+        const bool needsLogging = hasEOError || debugLogging;
 
         std::string rxStr;
         if (needsLogging) {
@@ -407,7 +409,7 @@ void SerialHandler::processReceivedData(const uint8_t *data, const size_t len) {
                 }
                 printf("\n");
             }
-        } else if (hasQuestionError) {
+        } else if (hasQuestionError && debugLogging) {
             // Find the command that preceded ?; to help identify which query failed
             // Response format: "CMD1...;CMD2...;?;CMD3...;" - the ?; follows the failed query
             std::string precedingCmd;
@@ -438,19 +440,19 @@ void SerialHandler::processReceivedData(const uint8_t *data, const size_t len) {
 
             // Build informative message
             if (!precedingCmd.empty() || !followingCmd.empty()) {
-                ESP_LOGW(TAG, "UART%d '?;' error - preceding response: '%s', following: '%s'",
+                ESP_LOGD(TAG, "UART%d '?;' error - preceding response: '%s', following: '%s'",
                          m_uart_num,
                          precedingCmd.empty() ? "(none)" : precedingCmd.c_str(),
                          followingCmd.empty() ? "(none)" : followingCmd.c_str());
             }
-            ESP_LOGW(TAG, "UART%d RX: '%s'", m_uart_num, rxStr.c_str());
+            ESP_LOGD(TAG, "UART%d RX: '%s'", m_uart_num, rxStr.c_str());
             if (m_uart_num == UART_NUM_1) {
                 char lastTx[MAX_MESSAGE_LENGTH + 1];
                 const size_t lastTxLen = snapshotLastSentFrame(lastTx);
                 if (lastTxLen > 0) {
                     const uint64_t lastTs = lastSentTimestampUs_.load(std::memory_order_relaxed);
                     const double deltaMs = lastTs ? (esp_timer_get_time() - lastTs) / 1000.0 : -1.0;
-                    ESP_LOGI(TAG, "UART%d last TX: '%s' (%.1f ms ago)",
+                    ESP_LOGD(TAG, "UART%d last TX: '%s' (%.1f ms ago)",
                              m_uart_num, lastTx, deltaMs);
                 }
             }

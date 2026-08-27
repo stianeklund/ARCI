@@ -264,6 +264,13 @@ namespace radio {
             commandPrefix == "EQ" || commandPrefix == "SS") {
             // Frequency/extended parameters - keep as string to preserve leading zeros
             command.addParam(paramStr);
+        } else if (commandPrefix == "SM" || commandPrefix == "RM") {
+            // SM/RM answers have fixed-width P1(1) + P2(4) fields. Preserve
+            // P2 as a string so its four-digit wire width is not lost.
+            command.addParam(paramStr.substr(0, 1));
+            if (paramStr.length() > 1) {
+                command.addParam(paramStr.substr(1, 4));
+            }
         } else if (commandPrefix == "CD") {
             // CD: Compact subcommand format CDx<value> - split selector and value
             command.addParam(paramStr.substr(0, 1)); // Selector ('0','1','2')

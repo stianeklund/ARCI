@@ -198,6 +198,21 @@ void test_frame_CD_selector_value_split() {
     TEST_ASSERT_TRUE(cmd.getParamFast(1)->asString() == "0"); // value
 }
 
+// SM and RM answers are P1(1) + P2(4), not one five-digit integer.
+void test_frame_meter_answer_field_split() {
+    const RadioCommand sm = parseSingle("SM00005;", CommandSource::Remote);
+    TEST_ASSERT_EQUAL(CommandType::Answer, sm.type);
+    TEST_ASSERT_EQUAL_INT(2, static_cast<int>(sm.getParamCount()));
+    TEST_ASSERT_TRUE(sm.getParamFast(0)->asString() == "0");
+    TEST_ASSERT_TRUE(sm.getParamFast(1)->asString() == "0005");
+
+    const RadioCommand rm = parseSingle("RM10001;", CommandSource::Remote);
+    TEST_ASSERT_EQUAL(CommandType::Answer, rm.type);
+    TEST_ASSERT_EQUAL_INT(2, static_cast<int>(rm.getParamCount()));
+    TEST_ASSERT_TRUE(rm.getParamFast(0)->asString() == "1");
+    TEST_ASSERT_TRUE(rm.getParamFast(1)->asString() == "0001");
+}
+
 // ============== Malformed / edge input ==============
 
 // An empty message is guarded in parseMessage and emits no command.
@@ -284,6 +299,7 @@ extern "C" void run_cat_parser_frame_tests(void) {
     RUN_TEST(test_frame_PL_field_split);
     RUN_TEST(test_frame_PA_field_split);
     RUN_TEST(test_frame_CD_selector_value_split);
+    RUN_TEST(test_frame_meter_answer_field_split);
 
     // Malformed / edge input
     RUN_TEST(test_frame_empty_message_no_command);
