@@ -192,9 +192,9 @@ namespace radio
 
         // Send coordinated AI mode to radio
         const std::string aiSetCmd = formatAIResponse(radioAiMode);
-        ESP_LOGI(TAG, "📤 Sending AI mode to radio: %s", aiSetCmd.c_str());
+        ESP_LOGD(TAG, "Sending AI mode to radio: %s", aiSetCmd.c_str());
         sendToRadio(radioSerial, aiSetCmd);
-        ESP_LOGI(TAG, "📤 Querying radio AI mode: AI;");
+        ESP_LOGV(TAG, "Querying radio AI mode: AI;");
         sendToRadio(radioSerial, buildCommand("AI")); // Verify radio received it
     }
 
@@ -278,7 +278,7 @@ namespace radio
                 state.aiMode.store(mode);
                 if (mode == expectedMode)
                 {
-                    ESP_LOGI(TAG, "📻 Radio AI answer: AI%d; (✓ matches expected)", mode);
+                    ESP_LOGV(TAG, "Radio AI answer: AI%d; (matches expected)", mode);
                 }
                 else
                 {
@@ -295,7 +295,7 @@ namespace radio
             }
             else
             {
-                ESP_LOGE(TAG, "📻 Radio AI answer: INVALID mode %d in message: %s, not forwarding",
+                ESP_LOGW(TAG, "Radio AI answer has invalid mode %d in message: %s; not forwarding",
                          mode, command.originalMessage.c_str());
             }
             return true;
@@ -328,7 +328,7 @@ namespace radio
                 else
                 {
                     // Cache is stale, query the radio
-                    ESP_LOGI(TAG, "PS cache stale/empty, forwarding query '%s' to radio", cmd.originalMessage.c_str());
+                    ESP_LOGV(TAG, "PS cache stale/empty, forwarding query '%s' to radio", cmd.originalMessage.c_str());
                     // Record query when it originates from USB/TCP source
                     if (cmd.isCatClient())
                     {
@@ -360,7 +360,7 @@ namespace radio
             else
             {
                 // Display or other local surfaces: no defaulting; let higher layers decide if needed
-                ESP_LOGI(TAG, "PS query from non-USB/TCP source %d ignored (no passthrough)", static_cast<int>(cmd.source));
+                ESP_LOGV(TAG, "PS query from non-USB/TCP source %d ignored (no passthrough)", static_cast<int>(cmd.source));
             }
             return true;
         }
@@ -443,7 +443,7 @@ namespace radio
 
                     if (elapsedUs < DEBOUNCE_WINDOW_US)
                     {
-                        ESP_LOGI(TAG, "Ignoring stale PS1 from radio - debounce window active (elapsed=%llu us)",
+                        ESP_LOGD(TAG, "Ignoring stale PS1 from radio - debounce window active (elapsed=%llu us)",
                                  elapsedUs);
                         // Still route the response to USB clients, but don't trigger power-on sequence
                         const std::string response = formatPSResponse(powerState);
@@ -454,7 +454,7 @@ namespace radio
                     }
                     else
                     {
-                        ESP_LOGI(TAG, "Radio PS1 accepted - debounce expired (elapsed=%llu us), clearing powerOffRequestTime",
+                        ESP_LOGD(TAG, "Radio PS1 accepted - debounce expired (elapsed=%llu us), clearing powerOffRequestTime",
                                  elapsedUs);
                         rm.getState().powerOffRequestTime.store(0);
                     }

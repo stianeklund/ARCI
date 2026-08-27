@@ -306,7 +306,7 @@ void TCA8418Handler::clearPendingInterruptsOnTCA() {
     if (readRegister(REG_KEY_LCK_EC, keyLockEventCounter)) {
         uint8_t eventsInFifo = keyLockEventCounter & 0x0F;
         if (eventsInFifo > 0) {
-            ESP_LOGI(TAG, "Draining %d events from FIFO", eventsInFifo);
+            ESP_LOGV(TAG, "Draining %d events from FIFO", eventsInFifo);
         }
 
         // Read all events to clear the FIFO - INCREASED to 16 to handle full FIFO
@@ -324,7 +324,7 @@ void TCA8418Handler::clearPendingInterruptsOnTCA() {
                 row = ((keyCode - 1) % m_numRows) + 1;
                 col = ((keyCode - 1) / m_numRows) + 1;
             }
-            ESP_LOGI(TAG, "  Event %d: 0x%02X = Key 0x%02X (R%d C%d) %s",
+            ESP_LOGV(TAG, "Event %d: 0x%02X = Key 0x%02X (R%d C%d) %s",
                      i + 1, eventByte, keyCode, row, col, isPress ? "PRESS" : "RELEASE");
         }
     }
@@ -333,7 +333,7 @@ void TCA8418Handler::clearPendingInterruptsOnTCA() {
     uint8_t intStat;
     if (readRegister(REG_INT_STAT, intStat)) {
         if (intStat != 0) {
-            ESP_LOGI(TAG, "INT_STAT before clear: 0x%02X", intStat);
+            ESP_LOGV(TAG, "INT_STAT before clear: 0x%02X", intStat);
         }
     }
 
@@ -787,7 +787,7 @@ TCA8418Handler::EventBatch TCA8418Handler::drainEventsToEmpty() {
     
     // Log performance metrics for rapid button scenarios
     if (batch.count > 1) {
-        ESP_LOGI(TAG, "📦 Drained batch of %d events in %lu loops (rapid presses detected)", 
+        ESP_LOGD(TAG, "Drained batch of %d events in %lu loops (rapid presses)",
                  batch.count, loopCount);
     }
     

@@ -45,8 +45,9 @@ void Diagnostics::printMemoryStatus() const {
     const size_t internalUsed = internalTotal - internalFree;
     const float internalUsedPercent = internalTotal > 0 ? (float(internalUsed) / float(internalTotal)) * 100.0f : 0.0f;
     
-    ESP_LOGI(TAG, "[Periodic monitor] Internal SRAM: %zu/%zu bytes free (largest: %zu), %.1f%% used",
-             internalFree, internalTotal, internalLargest, internalUsedPercent);
+    ESP_LOGD(TAG, "Memory: SRAM free=%zu/%zu largest=%zu min=%lu used=%.1f%%",
+             internalFree, internalTotal, internalLargest,
+             static_cast<unsigned long>(esp_get_minimum_free_heap_size()), internalUsedPercent);
     
     // SPIRAM monitoring (if available)
     const size_t spiramFree = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
@@ -56,7 +57,7 @@ void Diagnostics::printMemoryStatus() const {
         const size_t spiramUsed = spiramTotal - spiramFree;
         const float spiramUsedPercent = spiramTotal > 0 ? (float(spiramUsed) / float(spiramTotal)) * 100.0f : 0.0f;
         
-        ESP_LOGI(TAG, "[Periodic monitor] SPIRAM: %zu/%zu bytes free (largest: %zu), %.1f%% used",
+        ESP_LOGD(TAG, "Memory: SPIRAM free=%zu/%zu largest=%zu used=%.1f%%",
                  spiramFree, spiramTotal, spiramLargest, spiramUsedPercent);
     }
 }
@@ -67,7 +68,7 @@ void Diagnostics::printStackStatus() const {
         return;
     }
     
-    ESP_LOGI(TAG, "--- Task Stack Status ---");
+    ESP_LOGV(TAG, "Task stacks: name used/total usage free");
     for (const auto& taskInfo : m_monitoredTasks) {
         if (taskInfo.handle) {
             // Get stack high water mark (in words, so multiply by 4 for bytes on 32-bit system)
@@ -76,7 +77,7 @@ void Diagnostics::printStackStatus() const {
             const UBaseType_t stackUsedBytes = taskInfo.stackSize - stackRemainingBytes;
             const float stackUsagePercent = (float(stackUsedBytes) / float(taskInfo.stackSize)) * 100.0f;
             
-            ESP_LOGI(TAG, "Task [%s]: %lu/%lu bytes used (%.1f%%), %lu bytes free",
+            ESP_LOGV(TAG, "Task stack: %s %lu/%lu used=%.1f%% free=%lu",
                      taskInfo.name, 
                      stackUsedBytes,
                      taskInfo.stackSize,
@@ -139,15 +140,12 @@ void Diagnostics::printCpuStatus() {
         const float core0Usage = 100.0f - idle0Percent;
         const float core1Usage = 100.0f - idle1Percent;
 
-        ESP_LOGI(TAG, "========== CPU UTILIZATION ==========");
-        ESP_LOGI(TAG, "  Core 0: %4.1f%% busy (%4.1f%% idle)", core0Usage, idle0Percent);
-        ESP_LOGI(TAG, "  Core 1: %4.1f%% busy (%4.1f%% idle)", core1Usage, idle1Percent);
-        ESP_LOGI(TAG, "  Total:  %4.1f%% system load", (core0Usage + core1Usage) / 2.0f);
+        ESP_LOGD(TAG, "CPU: C0=%.1f%% C1=%.1f%% total=%.1f%% idle(C0=%.1f%% C1=%.1f%%)",
+                 core0Usage, core1Usage, (core0Usage + core1Usage) / 2.0f,
+                 idle0Percent, idle1Percent);
 
         // Print top active tasks
-        ESP_LOGI(TAG, "Top Active Tasks:");
-        ESP_LOGI(TAG, "Task Name        | Core | CPU%% | Priority | Stack Free");
-        ESP_LOGI(TAG, "-----------------|------|------|----------|----------");
+        ESP_LOGV(TAG, "CPU tasks: name core cpu priority stackFree");
 
         for (UBaseType_t i = 0; i < actualTaskCount; i++) {
             const char* name = taskStatusArray[i].pcTaskName;
@@ -167,7 +165,7 @@ void Diagnostics::printCpuStatus() {
                 const UBaseType_t priority = taskStatusArray[i].uxCurrentPriority;
                 const uint32_t stackFree = taskStatusArray[i].usStackHighWaterMark * sizeof(StackType_t);
 
-                ESP_LOGI(TAG, "%-16s | %-4s | %3.1f%% | %8lu | %8lu",
+                ESP_LOGV(TAG, "CPU task: %-16s core=%s cpu=%.1f%% prio=%lu stackFree=%lu",
                          name, coreStr, percentFloat, priority, stackFree);
             }
         }
@@ -177,10 +175,6 @@ void Diagnostics::printCpuStatus() {
     m_lastIdle0Runtime = idle0Runtime;
     m_lastIdle1Runtime = idle1Runtime;
     m_lastTotalTime = totalRuntime;
-
-    ESP_LOGI(TAG, "Memory: Free=%luKB, Min=%luKB",
-             esp_get_free_heap_size() / 1024, esp_get_minimum_free_heap_size() / 1024);
-    ESP_LOGI(TAG, "==========================================");
 
     heap_caps_free(taskStatusArray);
 }
@@ -212,11 +206,6 @@ void Diagnostics::task() {
             m_radioManager.getStatistics();
         auto dispatcherStats = m_radioManager.getCommandDispatcher().getStatistics();
 
-        ESP_LOGI(TAG, "--- RadioManager Stats ---");
-        ESP_LOGI(TAG, "Total Commands Processed: %lu", static_cast<unsigned long>(totalCommandsProcessed));
-        ESP_LOGI(TAG, "Local Commands: %lu", static_cast<unsigned long>(localCommandsProcessed));
-        ESP_LOGI(TAG, "Remote Commands: %lu", static_cast<unsigned long>(remoteCommandsProcessed));
-
         // CAT parser statistics (summed across all per-source parsers)
         const auto sumParser = [this]() {
             radio::UnifiedCATStatistics s;
@@ -233,55 +222,54 @@ void Diagnostics::task() {
             }
             return s;
         }();
-        ESP_LOGI(TAG, "--- CAT Parser Stats ---");
-        ESP_LOGI(TAG, "Messages: %zu, Set: %zu, Read: %zu, Answer: %zu, ParseErr: %zu, Unknown: %zu",
+        ESP_LOGD(TAG,
+                 "Commands: radio(total=%lu local=%lu remote=%lu) "
+                 "parser(msg=%zu set=%zu read=%zu ans=%zu parseErr=%zu unknown=%zu) "
+                 "dispatch(total=%lu handled=%lu unhandled=%lu handlerErr=%lu)",
+                 static_cast<unsigned long>(totalCommandsProcessed),
+                 static_cast<unsigned long>(localCommandsProcessed),
+                 static_cast<unsigned long>(remoteCommandsProcessed),
                  sumParser.totalMessagesParsed, sumParser.setCommands, sumParser.readCommands,
-                 sumParser.answerCommands, sumParser.parseErrors, sumParser.unknownCommands);
-
-        ESP_LOGI(TAG, "--- CommandDispatcher Stats ---");
-        ESP_LOGI(TAG, "Commands Dispatched: %lu", static_cast<unsigned long>(dispatcherStats.totalCommandsDispatched.load()));
-        ESP_LOGI(TAG, "Commands Handled: %lu", static_cast<unsigned long>(dispatcherStats.commandsHandled.load()));
-        ESP_LOGI(TAG, "Commands Unhandled: %lu", static_cast<unsigned long>(dispatcherStats.commandsUnhandled.load()));
-        ESP_LOGI(TAG, "Handler Errors: %lu", static_cast<unsigned long>(dispatcherStats.handlerErrors.load()));
+                 sumParser.answerCommands, sumParser.parseErrors, sumParser.unknownCommands,
+                 static_cast<unsigned long>(dispatcherStats.totalCommandsDispatched.load()),
+                 static_cast<unsigned long>(dispatcherStats.commandsHandled.load()),
+                 static_cast<unsigned long>(dispatcherStats.commandsUnhandled.load()),
+                 static_cast<unsigned long>(dispatcherStats.handlerErrors.load()));
 
         // Error response diagnostics
         if (dispatcherStats.totalErrorResponses > 0) {
-            ESP_LOGI(TAG, "--- ERROR RESPONSE ANALYSIS ---");
-            ESP_LOGI(TAG, "Total Error Responses: %zu", dispatcherStats.totalErrorResponses);
-            ESP_LOGI(TAG, "Question Mark Errors (?;): %zu", dispatcherStats.questionMarkErrors);
-            ESP_LOGI(TAG, "E Errors (E;): %zu", dispatcherStats.eErrors);
-            ESP_LOGI(TAG, "O Errors (O;): %zu", dispatcherStats.oErrors);
-            ESP_LOGI(TAG, "Distinct Error Bursts: %zu", dispatcherStats.errorBursts);
-            ESP_LOGI(TAG, "Overall Average Error Interval: %llu ms", dispatcherStats.averageErrorInterval / 1000);
-
             const uint64_t currentTime = esp_timer_get_time();
             const char* source = dispatcherStats.lastCommandSource[0] == '\0'
                 ? "unknown" : dispatcherStats.lastCommandSource;
+            const uint64_t lastErrorAgeMs = dispatcherStats.lastErrorTime > 0 && currentTime >= dispatcherStats.lastErrorTime
+                ? (currentTime - dispatcherStats.lastErrorTime) / 1000 : 0;
+            const size_t recentErrors = dispatcherStats.recentErrorCount(currentTime);
+            float lifetimeRate = 0.0f;
+            if (const uint64_t runtimeMs = currentTime / 1000; runtimeMs > 0) {
+                lifetimeRate = static_cast<float>(dispatcherStats.totalErrorResponses) / (runtimeMs / 60000.0f);
+            }
+
+            ESP_LOGD(TAG,
+                     "Radio errors: total=%zu (?=%zu E=%zu O=%zu) bursts=%zu recent5s=%zu "
+                     "meanInterval=%llums lifetimeRate=%.2f/min lastAge=%llums",
+                     dispatcherStats.totalErrorResponses, dispatcherStats.questionMarkErrors,
+                     dispatcherStats.eErrors, dispatcherStats.oErrors, dispatcherStats.errorBursts,
+                     recentErrors, dispatcherStats.averageErrorInterval / 1000, lifetimeRate,
+                     static_cast<unsigned long long>(lastErrorAgeMs));
+
             if (dispatcherStats.lastCommandBeforeErrorTime > 0) {
                 const uint64_t commandAge = (currentTime - dispatcherStats.lastCommandBeforeErrorTime) / 1000;
-                ESP_LOGI(TAG, "Last Command Before Error: %s from %s (sent %llu ms ago)",
+                ESP_LOGV(TAG, "Last command before error: %s source=%s age=%llums",
                          dispatcherStats.lastCommandBeforeError, source, commandAge);
             } else if (dispatcherStats.lastCommandBeforeError[0] == '\0') {
-                ESP_LOGI(TAG, "Last Command Before Error: no recent ARCI->radio command; attribution unavailable");
+                ESP_LOGV(TAG, "Last command before error: no recent ARCI->radio command; attribution unavailable");
             } else {
-                ESP_LOGI(TAG, "Last Command Before Error: %s from %s (timestamp unknown)",
+                ESP_LOGV(TAG, "Last command before error: %s source=%s age=unknown",
                          dispatcherStats.lastCommandBeforeError, source);
             }
-
-            if (const uint64_t runtimeMs = esp_timer_get_time() / 1000; runtimeMs > 60000) {
-                const float errorRate = static_cast<float>(dispatcherStats.totalErrorResponses) / (runtimeMs / 60000.0f);
-                ESP_LOGI(TAG, "Error Rate: %.2f errors/minute", errorRate);
-            }
-
-            if (dispatcherStats.averageErrorInterval > 0 && dispatcherStats.averageErrorInterval < 5000000) {
-                ESP_LOGW(TAG, "⚠️  HIGH OVERALL ERROR RATE: Mean interval %llu ms (< 5s)",
-                         dispatcherStats.averageErrorInterval / 1000);
-            }
         } else {
-            ESP_LOGI(TAG, "✅ No error responses detected");
+            ESP_LOGD(TAG, "Radio errors: none");
         }
-
-        ESP_LOGI(TAG, "--------------------------------");
 #endif
     }
 }

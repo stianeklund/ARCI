@@ -342,7 +342,7 @@ void initializeUsbCdc()
 
 [[noreturn]] static void usb_task(void *pvParameters)
 {
-    ESP_LOGI(TAG, "USB task started");
+    ESP_LOGD(TAG, "USB task started");
     static uint32_t messageCount = 0;
     constexpr uint32_t STACK_CHECK_INTERVAL = 1000; // Check every 1000 messages
     constexpr UBaseType_t STACK_LOW_THRESHOLD = 1024; // Warn if < 1KB free
@@ -397,7 +397,7 @@ void initializeUsbCdc()
 
 [[noreturn]] static void usb2_task(void *pvParameters)
 {
-    ESP_LOGI(TAG, "USB2 task started");
+    ESP_LOGD(TAG, "USB2 task started");
     static uint32_t messageCount = 0;
     constexpr uint32_t STACK_CHECK_INTERVAL = 1000; // Check every 1000 messages
     constexpr UBaseType_t STACK_LOW_THRESHOLD = 1024; // Warn if < 1KB free
@@ -455,7 +455,7 @@ void initializeUsbCdc()
 
 [[noreturn]] static void radio_task(void *pvParameters)
 {
-    ESP_LOGI(TAG, "Radio task started");
+    ESP_LOGD(TAG, "Radio task started");
     constexpr TickType_t WDT_TIMEOUT_TICKS = pdMS_TO_TICKS(4000); // 4s < 5s WDT timeout
 
     // Register with task watchdog
@@ -543,7 +543,7 @@ void initializeUsbCdc()
 
 [[noreturn]] static void display_task(void *pvParameters)
 {
-    ESP_LOGI(TAG, "Display task started");
+    ESP_LOGD(TAG, "Display task started");
     constexpr TickType_t WDT_TIMEOUT_TICKS = pdMS_TO_TICKS(4000); // 4s < 5s WDT timeout
 
     // Register with task watchdog
@@ -622,7 +622,7 @@ void initializeUsbCdc()
 
 [[noreturn]] static void main_task(void *pvParameters)
 {
-    ESP_LOGI(TAG, "Main task started");
+    ESP_LOGD(TAG, "Main task started");
     uint8_t lastOnOffState = 255;
     uint64_t lastAiEnforceUs = 0; // throttle AI enforcement
     // Periodic PS0; emulation when radio is OFF and CDC connected (TS-590SG behavior)
@@ -660,7 +660,7 @@ void initializeUsbCdc()
 
                 if (reportedAi != desiredAi)
                 {
-                    ESP_LOGI(TAG, "AI enforcement: desired=%u, reported=%u — sending AI%u; to radio", desiredAi,
+                    ESP_LOGW(TAG, "AI mismatch: desired=%u reported=%u; sending AI%u;", desiredAi,
                              reportedAi, desiredAi);
                     std::string aiCmd = "AI" + std::to_string(desiredAi) + ";";
                     radioManager.sendRawRadioCommand(aiCmd);
@@ -734,34 +734,42 @@ void initializeUsbCdc()
                 const auto rq = radioSerial.resetQueueStats();
                 if (rq.dequeued > 0 || rq.expired > 0 || rq.overflowDrops > 0)
                 {
-                    ESP_LOGI(TAG, "RadioQ: depth=%u hw=%u deq=%lu age(avg=%llu max=%llu us) expired=%lu dropped=%lu",
-                             static_cast<unsigned>(rq.currentDepth),
-                             static_cast<unsigned>(rq.highWatermark),
-                             static_cast<unsigned long>(rq.dequeued),
-                             static_cast<unsigned long long>(rq.avgAgeUs),
-                             static_cast<unsigned long long>(rq.maxAgeUs),
-                             static_cast<unsigned long>(rq.expired),
-                             static_cast<unsigned long>(rq.overflowDrops));
+                    const bool abnormal = rq.expired > 0 || rq.overflowDrops > 0 || rq.maxAgeUs >= 100'000;
+                    if (abnormal)
+                        ESP_LOGW(TAG, "RadioQ abnormal: depth=%u hw=%u deq=%lu ageUs(avg=%llu max=%llu) expired=%lu dropped=%lu",
+                                 static_cast<unsigned>(rq.currentDepth), static_cast<unsigned>(rq.highWatermark),
+                                 static_cast<unsigned long>(rq.dequeued), static_cast<unsigned long long>(rq.avgAgeUs),
+                                 static_cast<unsigned long long>(rq.maxAgeUs), static_cast<unsigned long>(rq.expired),
+                                 static_cast<unsigned long>(rq.overflowDrops));
+                    else
+                        ESP_LOGV(TAG, "RadioQ: depth=%u hw=%u deq=%lu ageUs(avg=%llu max=%llu) expired=0 dropped=0",
+                                 static_cast<unsigned>(rq.currentDepth), static_cast<unsigned>(rq.highWatermark),
+                                 static_cast<unsigned long>(rq.dequeued), static_cast<unsigned long long>(rq.avgAgeUs),
+                                 static_cast<unsigned long long>(rq.maxAgeUs));
                 }
 
                 // Display serial queue health
                 const auto dq = displaySerial.resetQueueStats();
                 if (dq.dequeued > 0 || dq.expired > 0 || dq.overflowDrops > 0)
                 {
-                    ESP_LOGI(TAG, "DispQ: depth=%u hw=%u deq=%lu age(avg=%llu max=%llu us) expired=%lu dropped=%lu",
-                             static_cast<unsigned>(dq.currentDepth),
-                             static_cast<unsigned>(dq.highWatermark),
-                             static_cast<unsigned long>(dq.dequeued),
-                             static_cast<unsigned long long>(dq.avgAgeUs),
-                             static_cast<unsigned long long>(dq.maxAgeUs),
-                             static_cast<unsigned long>(dq.expired),
-                             static_cast<unsigned long>(dq.overflowDrops));
+                    const bool abnormal = dq.expired > 0 || dq.overflowDrops > 0 || dq.maxAgeUs >= 100'000;
+                    if (abnormal)
+                        ESP_LOGW(TAG, "DispQ abnormal: depth=%u hw=%u deq=%lu ageUs(avg=%llu max=%llu) expired=%lu dropped=%lu",
+                                 static_cast<unsigned>(dq.currentDepth), static_cast<unsigned>(dq.highWatermark),
+                                 static_cast<unsigned long>(dq.dequeued), static_cast<unsigned long long>(dq.avgAgeUs),
+                                 static_cast<unsigned long long>(dq.maxAgeUs), static_cast<unsigned long>(dq.expired),
+                                 static_cast<unsigned long>(dq.overflowDrops));
+                    else
+                        ESP_LOGV(TAG, "DispQ: depth=%u hw=%u deq=%lu ageUs(avg=%llu max=%llu) expired=0 dropped=0",
+                                 static_cast<unsigned>(dq.currentDepth), static_cast<unsigned>(dq.highWatermark),
+                                 static_cast<unsigned long>(dq.dequeued), static_cast<unsigned long long>(dq.avgAgeUs),
+                                 static_cast<unsigned long long>(dq.maxAgeUs));
                 }
 
                 // Per-interface AI mode diagnostic (helps diagnose forwarding lag)
                 {
                     const auto &s = radioManager.getState();
-                    ESP_LOGI(TAG, "AI modes: radio=%u CDC0=%u CDC1=%u TCP0=%u TCP1=%u disp=%u",
+                    ESP_LOGV(TAG, "AI modes: radio=%u CDC0=%u CDC1=%u TCP0=%u TCP1=%u disp=%u",
                              s.aiMode.load(), s.usbCdc0AiMode.load(), s.usbCdc1AiMode.load(),
                              s.tcp0AiMode.load(), s.tcp1AiMode.load(), s.displayAiMode.load());
 
@@ -771,7 +779,7 @@ void initializeUsbCdc()
                     const auto ageMs = [nowUs](uint64_t timestampUs) -> uint64_t {
                         return timestampUs > 0 && nowUs >= timestampUs ? (nowUs - timestampUs) / 1000ULL : 0ULL;
                     };
-                    ESP_LOGI(TAG,
+                    ESP_LOGV(TAG,
                              "DisplaySync: tuning=%d stopAge=%llums pendingA=%d/%llums pendingB=%d/%llums "
                              "txFail(radio=%lu display=%lu) heapFree=%u largest=%u",
                              s.isTuning.load(),
@@ -847,7 +855,7 @@ static void createPinnedTaskOrAbort(TaskFunction_t fn, const char *name, uint32_
 
 void setup()
 {
-    ESP_LOGI(TAG, "Starting setup");
+    ESP_LOGD(TAG, "Starting setup");
 
     // Register NvsManager with RadioManager for boot-time EX menu save
     // (RadioMacroManager is wired to RadioManager in initializeSystemComponents())
@@ -860,7 +868,7 @@ void setup()
     nvsManager.setupPowerStateCallback();
     configureGPIO();
 
-    ESP_LOGI(TAG, "Installing GPIO ISR service");
+    ESP_LOGD(TAG, "Installing GPIO ISR service");
     esp_err_t install_err = gpio_install_isr_service(0);
     if (install_err != ESP_OK && install_err != ESP_ERR_INVALID_STATE)
     {
@@ -882,20 +890,20 @@ void setup()
 
 #if CONFIG_SOC_WIFI_SUPPORTED
     // Initialize WiFi for antenna switch functionality
-    ESP_LOGI(TAG, "Initializing WiFi");
+    ESP_LOGD(TAG, "Initializing WiFi");
     if (wifiManager.initialize())
     {
-        ESP_LOGI(TAG, "Starting WiFi connection");
+        ESP_LOGD(TAG, "Starting WiFi connection");
         wifiManager.connect();
 
         // Wait for WiFi connection before starting TCP bridge
-        ESP_LOGI(TAG, "Waiting for WiFi connection...");
+        ESP_LOGD(TAG, "Waiting for WiFi connection...");
         if (wifiManager.waitForConnection(CONFIG_WIFI_CONNECTION_TIMEOUT_MS)) {
             ESP_LOGI(TAG, "WiFi connected! IP: %s", wifiManager.getIpAddress().c_str());
 
 #ifdef CONFIG_TCP_CAT_BRIDGE_ENABLE
             // Initialize TCP-CAT bridge for TCP port 0
-            ESP_LOGI(TAG, "Initializing TCP-CAT bridge for port 0");
+            ESP_LOGD(TAG, "Initializing TCP-CAT bridge for port 0");
             tcpCatBridge0 = std::make_unique<tcp_cat_bridge::TcpCatBridge>(
                 CONFIG_TCP_CAT_BRIDGE_PORT_0,  // port
                 0                              // bridgeId
@@ -931,7 +939,7 @@ void setup()
             esp_err_t bridge0_err = tcpCatBridge0->start();
             if (bridge0_err == ESP_OK) {
                 ESP_LOGI(TAG, "TCP-CAT bridge started for port 0 on port %d", CONFIG_TCP_CAT_BRIDGE_PORT_0);
-                ESP_LOGI(TAG, "  Connect via: nc %s %d",
+                ESP_LOGD(TAG, "Connect via: nc %s %d",
                          wifiManager.getIpAddress().c_str(), CONFIG_TCP_CAT_BRIDGE_PORT_0);
             } else {
                 ESP_LOGW(TAG, "Failed to start TCP-CAT bridge for port 0: %s", esp_err_to_name(bridge0_err));
@@ -939,7 +947,7 @@ void setup()
 
             #ifdef CONFIG_TCP_CAT_BRIDGE_ENABLE_DUAL
             // Initialize TCP-CAT bridge for TCP port 1
-            ESP_LOGI(TAG, "Initializing TCP-CAT bridge for port 1");
+            ESP_LOGD(TAG, "Initializing TCP-CAT bridge for port 1");
             tcpCatBridge1 = std::make_unique<tcp_cat_bridge::TcpCatBridge>(
                 CONFIG_TCP_CAT_BRIDGE_PORT_1,  // port
                 1                              // bridgeId
@@ -975,7 +983,7 @@ void setup()
             esp_err_t bridge1_err = tcpCatBridge1->start();
             if (bridge1_err == ESP_OK) {
                 ESP_LOGI(TAG, "TCP-CAT bridge started for port 1 on port %d", CONFIG_TCP_CAT_BRIDGE_PORT_1);
-                ESP_LOGI(TAG, "  Connect via: nc %s %d",
+                ESP_LOGD(TAG, "Connect via: nc %s %d",
                          wifiManager.getIpAddress().c_str(), CONFIG_TCP_CAT_BRIDGE_PORT_1);
             } else {
                 ESP_LOGW(TAG, "Failed to start TCP-CAT bridge for port 1: %s", esp_err_to_name(bridge1_err));
@@ -997,7 +1005,7 @@ void setup()
         displayCatHandler =
             std::make_unique<radio::CATHandler>(radioManager.getCommandDispatcher(), radioManager, pacedRadioSerial,
                                                 displaySerial, radio::CommandSource::Display);
-        ESP_LOGI(TAG, "Display CAT handler initialized");
+        ESP_LOGD(TAG, "Display CAT handler initialized");
     }
 
     // Initialize second USB CDC CAT handler (same pattern as display)
@@ -1006,7 +1014,7 @@ void setup()
         usb2CatHandler = std::make_unique<radio::CATHandler>(radioManager.getCommandDispatcher(), radioManager,
                                                              pacedRadioSerial, usb2Serial,
                                                              radio::CommandSource::UsbCdc1);
-        ESP_LOGI(TAG, "USB2 CDC CAT handler initialized");
+        ESP_LOGD(TAG, "USB2 CDC CAT handler initialized");
     }
 
     radioManager.setDisplaySerial(&displaySerial);
@@ -1046,11 +1054,11 @@ void setup()
         });
 #endif
     // Start RadioManager tasks (must be after peripheral setup, before using radio)
-    ESP_LOGI(TAG, "Starting RadioManager tasks");
+    ESP_LOGD(TAG, "Starting RadioManager tasks");
     ESP_ERROR_CHECK(radioManager.startTasks());
 
     // Load ButtonHandler mode memory from NVS (must be after nvs_flash_init())
-    ESP_LOGI(TAG, "Loading button mode memory from NVS");
+    ESP_LOGD(TAG, "Loading button mode memory from NVS");
     buttonHandler.loadModeMemoryFromNvs();
 
     adcHandler.start();
@@ -1067,12 +1075,12 @@ void setup()
     nvsManager.loadExtendedMenu();
 
 #if ((defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32S3)) && !defined(CONFIG_RUN_UNIT_TESTS))
-    ESP_LOGI(TAG, "Waiting for CDC connection...");
+    ESP_LOGD(TAG, "Waiting for CDC connection...");
     vTaskDelay(pdMS_TO_TICKS(3000));
     usbSerial.sendMessage("USB CDC Interface Ready");
 #endif
 
-    ESP_LOGI(TAG, "Setup complete, creating tasks");
+    ESP_LOGI(TAG, "Setup complete; creating runtime tasks");
 }
 
 void app_main()
@@ -1120,10 +1128,10 @@ void app_main()
 
     // Query radio power state on startup to establish authoritative state
     // This ensures we respond correctly to RRC-1258 keepalive queries
-    ESP_LOGI(TAG, "Querying radio power state on startup...");
+    ESP_LOGV(TAG, "Querying radio power state on startup");
     radioSerial.sendMessage("PS;");
 
-    ESP_LOGI(TAG, "All tasks created. Main task is now complete.");
+    ESP_LOGD(TAG, "All runtime tasks created; app_main complete");
 #endif
 }
 

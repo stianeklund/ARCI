@@ -164,7 +164,7 @@ namespace radio
         {
             // Per CAT spec: TX; with no parameter defaults to 0 (SEND/TX mode)
             int mode = getIntParam(command, 0, 0);
-            ESP_LOGI(TAG, "🔧 TX SET: Setting TX mode to %d (source: %s, cmd: %s)", mode,
+            ESP_LOGD(TAG, "TX set: mode=%d source=%s cmd=%s", mode,
                      sourceToString(command.source), command.originalMessage.c_str());
 
             if (!isValidTxMode(mode))
@@ -183,7 +183,7 @@ namespace radio
                 const int previousOwner = state.getTxOwner();
                 if (previousOwner != -1 && previousOwner != static_cast<int>(CommandSource::Panel))
                 {
-                    ESP_LOGI(TAG, "🔘 Panel TX: Physical button forces TX acquisition (previous owner: %d)", previousOwner);
+                    ESP_LOGD(TAG, "Panel TX forces acquisition (previous owner=%d)", previousOwner);
                     state.forceReleaseTx(currentTime);
                 }
                 if (!state.tryAcquireTx(command.source, currentTime))
@@ -222,12 +222,12 @@ namespace radio
             }
 
             const bool willSendToRadio = shouldSendToRadio(command);
-            ESP_LOGI(TAG, "🔍 TX ROUTING: shouldSendToRadio=%s", willSendToRadio ? "true" : "false");
+            ESP_LOGV(TAG, "TX routing: sendToRadio=%s", willSendToRadio ? "true" : "false");
 
             if (willSendToRadio)
             {
                 std::string cmdStr = formatTXResponse(mode);
-                ESP_LOGI(TAG, "📤 TX SEND: Sending to radio: %s", cmdStr.c_str());
+                ESP_LOGV(TAG, "TX send to radio: %s", cmdStr.c_str());
                 sendToRadio(radioSerial, cmdStr);
             }
             else
@@ -296,7 +296,7 @@ namespace radio
         // RX: Receive (shorthand for TX0)
         auto &state = radioManager.getState();
 
-        ESP_LOGI(TAG, "🔧 RX SET: Setting to RX mode (source: %s, cmd: %s)", sourceToString(command.source),
+        ESP_LOGD(TAG, "RX set: source=%s cmd=%s", sourceToString(command.source),
                  command.originalMessage.c_str());
 
         if (isSet(command) || (command.isLocal() && command.paramsEmpty()))
@@ -310,7 +310,7 @@ namespace radio
             // Other sources must respect ownership unless they are local (USB/display/panel) panic overrides
             if (command.source == CommandSource::Panel)
             {
-                ESP_LOGI(TAG, "🔘 Panel RX: Physical button forces TX release");
+                ESP_LOGD(TAG, "Panel RX forces TX release");
                 state.forceReleaseTx(currentTime);
             }
             else if (!state.releaseTx(command.source, currentTime))
@@ -335,11 +335,11 @@ namespace radio
             ESP_LOGI(TAG, "✅ RX STATE: Set to RX mode by %s", sourceToString(command.source));
 
             const bool willSendToRadio = shouldSendToRadio(command);
-            ESP_LOGI(TAG, "🔍 RX ROUTING: shouldSendToRadio=%s", willSendToRadio ? "true" : "false");
+            ESP_LOGV(TAG, "RX routing: sendToRadio=%s", willSendToRadio ? "true" : "false");
 
             if (willSendToRadio)
             {
-                ESP_LOGI(TAG, "📤 RX SEND: Sending to radio: RX;");
+                ESP_LOGV(TAG, "RX send to radio: RX;");
                 sendToRadio(radioSerial, buildCommand("RX"));
             }
             else
@@ -356,7 +356,7 @@ namespace radio
         {
             // Remote Read RX: This is actually a confirmation/echo from the radio
             // The radio sends RX; as a Read when it has switched to RX mode
-            ESP_LOGI(TAG, "📡 RX read from radio: Confirming RX mode state");
+            ESP_LOGV(TAG, "RX read from radio: confirming RX state");
 
             // Force release TX ownership when radio confirms RX
             const uint64_t currentTime = esp_timer_get_time();
@@ -378,7 +378,7 @@ namespace radio
         {
             // RX Answer from radio - force release TX ownership
             // The radio is the ultimate authority for TX/RX state
-            ESP_LOGI(TAG, "📡 RX ANSWER: Received from radio, routing to AI-enabled interfaces");
+            ESP_LOGV(TAG, "RX answer from radio; routing to AI-enabled interfaces");
 
             const uint64_t currentTime = esp_timer_get_time();
             if (state.forceReleaseTx(currentTime))

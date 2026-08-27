@@ -269,7 +269,7 @@ bool StatusInfoCommandHandler::handleSM(const RadioCommand& command,
         const uint8_t radioAiMode = state.aiMode.load();
         if (radioAiMode == 2 || radioAiMode == 4) {
             respondToSource(command, formatSMeterResponse(state.meterSmRaw.load()), usbSerial, radioManager);
-            ESP_LOGD(TAG, "SM query served from physical AI%d stream cache (%d)",
+            ESP_LOGV(TAG, "SM query served from physical AI%d stream cache (%d)",
                      radioAiMode, state.meterSmRaw.load());
             return true;
         }
@@ -297,7 +297,7 @@ bool StatusInfoCommandHandler::handleSM(const RadioCommand& command,
             if (!valueStr.empty() && valueStr.length() <= 4) {
                 int smValue = std::stoi(valueStr);
                 radioManager.getState().meterSmRaw = smValue;
-                ESP_LOGD(TAG, "SM value stored: %d", smValue);
+                ESP_LOGV(TAG, "SM value stored: %d", smValue);
             }
         }
 
@@ -395,15 +395,15 @@ bool StatusInfoCommandHandler::handleRM(const RadioCommand& command,
                     switch (func) {
                         case 1:
                             state.meterSwr = meterValue;
-                            ESP_LOGD(TAG, "RM SWR value stored: %d", meterValue);
+                            ESP_LOGV(TAG, "RM SWR value stored: %d", meterValue);
                             break;
                         case 2:
                             state.meterComp = meterValue;
-                            ESP_LOGD(TAG, "RM COMP value stored: %d", meterValue);
+                            ESP_LOGV(TAG, "RM COMP value stored: %d", meterValue);
                             break;
                         case 3:
                             state.meterAlc = meterValue;
-                            ESP_LOGD(TAG, "RM ALC value stored: %d", meterValue);
+                            ESP_LOGV(TAG, "RM ALC value stored: %d", meterValue);
                             break;
                         default:
                             break;
@@ -533,7 +533,7 @@ bool StatusInfoCommandHandler::handleIF(const RadioCommand& command,
                                 break;
                         }
 
-                        ESP_LOGD(TAG, "IF ANS: vfo%c=%llu %s",
+                        ESP_LOGV(TAG, "IF answer: vfo%c=%llu %s",
                                  targetVfo == 0 ? 'A' : 'B',
                                  static_cast<unsigned long long>(frequency),
                                  updated ? "(changed)" : "(unchanged)");
@@ -761,19 +761,18 @@ bool StatusInfoCommandHandler::handleID(const RadioCommand& cmd,
                                        ISerialChannel& usbSerial,
                                        const RadioManager& rm) {
     // ID: Radio identification
-    ESP_LOGI("StatusInfo", "=== ID COMMAND HANDLER ===");
-        ESP_LOGI("StatusInfo", "Type: %s, Source: %s",
-                 cmd.type == CommandType::Read? "Read" : "Answer",
-                 cmd.isLocal() ? "Local" : "Remote");
+    ESP_LOGV("StatusInfo", "ID handler: type=%s source=%s",
+             cmd.type == CommandType::Read ? "Read" : "Answer",
+             cmd.isLocal() ? "Local" : "Remote");
 
     const std::string idStr = CONFIG_RADIOCORE_ID_STRING;
 
     if (isQuery(cmd)) {
         // Return configured identifier immediately
-        ESP_LOGI("StatusInfo", "ID query handled locally (not sent to radio)");
+        ESP_LOGV("StatusInfo", "ID query handled locally");
         const std::string response = buildCommand("ID", idStr);
         respondToSource(cmd, response, usbSerial, rm);
-        ESP_LOGI("StatusInfo", "ID response sent to origin: %s", response.c_str());
+        ESP_LOGV("StatusInfo", "ID response sent to origin: %s", response.c_str());
         return true;
     }
 
