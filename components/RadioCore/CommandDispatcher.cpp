@@ -344,39 +344,43 @@ namespace radio {
             const uint64_t timeSinceLastCmd = lastCmdTimeCopy > 0 ?
                 currentTime - lastCmdTimeCopy : 0;
 
-            // Enhanced error logging for debugging (using local copies, no lock needed)
-            ESP_LOGI(CommandDispatcher::TAG, "=== ERROR RESPONSE DETECTED ===");
-            ESP_LOGI(CommandDispatcher::TAG, "Error Type: '%s;'", command.command.c_str());
-            ESP_LOGI(CommandDispatcher::TAG, "Last Command Sent: '%s' (from %s)", lastCmdCopy,
-                     lastSourceCopy[0] == '\0' ? "unknown" : lastSourceCopy);
-            ESP_LOGI(CommandDispatcher::TAG, "Time Since Last Cmd: %.1fms", timeSinceLastCmd / 1000.0);
-            ESP_LOGI(CommandDispatcher::TAG, "Error Interval: %.1fms",
-                     (lastErrorTimeCopy > 0) ? (currentTime - lastErrorTimeCopy) / 1000.0 : 0.0);
-            ESP_LOGI(CommandDispatcher::TAG, "Total Errors: %zu (?;=%zu E;=%zu O;=%zu)",
-                     totalErrors, qErrors, eErrorsCnt, oErrorsCnt);
+            // '?;' can be an unsolicited high-rate radio response. Its counters and
+            // interval/burst statistics are reported periodically by Diagnostics;
+            // printing this block for every frame can itself disturb the CAT stream.
+            // Keep detailed per-frame context behind DEBUG. E;/O; remain visible at
+            // normal levels because they are exceptional and normally rare.
+            const bool logErrorDetails = command.command != "?" ||
+                                         esp_log_level_get(CommandDispatcher::TAG) >= ESP_LOG_DEBUG;
+            if (logErrorDetails) {
+                ESP_LOGI(CommandDispatcher::TAG, "=== ERROR RESPONSE DETECTED ===");
+                ESP_LOGI(CommandDispatcher::TAG, "Error Type: '%s;'", command.command.c_str());
+                ESP_LOGI(CommandDispatcher::TAG, "Last Command Sent: '%s' (from %s)", lastCmdCopy,
+                         lastSourceCopy[0] == '\0' ? "unknown" : lastSourceCopy);
+                ESP_LOGI(CommandDispatcher::TAG, "Time Since Last Cmd: %.1fms", timeSinceLastCmd / 1000.0);
+                ESP_LOGI(CommandDispatcher::TAG, "Error Interval: %.1fms",
+                         (lastErrorTimeCopy > 0) ? (currentTime - lastErrorTimeCopy) / 1000.0 : 0.0);
+                ESP_LOGI(CommandDispatcher::TAG, "Total Errors: %zu (?;=%zu E;=%zu O;=%zu)",
+                         totalErrors, qErrors, eErrorsCnt, oErrorsCnt);
 
-            // Special handling for RM-related errors
-            if (std::strstr(lastCmdCopy, "RM") != nullptr) {
-                ESP_LOGW(CommandDispatcher::TAG, "RM command causing errors - may need to disable RM polling");
-            }
-
-            // Detailed diagnostic if we have multiple errors
-            if (totalErrors > 1) {
-                ESP_LOGI(CommandDispatcher::TAG, "Error Pattern: Avg interval=%.1fms, Bursts=%zu",
-                         avgInterval / 1000.0, bursts);
-
-                // Check for RM-specific error patterns
-                if (totalErrors > 10 && std::strstr(lastCmdCopy, "RM") != nullptr) {
-                    ESP_LOGE(CommandDispatcher::TAG, "HIGH ERROR COUNT with RM commands - consider disabling RM polling");
+                if (std::strstr(lastCmdCopy, "RM") != nullptr) {
+                    ESP_LOGW(CommandDispatcher::TAG, "RM command causing errors - may need to disable RM polling");
                 }
-            }
 
-            // Warn about potential command rate issues
-            if (timeSinceLastCmd > 0 && timeSinceLastCmd < 100000) { // < 100ms
-                ESP_LOGW(CommandDispatcher::TAG, "WARNING: Fast error (%.1fms after command)",
-                         timeSinceLastCmd / 1000.0);
+                if (totalErrors > 1) {
+                    ESP_LOGI(CommandDispatcher::TAG, "Error Pattern: Avg interval=%.1fms, Bursts=%zu",
+                             avgInterval / 1000.0, bursts);
+                    if (totalErrors > 10 && std::strstr(lastCmdCopy, "RM") != nullptr) {
+                        ESP_LOGE(CommandDispatcher::TAG,
+                                 "HIGH ERROR COUNT with RM commands - consider disabling RM polling");
+                    }
+                }
+
+                if (timeSinceLastCmd > 0 && timeSinceLastCmd < 100000) {
+                    ESP_LOGW(CommandDispatcher::TAG, "WARNING: Fast error (%.1fms after command)",
+                             timeSinceLastCmd / 1000.0);
+                }
+                ESP_LOGI(CommandDispatcher::TAG, "===============================");
             }
-            ESP_LOGI(CommandDispatcher::TAG, "===============================");
             
             ESP_LOGD(CommandDispatcher::TAG,
                      "Processing error response '%s;' from radio",

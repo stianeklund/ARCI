@@ -1192,7 +1192,7 @@ namespace {
         TEST_ASSERT_TRUE_MESSAGE(mockRadioSerial.sentMessages.empty(),
                                  "Physical AI2 must suppress SM0 radio polling");
         TEST_ASSERT_EQUAL_UINT32(1, mockUsbSerial.sentMessages.size());
-        TEST_ASSERT_EQUAL_STRING("SM0012;", mockUsbSerial.sentMessages.back().c_str());
+        TEST_ASSERT_EQUAL_STRING("SM00012;", mockUsbSerial.sentMessages.back().c_str());
 
         // With physical AI off and no cache, the normal query path polls the radio.
         mockRadioSerial.clearSentMessages();
@@ -1205,9 +1205,10 @@ namespace {
         TEST_ASSERT_TRUE(mockUsbSerial.sentMessages.empty());
 
         // Simulate S-meter response
-        testRadioManager->getRemoteCATHandler().parseMessage("SM0050;");
+        testRadioManager->getRemoteCATHandler().parseMessage("SM00050;");
+        TEST_ASSERT_EQUAL_INT(50, state.meterSmRaw.load());
         TEST_ASSERT_EQUAL_UINT32(1, mockUsbSerial.sentMessages.size());
-        TEST_ASSERT_EQUAL_STRING("SM0050;", mockUsbSerial.sentMessages.back().c_str());
+        TEST_ASSERT_EQUAL_STRING("SM00050;", mockUsbSerial.sentMessages.back().c_str());
         tearDownTestRadioManager();
     }
 

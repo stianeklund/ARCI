@@ -359,21 +359,13 @@ bool StatusInfoCommandHandler::handleRM(const RadioCommand& command,
             return BaseCommandHandler::buildCommand("RM", param);
         };
 
-        // AI-mode aware handling: Check AI mode of requesting source
-        uint8_t aiMode = 0;
-        if (command.source == CommandSource::UsbCdc0) {
-            aiMode = state.usbCdc0AiMode.load();
-        } else if (command.source == CommandSource::UsbCdc1) {
-            aiMode = state.usbCdc1AiMode.load();
-        } else if (command.source == CommandSource::Display) {
-            aiMode = state.displayAiMode.load();
-        }
-
-        // In AI2/AI4 modes: answer immediately from cached value, don't poll radio
-        if (aiMode == 2 || aiMode == 4) {
+        // Polling is controlled by the physical radio's collector mode. Client AI
+        // modes only decide which unsolicited frames each interface receives.
+        const uint8_t radioAiMode = state.aiMode.load();
+        if (radioAiMode == 2 || radioAiMode == 4) {
             const std::string response = buildRmResponse(state);
             respondToSource(command, response, usbSerial, radioManager);
-            ESP_LOGD(TAG, "RM query in AI%d mode: answered from cache without polling", aiMode);
+            ESP_LOGD(TAG, "RM query served from physical AI%d stream cache", radioAiMode);
             return true;
         }
 
@@ -803,8 +795,8 @@ std::string StatusInfoCommandHandler::formatSMeterResponse(int level) {
 
     // Build SM response directly to avoid stack-heavy std::ostringstream
     std::string response;
-    response.reserve(7); // "SM" + 4 digits + ";"
-    response.append("SM");
+    response.reserve(8); // "SM" + P1(0) + P2(4 digits) + ";"
+    response.append("SM0");
     appendZeroPadded(response, static_cast<uint64_t>(level), 4);
     response.push_back(';');
     return response;
