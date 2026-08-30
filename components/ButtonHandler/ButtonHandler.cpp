@@ -4,7 +4,6 @@
 
 #include "../../include/pin_definitions.h"
 #include "../RadioMacroManager/include/RadioMacroManager.h"
-#include "NvsManager.h"
 #include "RadioManager.h"
 #include "ISerialChannel.h"
 #include "TCA8418Handler.h"
@@ -40,8 +39,8 @@ struct MatrixKeyEvent
 constexpr UBaseType_t kMatrixEventQueueDepth = 24;
 }  // namespace
 
-ButtonHandler::ButtonHandler(RadioManager *radioManager, radio::RadioMacroManager *macroManager, NvsManager *nvsManager) :
-    m_radioManager(*radioManager), m_macroManager(*macroManager), m_nvsManager(*nvsManager), m_taskHandle(nullptr)
+ButtonHandler::ButtonHandler(RadioManager *radioManager, radio::RadioMacroManager *macroManager) :
+    m_radioManager(*radioManager), m_macroManager(*macroManager), m_taskHandle(nullptr)
 {
     // Create synchronization semaphore for clean task shutdown
     m_stopSemaphore = xSemaphoreCreateBinary();
@@ -57,8 +56,6 @@ ButtonHandler::ButtonHandler(RadioManager *radioManager, radio::RadioMacroManage
     {
         ESP_LOGE(TAG, "Failed to create matrix key-event queue - matrix buttons will be inert");
     }
-
-    // Note: loadModeMemoryFromNvs() must be called explicitly after nvs_flash_init()
 }
 
 ButtonHandler::~ButtonHandler()
@@ -362,7 +359,7 @@ void ButtonHandler::triggerSpeechProcessorButton()
 
     m_radioManager.recordButtonActivity();
 
-    ESP_LOGI(TAG, "Speech Processor button triggered - cycling OFF -> PROC -> DATA");
+    ESP_LOGV(TAG, "Speech Processor button triggered - cycling OFF -> PROC -> DATA");
     (void)m_radioManager.cycleProcessorDataMode(m_radioManager.getPanelCATHandler());
 }
 
@@ -400,14 +397,8 @@ void ButtonHandler::triggerFunctionButton3()
     std::snprintf(bdCommand, sizeof(bdCommand), "BD%02d;", nextBandIndex);
     m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), bdCommand);
 
-    // Apply last-used mode for the target band
-    const int8_t targetMode = getModeFromMemory(nextBandIndex);
-    if (targetMode >= 1)
-    {
-        char mdCommand[8];
-        std::snprintf(mdCommand, sizeof(mdCommand), "MD%d;", targetMode);
-        m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), mdCommand);
-    }
+    // Read the selected radio memory's mode; never override it with an MDx setting.
+    m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), "MD;");
 
     ESP_LOGI(TAG, "Function Button 3 pressed: Band Down from %s to %s", bandNames[currentBandIndex],
              bandNames[nextBandIndex]);
@@ -490,14 +481,8 @@ void ButtonHandler::triggerBandUpButton()
     std::snprintf(buCommand, sizeof(buCommand), "BU%02d;", nextBandIndex);
     m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), buCommand);
 
-    // Apply last-used mode for the target band
-    const int8_t targetMode = getModeFromMemory(nextBandIndex);
-    if (targetMode >= 1)
-    {
-        char mdCommand[8];
-        std::snprintf(mdCommand, sizeof(mdCommand), "MD%d;", targetMode);
-        m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), mdCommand);
-    }
+    // Read the selected radio memory's mode; never override it with an MDx setting.
+    m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), "MD;");
 
     ESP_LOGI(TAG, "Matrix Mode key pressed: Band Up from %s to %s", bandNames[currentBandIndex],
              bandNames[nextBandIndex]);
@@ -1385,13 +1370,8 @@ void ButtonHandler::handleBandDownButton(MatrixButton &button)
     snprintf(bdCommand, sizeof(bdCommand), "BD%02d;", nextBandIndex);
     m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), bdCommand);
 
-    const int8_t targetMode = getModeFromMemory(nextBandIndex);
-    if (targetMode >= 1)
-    {
-        char mdCommand[8];
-        std::snprintf(mdCommand, sizeof(mdCommand), "MD%d;", targetMode);
-        m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), mdCommand);
-    }
+    // Read the selected radio memory's mode; never override it with an MDx setting.
+    m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), "MD;");
 
     const char *currentName =
         (currentBandIndex >= 0 && currentBandIndex < 11) ? bandNames[currentBandIndex] : "Unknown";
@@ -1454,14 +1434,8 @@ void ButtonHandler::handleBandUpButton(MatrixButton &button)
     snprintf(buCommand, sizeof(buCommand), "BU%02d;", nextBandIndex);
     m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), buCommand);
 
-    // Apply last-used mode for the target band
-    const int8_t targetMode = getModeFromMemory(nextBandIndex);
-    if (targetMode >= 1)
-    {
-        char mdCommand[8];
-        std::snprintf(mdCommand, sizeof(mdCommand), "MD%d;", targetMode);
-        m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), mdCommand);
-    }
+    // Read the selected radio memory's mode; never override it with an MDx setting.
+    m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), "MD;");
 
     ESP_LOGI(TAG, "🎛️ Band Up button (0x02): %s -> %s (non-blocking)", bandNames[currentBandIndex],
              bandNames[nextBandIndex]);
@@ -2188,7 +2162,7 @@ void ButtonHandler::handleSpeechProcessorButton(MatrixButton &button)
         }
 
         // Normal short press cycles the mutually-exclusive transmit processing mode.
-        ESP_LOGI(TAG, "PROC button short press - cycling OFF -> PROC -> DATA");
+        ESP_LOGV(TAG, "PROC button short press - cycling OFF -> PROC -> DATA");
         (void)m_radioManager.cycleProcessorDataMode(m_radioManager.getPanelCATHandler());
     }
 }
@@ -2257,28 +2231,6 @@ void ButtonHandler::handleSplitButton()
     m_radioManager.toggleSplit(/*copyVfoBeforeEnable*/ false);
 }
 
-// Mode memory management methods
-void ButtonHandler::saveModeToMemory(const int bandIndex, const int8_t mode)
-{
-    if (bandIndex >= 0 && bandIndex < 11)
-    {
-        m_bandModeMemory[bandIndex] = mode;
-        ESP_LOGD(TAG, "Saved mode %d to band %d memory", mode, bandIndex);
-
-        // Persist to NVS immediately for reliability
-        saveModeMemoryToNvs();
-    }
-}
-
-int8_t ButtonHandler::getModeFromMemory(const int bandIndex) const
-{
-    if (bandIndex >= 0 && bandIndex < 11)
-    {
-        return m_bandModeMemory[bandIndex];
-    }
-    return 2; // Default to USB if invalid band
-}
-
 template <size_t N>
 int8_t ButtonHandler::getNextModeInCycle(const int8_t currentMode, const std::array<int8_t, N> &validModes) const
 {
@@ -2310,53 +2262,6 @@ int8_t ButtonHandler::getDefaultModeForFrequency(const uint64_t frequency) const
     return (frequency <= 10000000) ? 1 : 2;
 }
 
-// NVS persistence methods
-void ButtonHandler::loadModeMemoryFromNvs()
-{
-    esp_err_t err = m_nvsManager.loadButtonModeMemory(
-        reinterpret_cast<uint8_t*>(m_bandModeMemory.data()),
-        m_bandModeMemory.size()
-    );
-
-    if (err == ESP_OK)
-    {
-        ESP_LOGI(TAG, "Loaded band mode memory from NVS via NvsManager");
-    }
-    else if (err == ESP_ERR_NOT_FOUND)
-    {
-        ESP_LOGD(TAG, "No mode memory in NVS, using defaults");
-    }
-    else if (err == ESP_ERR_INVALID_STATE)
-    {
-        ESP_LOGW(TAG, "Invalid mode data in NVS, resetting to defaults");
-        // Reset to defaults per user preference:
-        // 160/80/40m = LSB, 30/20/17/15/12/10/6m = USB, GENE = LSB
-        m_bandModeMemory = {1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 1};
-        saveModeMemoryToNvs(); // Save corrected defaults
-    }
-    else
-    {
-        ESP_LOGE(TAG, "Failed to load mode memory: %s, using defaults", esp_err_to_name(err));
-    }
-}
-
-void ButtonHandler::saveModeMemoryToNvs() const
-{
-    esp_err_t err = m_nvsManager.saveButtonModeMemory(
-        reinterpret_cast<const uint8_t*>(m_bandModeMemory.data()),
-        m_bandModeMemory.size()
-    );
-
-    if (err == ESP_OK)
-    {
-        ESP_LOGD(TAG, "Band mode memory saved to NVS via NvsManager");
-    }
-    else
-    {
-        ESP_LOGE(TAG, "Failed to save mode memory to NVS: %s", esp_err_to_name(err));
-    }
-}
-
 // New MatrixButton-based handlers that use Button class logic
 void ButtonHandler::handleModeMatrixButton(MatrixButton &button)
 {
@@ -2371,12 +2276,11 @@ void ButtonHandler::handleModeMatrixButton(MatrixButton &button)
     }
 
     const int8_t currentMode = m_radioManager.getMode();
-    const int bandIndex = m_radioManager.getState().bandNumber.load(std::memory_order_relaxed);
 
     // Handle long press using Button class logic
     if (button.wasLongPressed())
     {
-        // Long press action - toggle between alternate modes and save to memory
+        // Long press action - toggle between alternate modes.
         ESP_LOGI(TAG, "Mode button long press detected");
 
         int8_t nextMode = currentMode;
@@ -2418,12 +2322,9 @@ void ButtonHandler::handleModeMatrixButton(MatrixButton &button)
             std::snprintf(mdCommand, sizeof(mdCommand), "MD%d;", nextMode);
             m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), mdCommand);
 
-            // Save the new mode to memory for this band
-            saveModeToMemory(bandIndex, nextMode);
         }
 
-        ESP_LOGI(TAG, "Mode button long press: %s -> %s (alternate, saved to band %d)", modeNames[currentMode],
-                 modeNames[nextMode], bandIndex);
+        ESP_LOGI(TAG, "Mode button long press: %s -> %s (alternate)", modeNames[currentMode], modeNames[nextMode]);
     }
 
     // Handle short press using Button class logic
@@ -2472,8 +2373,6 @@ void ButtonHandler::handleModeMatrixButton(MatrixButton &button)
             char mdCommand[8];
             std::snprintf(mdCommand, sizeof(mdCommand), "MD%d;", nextMode);
             m_radioManager.dispatchMessage(m_radioManager.getPanelCATHandler(), mdCommand);
-            // Persist last used mode per band on short press
-            saveModeToMemory(bandIndex, nextMode);
         }
 
         ESP_LOGI(TAG, "Mode button short press: %s -> %s (cycle)", modeNames[currentMode], modeNames[nextMode]);

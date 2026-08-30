@@ -94,7 +94,7 @@ namespace
     // --- Input Handlers ---
     EncoderHandler encoderHandler(PIN_ENCODER_A, PIN_ENCODER_B, &radioManager);
     std::unique_ptr<MultiEncoderHandler> multiEncoderHandler;  // Multi-encoder (lazy init)
-    ButtonHandler buttonHandler(&radioManager, &radioMacroManager, &nvsManager);
+    ButtonHandler buttonHandler(&radioManager, &radioMacroManager);
     ADCHandler adcHandler(&radioManager);
 
     // --- I2C Bus & Expanders ---
@@ -1056,10 +1056,6 @@ void setup()
     // Start RadioManager tasks (must be after peripheral setup, before using radio)
     ESP_LOGD(TAG, "Starting RadioManager tasks");
     ESP_ERROR_CHECK(radioManager.startTasks());
-
-    // Load ButtonHandler mode memory from NVS (must be after nvs_flash_init())
-    ESP_LOGD(TAG, "Loading button mode memory from NVS");
-    buttonHandler.loadModeMemoryFromNvs();
 
     adcHandler.start();
     buttonHandler.start();

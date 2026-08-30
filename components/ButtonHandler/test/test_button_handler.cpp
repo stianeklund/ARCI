@@ -7,7 +7,6 @@
 #include "../../unit_test/include/test_hooks.h"
 #include "../include/ButtonHandler.h"
 #include "../include/MatrixButton.h"
-#include "NvsManager.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -20,8 +19,8 @@ class TestButtonHandler : public ButtonHandler {
     const char *TAG = "TestButtonHandler";
 
 public:
-    explicit TestButtonHandler(radio::RadioManager *radioManager, radio::RadioMacroManager *macroManager, NvsManager *nvsManager)
-        : ButtonHandler(radioManager, macroManager, nvsManager) {
+    explicit TestButtonHandler(radio::RadioManager *radioManager, radio::RadioMacroManager *macroManager)
+        : ButtonHandler(radioManager, macroManager) {
     }
 
     // Test helpers for trigger methods
@@ -38,7 +37,6 @@ static std::unique_ptr<MockSerialHandler> mockRadioSerial;
 static std::unique_ptr<MockSerialHandler> mockUsbSerial;
 static std::unique_ptr<radio::RadioManager> radioManager;
 static std::unique_ptr<radio::RadioMacroManager> macroManager;
-static std::unique_ptr<NvsManager> nvsManager;
 static std::unique_ptr<TestButtonHandler> buttonHandler;
 
 void buttonHandlerSetUp(void) {
@@ -53,12 +51,7 @@ void buttonHandlerSetUp(void) {
     TEST_ASSERT_EQUAL(ESP_OK, ret);
 
     macroManager = std::make_unique<radio::RadioMacroManager>(*radioManager);
-    nvsManager = std::make_unique<NvsManager>(*radioManager);
-    buttonHandler = std::make_unique<TestButtonHandler>(radioManager.get(), macroManager.get(), nvsManager.get());
-
-    // Load mode memory from NVS (required after constructor refactor)
-    // Note: In test environment, NVS may not be initialized, so this may use defaults
-    buttonHandler->loadModeMemoryFromNvs();
+    buttonHandler = std::make_unique<TestButtonHandler>(radioManager.get(), macroManager.get());
 
     // Set initial state for testing via command path
     radioManager->getLocalCATHandler().parseMessage("PS1;");
@@ -71,7 +64,6 @@ void buttonHandlerSetUp(void) {
 void buttonHandlerTearDown(void) {
     buttonHandler.reset();
     macroManager.reset();
-    nvsManager.reset();
     radioManager.reset();
     // Give FreeRTOS IDLE task time to clean up deleted tasks
     vTaskDelay(pdMS_TO_TICKS(50));
@@ -934,6 +926,17 @@ void test_band_up_short_press_still_changes_band() {
                              "Short press BND+ on 21 MHz must still change band (BU07;)");
     TEST_ASSERT_FALSE_MESSAGE(radioSentFrame("BU06;"),
                               "Short press BND+ must not emit the slot-cycle frame BU06;");
+    TEST_ASSERT_TRUE_MESSAGE(radioSentFrame("MD;"),
+                             "Short press BND+ must query the selected radio memory's mode");
+    bool sentModeSetting = false;
+    for (const auto &message : mockRadioSerial->sentMessages) {
+        if (message.starts_with("MD") && message != "MD;") {
+            sentModeSetting = true;
+            break;
+        }
+    }
+    TEST_ASSERT_FALSE_MESSAGE(sentModeSetting,
+                              "Short press BND+ must not override the selected radio memory's mode");
 }
 
 extern "C" void run_button_handler_tests(void) {
