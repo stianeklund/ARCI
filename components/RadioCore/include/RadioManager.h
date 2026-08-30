@@ -500,6 +500,14 @@ namespace radio
         // dispatch outcome; LockTimeout if the lock could not be acquired in time.
         DispatchOutcome dispatchCycleLocked(CATHandler &handler, CycleTarget target) const;
 
+        /**
+         * @brief Atomically advance the mutually-exclusive transmit processing mode.
+         *
+         * The cycle is OFF -> PROC -> DATA -> OFF.  PROC and DATA are never enabled
+         * together; transitions that switch between them first disable the active mode.
+         */
+        DispatchOutcome cycleProcessorDataMode(CATHandler &handler) const;
+
         // Mode access methods for command handlers
         /**
      * @brief Get current operating mode

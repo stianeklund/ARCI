@@ -199,6 +199,11 @@ bool StatusInfoCommandHandler::handleCommand(const RadioCommand& command,
                 if (payload.length() > dataIndex) {
                     const char dataChar = payload[dataIndex];
                     if (dataChar == '0' || dataChar == '1') {
+                        // XI reports DATA state outside the normal DA handler.
+                        // Preserve the PROC/DATA exclusion here as well.
+                        if (dataChar == '1' && radioManager.getState().processor.load()) {
+                            (void)radioManager.dispatchMessage(radioManager.getPanelCATHandler(), "PR0;");
+                        }
                         radioManager.updateDataMode(dataChar - '0');
                     }
                 }

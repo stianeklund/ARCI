@@ -362,17 +362,8 @@ void ButtonHandler::triggerSpeechProcessorButton()
 
     m_radioManager.recordButtonActivity();
 
-    ESP_LOGI(TAG, "Speech Processor button triggered - toggling DATA mode");
-    // Simulate long press behavior: toggle data mode
-    m_radioManager.toggleDataMode();
-
-    bool newDataMode = m_radioManager.getState().dataMode.load();
-    ESP_LOGI(TAG, "Speech Processor trigger: DATA mode -> %s", newDataMode ? "ON" : "OFF");
-
-    // Also simulate short press behavior: toggle Speech Processor (PR)
-    m_radioManager.dispatchToggle(m_radioManager.getPanelCATHandler(),
-                                  radio::ToggleTarget::Processor);
-    ESP_LOGI(TAG, "Speech Processor trigger: PR toggled");
+    ESP_LOGI(TAG, "Speech Processor button triggered - cycling OFF -> PROC -> DATA");
+    (void)m_radioManager.cycleProcessorDataMode(m_radioManager.getPanelCATHandler());
 }
 
 void ButtonHandler::trigger_A_equals_B_button()
@@ -2125,9 +2116,7 @@ void ButtonHandler::handleSpeechProcessorButton(MatrixButton &button)
     const auto &uiState = m_radioManager.getState().uiState;
     const auto activeCtrl = uiState.getActiveControl();
     const bool procPopupOpen = uiState.isActive() &&
-        (activeCtrl == radio::UIControl::ProcInputLevel ||
-         activeCtrl == radio::UIControl::ProcOutputLevel ||
-         activeCtrl == radio::UIControl::DataMode);
+        (activeCtrl == radio::UIControl::ProcInputLevel || activeCtrl == radio::UIControl::ProcOutputLevel);
 
     // Handle long press - open processor level popup
     if (button.wasLongPressed())
@@ -2169,7 +2158,8 @@ void ButtonHandler::handleSpeechProcessorButton(MatrixButton &button)
     {
         if (procPopupOpen)
         {
-            // Cycle through: Input → Output → Data Mode → Input...
+            // Cycle through the processor level controls.  DATA is selected directly
+            // by the normal three-state PROC button cycle, not through this popup.
             if (activeCtrl == radio::UIControl::ProcInputLevel)
             {
                 // Switch to output level
@@ -2182,16 +2172,9 @@ void ButtonHandler::handleSpeechProcessorButton(MatrixButton &button)
                 ESP_LOGI(TAG, "PROC button short press - switching to output level (level=%d)", currentLevel);
                 m_radioManager.enterUIMode(radio::UIControl::ProcOutputLevel, currentLevel, 0, 100, 1);
             }
-            else if (activeCtrl == radio::UIControl::ProcOutputLevel)
+            else
             {
-                // Switch to data mode toggle
-                int8_t currentDataMode = m_radioManager.getState().dataMode.load();
-                ESP_LOGI(TAG, "PROC button short press - switching to data mode (current=%d)", currentDataMode);
-                m_radioManager.enterUIMode(radio::UIControl::DataMode, currentDataMode, 0, 1, 1);
-            }
-            else // DataMode
-            {
-                // Cycle back to input level
+                // Cycle output level back to input level
                 int currentLevel = m_radioManager.getState().speechProcessorInLevel;
                 // Use default of 50 if value appears uninitialized
                 if (currentLevel == 0) currentLevel = 50;
@@ -2204,12 +2187,9 @@ void ButtonHandler::handleSpeechProcessorButton(MatrixButton &button)
             return;
         }
 
-        // Normal short press - toggle Speech Processor (PR command)
-        ESP_LOGI(TAG, "Speech Processor button short press - toggling PR");
-
-        m_radioManager.dispatchToggle(m_radioManager.getPanelCATHandler(),
-                                      radio::ToggleTarget::Processor);
-        ESP_LOGI(TAG, "Speech Processor button short press: PR toggled");
+        // Normal short press cycles the mutually-exclusive transmit processing mode.
+        ESP_LOGI(TAG, "PROC button short press - cycling OFF -> PROC -> DATA");
+        (void)m_radioManager.cycleProcessorDataMode(m_radioManager.getPanelCATHandler());
     }
 }
 

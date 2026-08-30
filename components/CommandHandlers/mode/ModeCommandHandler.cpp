@@ -185,6 +185,14 @@ namespace radio
                 return false;
             }
 
+            // DATA and PROC must never be active together.  Send PR0 before DA1;
+            // dispatching through the panel handler updates the cache and radio in
+            // the same dispatch critical section.
+            if (dataMode == 1 && radioManager.getState().processor.load())
+            {
+                (void)radioManager.dispatchMessage(radioManager.getPanelCATHandler(), "PR0;");
+            }
+
             // Update the radio manager state
             if (radioManager.updateDataMode(dataMode))
             {
@@ -213,6 +221,13 @@ namespace radio
             {
                 ESP_LOGW(ModeCommandHandler::TAG, "DA answer has invalid data mode: %d", dataMode);
                 return false;
+            }
+
+            // A physical-radio answer can also arrive with DATA enabled while PROC
+            // is cached on.  Correct the radio and cache before accepting DA1.
+            if (dataMode == 1 && radioManager.getState().processor.load())
+            {
+                (void)radioManager.dispatchMessage(radioManager.getPanelCATHandler(), "PR0;");
             }
 
             // Update state

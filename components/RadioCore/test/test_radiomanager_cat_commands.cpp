@@ -1066,6 +1066,43 @@ namespace {
         tearDownTestRadioManager();
     }
 
+    void test_processor_and_data_modes_are_mutually_exclusive() {
+        setUpTestRadioManager();
+
+        // A CAT DATA request must turn PROC off before it enables DATA.
+        testRadioManager->getLocalCATHandler().parseMessage("PR1;");
+        TEST_ASSERT_TRUE(testRadioManager->getState().processor.load());
+        mockRadioSerial.sentMessages.clear();
+
+        testRadioManager->getLocalCATHandler().parseMessage("DA1;");
+        TEST_ASSERT_EQUAL(1, testRadioManager->getDataMode());
+        TEST_ASSERT_FALSE(testRadioManager->getState().processor.load());
+
+        bool sawProcessorOff = false;
+        bool sawDataOnAfterProcessorOff = false;
+        for (const auto &message : mockRadioSerial.sentMessages) {
+            if (message == "PR0;") sawProcessorOff = true;
+            if (message == "DA1;" && sawProcessorOff) sawDataOnAfterProcessorOff = true;
+        }
+        TEST_ASSERT_TRUE(sawDataOnAfterProcessorOff);
+
+        // A CAT PROC request must similarly turn DATA off first.
+        mockRadioSerial.sentMessages.clear();
+        testRadioManager->getLocalCATHandler().parseMessage("PR1;");
+        TEST_ASSERT_TRUE(testRadioManager->getState().processor.load());
+        TEST_ASSERT_EQUAL(0, testRadioManager->getDataMode());
+
+        bool sawDataOff = false;
+        bool sawProcessorOnAfterDataOff = false;
+        for (const auto &message : mockRadioSerial.sentMessages) {
+            if (message == "DA0;") sawDataOff = true;
+            if (message == "PR1;" && sawDataOff) sawProcessorOnAfterDataOff = true;
+        }
+        TEST_ASSERT_TRUE(sawProcessorOnAfterDataOff);
+
+        tearDownTestRadioManager();
+    }
+
     void test_QI_QMB_inquiry_commands() {
         setUpTestRadioManager();
         testRadioManager->getLocalCATHandler().parseMessage("QI;");
@@ -2130,6 +2167,7 @@ namespace {
         RUN_TEST(test_PC_power_control_commands);
         RUN_TEST(test_PL_speech_processor_commands);
         RUN_TEST(test_PR_speech_processor_commands);
+        RUN_TEST(test_processor_and_data_modes_are_mutually_exclusive);
         RUN_TEST(test_QI_QMB_inquiry_commands);
         RUN_TEST(test_QR_quick_memory_commands);
         RUN_TEST(test_RA_attenuator_commands);
