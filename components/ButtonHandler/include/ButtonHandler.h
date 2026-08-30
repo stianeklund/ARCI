@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <map>
 #include "MatrixButton.h"
@@ -12,7 +13,6 @@
 
 // Forward declarations
 class TCA8418Handler;
-class NvsManager;
 
 namespace radio {
     class RadioManager;
@@ -37,7 +37,7 @@ class ButtonHandler {
 #endif
 
 public:
-    explicit ButtonHandler(radio::RadioManager *radioManager, radio::RadioMacroManager *macroManager, NvsManager *nvsManager);
+    explicit ButtonHandler(radio::RadioManager *radioManager, radio::RadioMacroManager *macroManager);
 
     ~ButtonHandler();
 
@@ -66,17 +66,12 @@ public:
     // Diagnostic test mode - logs all button presses without executing functions
     void setupDiagnosticMode(TCA8418Handler *tca8418);
 
-    // NVS persistence for mode memory
-    void loadModeMemoryFromNvs();
-    void saveModeMemoryToNvs() const;
-
     // Template button accessors removed - using TCA8418 matrix buttons only
     // Test helpers available via TestButtonHandler friend class if needed
 
 private:
     radio::RadioManager &m_radioManager;
     radio::RadioMacroManager &m_macroManager;
-    NvsManager &m_nvsManager;
     TaskHandle_t m_taskHandle;
     SemaphoreHandle_t m_stopSemaphore{nullptr};
     std::atomic<bool> m_running{false};
@@ -146,16 +141,6 @@ private:
 
     // Helper methods
     void fallbackToRadioAntennaSwitch();
-    
-    // Mode memory per band (11 bands: 0-10)
-    // Default modes per band (0..10):
-    // Low bands prefer LSB: 0=160m LSB, 1=80m LSB, 2=40m LSB
-    // High bands prefer USB: 3=30m USB, 4=20m USB, 5=17m USB,
-    // 6=15m USB, 7=12m USB, 8=10m USB, 9=6m USB, 10=GENE LSB
-    // Note: Mode values per TS-590SG spec: 1=LSB, 2=USB, 5=AM
-    std::array<int8_t, 11> m_bandModeMemory{1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 1};
-    void saveModeToMemory(int bandIndex, int8_t mode);
-    int8_t getModeFromMemory(int bandIndex) const;
     
     // Mode cycling helper methods
     template <size_t N>
