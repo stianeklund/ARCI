@@ -100,54 +100,33 @@ void test_mode_button_data_mode_toggle() {
     radioManager->getState().keepAlive.store(true);
 
     radioManager->setDataMode(0);
-    // Set Speech Processor to ON initially so it toggles to OFF (PR0;)
-    radioManager->getState().processor = true;
-
-    clearMessages();
-    // Test data mode toggle via triggerModeUpButton since we removed GPIO buttons
-    // This tests the core logic that would be triggered by TCA8418 matrix buttons
-    
-    // Trigger Speech Processor button to toggle data mode (simulates long press)
-    buttonHandler->triggerSpeechProcessorButton();
-
-    ESP_LOGI("TEST", "Data mode after handler: %d", radioManager->getDataMode());
-    ESP_LOGI("TEST", "Radio messages count: %zu", mockRadioSerial->sentMessages.size());
-    for (size_t i = 0; i < mockRadioSerial->sentMessages.size(); i++) {
-        ESP_LOGI("TEST", "Message %zu: %s", i, mockRadioSerial->sentMessages[i].c_str());
-    }
-
-    // Verify the data mode was toggled to 1
-    TEST_ASSERT_EQUAL(1, radioManager->getDataMode());
-
-    // Verify the expected commands were sent (with auto-query validation)
-    TEST_ASSERT_GREATER_OR_EQUAL(3, mockRadioSerial->sentMessages.size());
-    if (mockRadioSerial->sentMessages.size() >= 3) {
-        TEST_ASSERT_EQUAL_STRING("DA1;", mockRadioSerial->sentMessages[0].c_str());  // Data mode set
-        TEST_ASSERT_EQUAL_STRING("DA;", mockRadioSerial->sentMessages[1].c_str());   // Auto-query validation
-        TEST_ASSERT_EQUAL_STRING("PR0;", mockRadioSerial->sentMessages[2].c_str());  // Speech Processor off
-    }
-
-    // Test toggling data mode off (second press)
-    // Ensure current mode is ON (1), then simulate second long-press
-    radioManager->setDataMode(1);
     clearMessages();
 
-    // Trigger Speech Processor button again to toggle DATA off and PR back on
+    // PROC is a three-state control: OFF -> PROC -> DATA -> OFF.
     buttonHandler->triggerSpeechProcessorButton();
-
-    ESP_LOGI("TEST", "Data mode after second handler call: %d", radioManager->getDataMode());
-    ESP_LOGI("TEST", "Radio messages count: %zu", mockRadioSerial->sentMessages.size());
-    for (size_t i = 0; i < mockRadioSerial->sentMessages.size(); i++) {
-        ESP_LOGI("TEST", "Message %zu: %s", i, mockRadioSerial->sentMessages[i].c_str());
-    }
-
-    // Verify the data mode was toggled to 0 and expected commands were sent
     TEST_ASSERT_EQUAL(0, radioManager->getDataMode());
-    TEST_ASSERT_TRUE(mockRadioSerial->sentMessages.size() >= 2);
-    // Order: DA0; (toggle off), optional auto-query DA;, PR1;
-    TEST_ASSERT_EQUAL_STRING("DA0;", mockRadioSerial->sentMessages[0].c_str());
-    // Last should be PR1; (auto-query may appear before PR1;)
+    TEST_ASSERT_TRUE(radioManager->getState().processor.load());
     TEST_ASSERT_EQUAL_STRING("PR1;", mockRadioSerial->sentMessages.back().c_str());
+
+    // PROC -> DATA must disable PROC before enabling DATA.
+    clearMessages();
+    buttonHandler->triggerSpeechProcessorButton();
+    TEST_ASSERT_EQUAL(1, radioManager->getDataMode());
+    TEST_ASSERT_FALSE(radioManager->getState().processor.load());
+    bool sawProcessorOff = false;
+    bool sawDataOnAfterProcessorOff = false;
+    for (const auto &message : mockRadioSerial->sentMessages) {
+        if (message == "PR0;") sawProcessorOff = true;
+        if (message == "DA1;" && sawProcessorOff) sawDataOnAfterProcessorOff = true;
+    }
+    TEST_ASSERT_TRUE(sawDataOnAfterProcessorOff);
+
+    // DATA -> OFF.
+    clearMessages();
+    buttonHandler->triggerSpeechProcessorButton();
+    TEST_ASSERT_EQUAL(0, radioManager->getDataMode());
+    TEST_ASSERT_FALSE(radioManager->getState().processor.load());
+    TEST_ASSERT_EQUAL_STRING("DA0;", mockRadioSerial->sentMessages.back().c_str());
 }
 
 void test_band_button_sequence() {

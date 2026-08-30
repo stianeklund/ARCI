@@ -1049,6 +1049,43 @@ namespace radio
         return dispatchMessageEx(handler, cmd);
     }
 
+    DispatchOutcome RadioManager::cycleProcessorDataMode(CATHandler &handler) const
+    {
+        // Resolve and perform the complete mode change while holding the dispatch lock.
+        // This prevents a concurrent CAT command from briefly re-enabling the other mode.
+        if (!dispatchMutex_.try_lock_for(pdMS_TO_TICKS(2000)))
+        {
+            ESP_LOGE(TAG, "cycleProcessorDataMode timeout - dispatch lock held >2s");
+            return DispatchOutcome::LockTimeout;
+        }
+        RtosUniqueLock<RtosRecursiveMutex> lock(dispatchMutex_, std::adopt_lock);
+
+        const bool processorEnabled = state_.processor.load();
+        const bool dataEnabled = state_.dataMode.load() != 0;
+
+        if (processorEnabled && dataEnabled)
+        {
+            // Recover a corrupted/external state safely before allowing the next cycle.
+            (void)dispatchMessageEx(handler, "PR0;");
+            return dispatchMessageEx(handler, "DA0;");
+        }
+
+        if (!processorEnabled && !dataEnabled)
+        {
+            return dispatchMessageEx(handler, "PR1;");
+        }
+
+        if (processorEnabled)
+        {
+            // PROC -> DATA: never send DA1 until PROC is confirmed off locally.
+            (void)dispatchMessageEx(handler, "PR0;");
+            return dispatchMessageEx(handler, "DA1;");
+        }
+
+        // DATA -> OFF.
+        return dispatchMessageEx(handler, "DA0;");
+    }
+
 
     void RadioManager::sendRadioCommand(const std::string_view command) const
     {
@@ -2705,19 +2742,17 @@ namespace radio
                     // Data mode is a toggle (0=OFF, 1=ON)
                     // newValue is already the toggled state from encoder (0→1 or 1→0)
 
-                    // Send to display
-                    sendUICommand(UICommandHandler::formatUIDA(newValue));
-
-                    // Apply to radio
-                    snprintf(cmdBuf, sizeof(cmdBuf), "DA%d;", newValue);
-                    dispatchMessage(*panelHandler_, cmdBuf);
-
-                    // If enabling DATA mode, disable PROC immediately
-                    if (newValue == 1)
+                    // DATA and PROC are mutually exclusive.  Disable PROC before
+                    // sending DA1 so the physical radio is never commanded into both.
+                    if (newValue == 1 && state_.processor.load())
                     {
-                        ESP_LOGI(RadioManager::TAG, "DATA mode enabled - disabling PROC");
                         dispatchMessage(*panelHandler_, "PR0;");
                     }
+
+                    // Send to display and apply to radio.
+                    sendUICommand(UICommandHandler::formatUIDA(newValue));
+                    snprintf(cmdBuf, sizeof(cmdBuf), "DA%d;", newValue);
+                    dispatchMessage(*panelHandler_, cmdBuf);
 
                     ESP_LOGD(RadioManager::TAG, "DATA mode set to: %d", newValue);
                 }

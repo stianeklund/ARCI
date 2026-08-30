@@ -510,6 +510,13 @@ namespace radio
                 return false;
             }
 
+            // PROC and DATA are mutually exclusive.  When PROC is requested from
+            // any CAT source, turn DATA off first so PR1 is never sent with DATA on.
+            if (enabled == 1 && radioManager.getState().dataMode.load() != 0)
+            {
+                (void)radioManager.dispatchMessage(radioManager.getPanelCATHandler(), "DA0;");
+            }
+
             // Update local state
             radioManager.getState().processor = enabled == 1;
 
@@ -527,6 +534,17 @@ namespace radio
         {
             // Use unified routing for PR answers
             int enabled = parseNumericValue(command);
+            if (enabled < 0 || enabled > 1)
+            {
+                ESP_LOGW(TAG, "Invalid PR speech processor answer: %d", enabled);
+                return false;
+            }
+
+            if (enabled == 1 && radioManager.getState().dataMode.load() != 0)
+            {
+                (void)radioManager.dispatchMessage(radioManager.getPanelCATHandler(), "DA0;");
+            }
+            radioManager.getState().processor.store(enabled == 1);
             std::string response = buildCommand("PR", std::to_string(enabled));
             routeAnswerResponse(command, response, usbSerial, radioManager);
             return true;
