@@ -440,7 +440,12 @@ namespace radio
         const bool displayAwake = state_.displayAwake.load(std::memory_order_relaxed);
         const uint64_t lastUips = state_.lastUipsSendTime.load(std::memory_order_relaxed);
 
-        // If display is asleep, send UIPS1 immediately to wake it (with small debounce)
+        // If display is asleep, send UIPS1 to wake it, then query its real state.
+        // Without the query, a stuck-false displayAwake flag has no recovery path:
+        // the awake branch below is the only place that ever re-syncs from a real
+        // UIPS; answer, so if the flag desyncs (e.g. display never volunteers an
+        // unsolicited state report) this would otherwise spam UIPS1 forever even
+        // once the display is genuinely awake.
         if (!displayAwake)
         {
             constexpr uint64_t WAKE_DEBOUNCE_US = 100000; // 100ms debounce for wake attempts
@@ -449,7 +454,8 @@ namespace radio
 
             state_.lastUipsSendTime.store(now, std::memory_order_relaxed);
             displaySerial_->sendMessage("UIPS1;");
-            ESP_LOGI(TAG, "Display asleep - sending UIPS1 to wake");
+            displaySerial_->sendMessage("UIPS;");
+            ESP_LOGI(TAG, "Display asleep - sending UIPS1 to wake, querying state");
             return;
         }
 
