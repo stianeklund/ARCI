@@ -49,10 +49,10 @@ namespace radio {
         return prefixes;
     }
 
-    void BaseCommandHandler::sendToRadio(ISerialChannel &radioSerial, const std::string_view commandStr) {
+    esp_err_t BaseCommandHandler::sendToRadio(ISerialChannel &radioSerial, const std::string_view commandStr) {
         if (commandStr.empty()) [[unlikely]] {
             ESP_LOGW(BaseCommandHandler::TAG, "Attempted to send empty command to radio");
-            return;
+            return ESP_ERR_INVALID_ARG;
         }
         ESP_LOGD(BaseCommandHandler::TAG, "Sending to radio: %.*s",
                  static_cast<int>(commandStr.size()), commandStr.data());
@@ -65,6 +65,7 @@ namespace radio {
                      esp_err_to_name(result),
                      radioSerial.getSendFailureCount());
         }
+        return result;
     }
 
     void BaseCommandHandler::sendToUSB(ISerialChannel &usbSerial, const std::string_view responseStr) {

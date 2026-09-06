@@ -2,6 +2,8 @@
 
 #include "BaseCommandHandler.h"
 #include "RadioState.h"
+#include "rtos_mutex.h"
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -30,6 +32,13 @@ namespace radio {
  */
 
     struct ExtendedMenuState {
+        // Fixed-size snapshot of the numeric-key values ("000".."099"), used by NVS
+        // persistence so it never has to touch the map (or its lock) while formatting
+        // strings or writing flash.
+        static constexpr size_t kSnapshotCount = 100; // menu numbers "000".."099"
+        static constexpr size_t kSnapshotValueCapacity = 8; // incl. NUL; longer values are skipped
+        using SnapshotValues = char[kSnapshotCount][kSnapshotValueCapacity];
+
         // Enable heterogeneous lookup with transparent hash + equal
         std::unordered_map<std::string, std::string, sv_hash, std::equal_to<> > menuValues{
             {"000", "3"}, // Display brightness mid-level
@@ -44,7 +53,17 @@ namespace radio {
             {"068", "3"}, // USB speed - 38400 (index 3)
         };
 
-        // Return a view to avoid copying (be aware it is invalidated if the map mutates)
+        // Guards menuValues against the NVS save worker (off-dispatch task) reading
+        // it concurrently with setValue/clearCache. Never copied or moved (see
+        // getExtendedMenuState() - function-local static singleton only).
+        mutable RtosMutex mutex_;
+
+        // Return a view to avoid copying (be aware it is invalidated if the map mutates).
+        // NOT internally locked: the only caller is ExtendedCommandHandler::handleCommand(),
+        // reached exclusively via dispatchMessageEx() under dispatchMutex_, which serialises
+        // all such callers against each other. The returned view is only valid until the next
+        // setValue/clearCache. Any reader outside the dispatch/handleCommand path (in
+        // particular the NVS deferred-save worker) must use snapshot() instead.
         std::string_view getValue(const std::string_view menuNumber) const {
             if (const auto it = menuValues.find(menuNumber); it != menuValues.end())
                 return it->second;
@@ -53,12 +72,24 @@ namespace radio {
 
         // Construct in-place; no temporary std::string for the value assignment path
         void setValue(const std::string_view menuNumber, std::string_view value) {
+            RtosLockGuard<RtosMutex> lock(mutex_);
             // try_emplace builds the key/value from the views; on existing key, just assign
             auto [it, inserted] = menuValues.try_emplace(std::string(menuNumber), value);
             if (!inserted) it->second.assign(value.data(), value.size());
         }
 
-        void clearCache() { menuValues.clear(); }
+        void clearCache() {
+            RtosLockGuard<RtosMutex> lock(mutex_);
+            menuValues.clear();
+        }
+
+        /**
+         * @brief Copy the numeric-key values ("000".."099") into a fixed buffer under the lock.
+         * Entries that are missing or >= kSnapshotValueCapacity chars become "". Safe to call
+         * from any task (in particular, the NVS deferred-save worker, off the dispatch task).
+         * @return number of populated entries
+         */
+        size_t snapshot(SnapshotValues &out) const;
     };
 
     class ExtendedCommandHandler final : public BaseCommandHandler {

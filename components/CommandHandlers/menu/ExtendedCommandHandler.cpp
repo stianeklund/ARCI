@@ -4,6 +4,8 @@
 #include "esp_timer.h"
 #include <algorithm>
 #include <array>
+#include <cstdio>
+#include <cstring>
 #include <iomanip>
 #include <sstream>
 #include <string_view>
@@ -301,6 +303,26 @@ namespace radio {
     ExtendedMenuState &ExtendedCommandHandler::getExtendedMenuState() {
         static ExtendedMenuState instance;
         return instance;
+    }
+
+    size_t ExtendedMenuState::snapshot(SnapshotValues &out) const {
+        RtosLockGuard<RtosMutex> lock(mutex_);
+        memset(out, 0, sizeof(SnapshotValues));
+
+        size_t populated = 0;
+        for (size_t i = 0; i < kSnapshotCount; i++) {
+            char key[4];
+            snprintf(key, sizeof(key), "%03u", static_cast<unsigned>(i));
+            if (const auto it = menuValues.find(std::string_view(key)); it != menuValues.end()) {
+                const std::string &value = it->second;
+                if (!value.empty() && value.size() < kSnapshotValueCapacity) {
+                    memcpy(out[i], value.data(), value.size());
+                    out[i][value.size()] = '\0';
+                    populated++;
+                }
+            }
+        }
+        return populated;
     }
 
     const ExtendedMenuItem *ExtendedCommandHandler::findMenuItem(std::string_view menuNumber) const {

@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <cctype>
 #include <vector>
+#include <optional>
+#include <concepts>
 
 #include "esp_log.h"
 
@@ -46,6 +48,18 @@ namespace radio::cat {
             auto result = std::from_chars(valStr.data(), valStr.data() + valStr.size(), value);
             // Check that parsing succeeded AND consumed the entire string
             return (result.ec == std::errc{} && result.ptr == valStr.data() + valStr.size()) ? value : -1;
+        }
+
+        /**
+         * @brief Strict integer parse: whole string must be digits (leading '-' allowed for signed T).
+         * @return parsed value, or std::nullopt on empty/invalid/overflow input. Never throws.
+         */
+        template <std::integral T>
+        static inline std::optional<T> parseNumber(std::string_view text) {
+            T value{};
+            const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
+            if (result.ec != std::errc{} || result.ptr != text.data() + text.size()) return std::nullopt;
+            return value;
         }
 
         /**

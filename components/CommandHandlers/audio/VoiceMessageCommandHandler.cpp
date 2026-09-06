@@ -73,9 +73,15 @@ bool VoiceMessageCommandHandler::handleLM(const RadioCommand& command,
             return false;
         }
 
-        const int target = std::stoi(getStringParam(command, 0));
-        const int control = std::stoi(getStringParam(command, 1));
-        
+        const auto targetOpt = cat::ParserUtils::parseNumber<int>(getStringParam(command, 0));
+        const auto controlOpt = cat::ParserUtils::parseNumber<int>(getStringParam(command, 1));
+        if (!targetOpt || !controlOpt) {
+            ESP_LOGW(TAG, "LM set command: invalid parameter '%s'", command.originalMessage.c_str());
+            return false;
+        }
+        const int target = *targetOpt;
+        const int control = *controlOpt;
+
         // Validate parameters according to spec
         if (target < 0 || target > 5) {
             ESP_LOGW(TAG, "Invalid LM target: %d", target);

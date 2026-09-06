@@ -55,8 +55,12 @@ protected:
      * @brief Send a command string to the radio
      * @param radioSerial Radio serial interface
      * @param commandStr The command string to send (including semicolon)
+     * @return ESP_OK on success, ESP_ERR_INVALID_ARG for an empty command, or
+     *         the underlying channel's error (e.g. ESP_ERR_NO_MEM if the paced
+     *         radio TX queue was full). Existing callers use this in void
+     *         context and are unaffected.
      */
-    static void sendToRadio(ISerialChannel& radioSerial, std::string_view commandStr);
+    static esp_err_t sendToRadio(ISerialChannel& radioSerial, std::string_view commandStr);
 
     /**
      * @brief Send a response to USB/host
