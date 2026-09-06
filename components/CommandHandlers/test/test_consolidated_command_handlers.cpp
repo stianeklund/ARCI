@@ -381,6 +381,69 @@ void test_pl_set_rejects_out_of_range() {
     TEST_ASSERT_EQUAL_INT(37, testRadioManager->getState().speechProcessorOutLevel.load());
 }
 
+void test_pl_answer_updates_levels_and_forwards_full_frame() {
+    // Regression test: CatParser splits a PL answer into two 3-digit params
+    // ("050", "060"), not a single 6-digit param, so the old
+    // getStringParam(command, 0).length() == 6 check never matched, state was
+    // never updated, and only "PL050;" (param 0 alone) was forwarded instead
+    // of the full "PL050060;" frame.
+    initializeTestObjects();
+
+    testRadioManager->getState().speechProcessorInLevel.store(0);
+    testRadioManager->getState().speechProcessorOutLevel.store(0);
+
+    // Record a pending PL query from USB so the answer will be routed back
+    const uint64_t nowUs = esp_timer_get_time();
+    testRadioManager->getState().queryTracker.recordQuery("PL", nowUs);
+    testRadioManager->noteQueryOrigin("PL", CommandSource::UsbCdc0, nowUs);
+
+    mockUsbSerial->clearSentMessages();
+
+    testRadioManager->getRemoteCATHandler().parseMessage("PL050060;");
+
+    TEST_ASSERT_EQUAL_INT(50, testRadioManager->getState().speechProcessorInLevel.load());
+    TEST_ASSERT_EQUAL_INT(60, testRadioManager->getState().speechProcessorOutLevel.load());
+
+    const auto &messages = mockUsbSerial->sentMessages;
+    const auto it = std::find(messages.begin(), messages.end(), std::string{"PL050060;"});
+    TEST_ASSERT_TRUE_MESSAGE(it != messages.end(), "Expected full PL050060; answer forwarded to USB");
+}
+
+void test_pr_query_reflects_state() {
+    // Regression test: PR; used to always answer "PR0;" regardless of the
+    // actual RadioState::processor value. It must now reflect state, like the
+    // VX handler does for voxEnabled.
+    initializeTestObjects();
+
+    // Keep dataMode at 0 so setting PR1 doesn't also dispatch DA0; (another test
+    // in this binary, e.g. the XI VFO-A test, leaves dataMode == 1, so force it
+    // rather than asserting a value that depends on Unity test ordering.)
+    testRadioManager->getState().dataMode.store(0);
+
+    testRadioManager->getLocalCATHandler().parseMessage("PR1;");
+    TEST_ASSERT_TRUE(testRadioManager->getState().processor.load() != 0);
+
+    mockUsbSerial->clearSentMessages();
+    testRadioManager->getLocalCATHandler().parseMessage("PR;");
+    {
+        const auto &messages = mockUsbSerial->sentMessages;
+        const auto it = std::find(messages.begin(), messages.end(), std::string{"PR1;"});
+        TEST_ASSERT_TRUE_MESSAGE(it != messages.end(), "Expected PR1; reflecting processor ON state");
+    }
+
+    // Remote answer reports processor OFF
+    testRadioManager->getRemoteCATHandler().parseMessage("PR0;");
+    TEST_ASSERT_TRUE(testRadioManager->getState().processor.load() == 0);
+
+    mockUsbSerial->clearSentMessages();
+    testRadioManager->getLocalCATHandler().parseMessage("PR;");
+    {
+        const auto &messages = mockUsbSerial->sentMessages;
+        const auto it = std::find(messages.begin(), messages.end(), std::string{"PR0;"});
+        TEST_ASSERT_TRUE_MESSAGE(it != messages.end(), "Expected PR0; reflecting processor OFF state");
+    }
+}
+
 void test_as_set_rejects_non_numeric_channel() {
     initializeTestObjects();
 
@@ -999,6 +1062,37 @@ void test_tx_ownership_timeout_releases() {
     TEST_ASSERT_EQUAL(-1, state.getTxOwner());
 }
 
+void test_tx_activation_time_preserved_on_reacquire() {
+    // A same-owner re-acquire while TX is already active (e.g. the
+    // txTimeoutTask's periodic "IF;" poll confirming the existing owner is
+    // still transmitting) must NOT reset txActivationTime, otherwise the
+    // TX_TIMEOUT_US watchdog never fires because it keeps getting reset.
+    initializeTestObjects();
+
+    auto& state = testRadioManager->getState();
+
+    // Acquire TX as UsbCdc0 at t=1000
+    bool acquired = state.tryAcquireTx(CommandSource::UsbCdc0, 1000);
+    TEST_ASSERT_TRUE(acquired);
+    TEST_ASSERT_EQUAL(1000, static_cast<int>(state.txActivationTime.load()));
+
+    // Same owner "re-acquires" (e.g. watchdog poll confirming TX still active)
+    // at a much later time - activation time must be preserved.
+    bool reacquired = state.tryAcquireTx(CommandSource::UsbCdc0, 5000);
+    TEST_ASSERT_TRUE(reacquired);
+    TEST_ASSERT_EQUAL_MESSAGE(1000, static_cast<int>(state.txActivationTime.load()),
+                              "txActivationTime must be preserved on same-owner reacquire");
+
+    // Release and re-acquire fresh - activation time should now update.
+    bool released = state.releaseTx(CommandSource::UsbCdc0, 5000);
+    TEST_ASSERT_TRUE(released);
+
+    bool reacquiredAfterRelease = state.tryAcquireTx(CommandSource::UsbCdc0, 9000);
+    TEST_ASSERT_TRUE(reacquiredAfterRelease);
+    TEST_ASSERT_EQUAL_MESSAGE(9000, static_cast<int>(state.txActivationTime.load()),
+                              "txActivationTime must update on fresh acquire after release");
+}
+
 void test_tx_ownership_radio_authority() {
     initializeTestObjects();
 
@@ -1351,6 +1445,57 @@ void test_if_rx_clears_local_owner_tx_state() {
                              "RX; should be broadcast when radio reports RX");
 }
 
+void test_if_tx_answer_does_not_steal_local_owner() {
+    // Regression test for the txTimeoutTask watchdog stealing ownership: the
+    // watchdog polls "IF;" every 500ms while isTx is set, so a TX answer from
+    // the radio is *always* solicited while TX is in progress. "Solicited"
+    // therefore must not be treated as a reason to (re)assign ownership -
+    // otherwise the watchdog's own poll steals ownership away from the real
+    // owner every 500ms and resets txActivationTime, so TX_TIMEOUT_US never
+    // elapses.
+    initializeTestObjects();
+
+    auto& state = testRadioManager->getState();
+
+    // UsbCdc0 keys TX locally (e.g. software PTT)
+    testRadioManager->getLocalCATHandler().parseMessage("TX0;");
+    TEST_ASSERT_TRUE(state.isTx.load());
+    TEST_ASSERT_EQUAL(static_cast<int>(CommandSource::UsbCdc0), state.getTxOwner());
+
+    const int activationTimeAfterAcquire = static_cast<int>(state.txActivationTime.load());
+
+    // Simulate the txTimeoutTask watchdog recording its periodic "IF;" poll.
+    const uint64_t nowUs = esp_timer_get_time();
+    state.queryTracker.recordQuery("IF", nowUs);
+
+    // Radio answers the poll confirming TX (P8=1) - this is a *solicited*
+    // answer, exactly like the watchdog's poll response.
+    std::string ifTxAnswer = "IF00007100000";  // P1: frequency
+    ifTxAnswer += "     ";   // P2: 5 spaces
+    ifTxAnswer += " 0000";   // P3: offset
+    ifTxAnswer += "0";       // P4: RIT off
+    ifTxAnswer += "0";       // P5: XIT off
+    ifTxAnswer += "0";       // P6: memory hundreds
+    ifTxAnswer += "00";      // P7: memory channel
+    ifTxAnswer += "1";       // P8: TX state = 1 (transmitting)
+    ifTxAnswer += "2";       // P9: mode (USB)
+    ifTxAnswer += "0";       // P10: VFO A
+    ifTxAnswer += "0";       // P11: scan off
+    ifTxAnswer += "0";       // P12: split off
+    ifTxAnswer += "0";       // P13: tone off
+    ifTxAnswer += "00";      // P14: tone freq
+    ifTxAnswer += "0";       // P15: constant
+    ifTxAnswer += ";";
+
+    testRadioManager->getRemoteCATHandler().parseMessage(ifTxAnswer);
+
+    TEST_ASSERT_TRUE_MESSAGE(state.isTx.load(), "isTx should remain true");
+    TEST_ASSERT_EQUAL_MESSAGE(static_cast<int>(CommandSource::UsbCdc0), state.getTxOwner(),
+                              "Solicited IF TX answer must not steal ownership from the local owner");
+    TEST_ASSERT_EQUAL_MESSAGE(activationTimeAfterAcquire, static_cast<int>(state.txActivationTime.load()),
+                              "txActivationTime must not be reset by the watchdog's own solicited IF poll");
+}
+
 // =============================================================================
 // Duplicate Response Prevention Tests
 // =============================================================================
@@ -1463,6 +1608,8 @@ extern "C" void run_consolidated_command_handlers_tests() {
     // Non-throwing numeric parsing regression tests (no CXX exceptions on target)
     RUN_TEST(test_pl_set_rejects_non_numeric);
     RUN_TEST(test_pl_set_rejects_out_of_range);
+    RUN_TEST(test_pl_answer_updates_levels_and_forwards_full_frame);
+    RUN_TEST(test_pr_query_reflects_state);
     RUN_TEST(test_as_set_rejects_non_numeric_channel);
     RUN_TEST(test_sm_answer_rejects_non_numeric_value);
 
@@ -1508,6 +1655,7 @@ extern "C" void run_consolidated_command_handlers_tests() {
     RUN_TEST(test_tx_ownership_rx_kept_when_radio_send_fails);
     RUN_TEST(test_tx_ownership_non_owner_cannot_release);
     RUN_TEST(test_tx_ownership_timeout_releases);
+    RUN_TEST(test_tx_activation_time_preserved_on_reacquire);
     RUN_TEST(test_tx_ownership_radio_authority);
     RUN_TEST(test_tx_ownership_radio_tx_answer);
     RUN_TEST(test_tx_ownership_panel_can_always_force_rx);
@@ -1520,6 +1668,7 @@ extern "C" void run_consolidated_command_handlers_tests() {
     RUN_TEST(test_stuck_tx_timeout_requires_activation_time);
     RUN_TEST(test_panel_tx_can_override_remote_ownership);
     RUN_TEST(test_if_rx_clears_local_owner_tx_state);
+    RUN_TEST(test_if_tx_answer_does_not_steal_local_owner);
 
     // Duplicate Response Prevention tests
     RUN_TEST(test_stale_cache_no_duplicate_response);

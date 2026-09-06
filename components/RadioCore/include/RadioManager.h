@@ -1013,14 +1013,32 @@ namespace radio
         // When cacheServed=true, the origin is recorded but routeMatchedAnswerWithSource
         // will return the source WITHOUT sending (to suppress AI forwarding duplicates
         // when a cached response was already delivered to the client).
+        // Burst-aware: if the slot already holds a fresh (unexpired), unconsumed
+        // record for the same prefix from the same source (e.g. an AI0 client
+        // sending EX001;EX002;EX003; back to back before any answer arrives),
+        // this increments a pending counter and refreshes the timestamp instead
+        // of overwriting -- see routeMatchedAnswerWithSource for how that counter
+        // is drained. Any other case (different source, different prefix hashing
+        // to this slot, or an expired/consumed slot) overwrites as before and
+        // resets the counter to 1.
         void noteQueryOrigin(std::string_view prefix, CommandSource src, uint64_t nowUs, bool cacheServed = false);
 
         // Try to route a radio Answer based on the last recorded origin for this prefix
         // Returns true if routed to a specific interface; false if no recent origin found
+        // Counted consume: see routeMatchedAnswerWithSource below.
         bool routeMatchedAnswer(std::string_view prefix, std::string_view response, uint64_t nowUs) const;
 
         // Overloaded version that returns the CommandSource that received the message
         // Returns std::nullopt if no recent origin found
+        // Counted-consume semantics: N outstanding same-prefix queries recorded
+        // from one source (see noteQueryOrigin's burst handling) get N answers
+        // delivered here, one per match, decrementing the pending counter each
+        // time. Only once the counter reaches zero is the origin slot actually
+        // released (CAS timestamp to 0), so a later answer with the same prefix
+        // within ORIGIN_TTL_US (e.g. the display polling shortly after a
+        // client's queries were all answered) is not also delivered here.
+        // Subsequent answers fall through to ForwardingPolicy's ordinary
+        // AI-mode checks instead.
         std::optional<CommandSource> routeMatchedAnswerWithSource(std::string_view prefix, std::string_view response,
                                                                   uint64_t nowUs) const;
 
@@ -1038,9 +1056,22 @@ namespace radio
             return static_cast<uint16_t>((static_cast<uint16_t>(static_cast<uint8_t>(c1)) << 8) |
                                          static_cast<uint8_t>(c2));
         }
-        std::array<std::atomic<uint64_t>, ORIGIN_TABLE_SIZE> lastOriginTime_{}; // per prefix
-        std::array<std::atomic<int>, ORIGIN_TABLE_SIZE> lastOriginSrc_{}; // stores int(CommandSource)
-        std::array<std::atomic<uint16_t>, ORIGIN_TABLE_SIZE> lastOriginPrefix_{}; // exact prefix, validates hash slot
+        // mutable: routeMatchedAnswerWithSource() is const (it is invoked through
+        // a `const RadioManager&` in BaseCommandHandler::routeAnswerResponse) but
+        // must be able to consume (zero out) a matched slot's timestamp for the
+        // one-shot semantics documented above. These members are already atomics
+        // with explicit acquire/release ordering, so widening constness to allow
+        // that single CAS does not weaken anything the outer const was protecting.
+        mutable std::array<std::atomic<uint64_t>, ORIGIN_TABLE_SIZE> lastOriginTime_{}; // per prefix; 0 == empty/consumed
+        mutable std::array<std::atomic<int>, ORIGIN_TABLE_SIZE> lastOriginSrc_{}; // stores int(CommandSource)
+        mutable std::array<std::atomic<uint16_t>, ORIGIN_TABLE_SIZE> lastOriginPrefix_{}; // exact prefix, validates hash slot
+        // Count of outstanding (not-yet-answered) queries recorded for this slot
+        // by the same source (e.g. 3 for EX001;EX002;EX003; sent back to back).
+        // Incremented by noteQueryOrigin's burst path, decremented by
+        // routeMatchedAnswerWithSource on each match; the slot's timestamp is
+        // only reset to 0 (released) once this reaches 0. Meaningful only while
+        // lastOriginTime_ for this slot is nonzero.
+        mutable std::array<std::atomic<uint8_t>, ORIGIN_TABLE_SIZE> lastOriginPending_{};
 
         // (sendToSource is public)
     };

@@ -40,6 +40,12 @@ private:
     uart_port_t m_uart_num;
     char m_accum[MAX_MESSAGE_LENGTH]{};
     size_t m_accum_len{0};
+    // Set when an over-length, terminator-less frame overflowed the accumulator
+    // at end-of-chunk (buffer full, no ';' seen yet). While set, every
+    // subsequent byte is discarded until the next END_MARKER so the garbage
+    // suffix of the oversized frame can never be mistaken for the start of a
+    // fresh, valid command.
+    bool m_discardUntilTerminator{false};
 
     static constexpr size_t QUEUE_CAPACITY = 64;  // Increased to handle high traffic in AI2/AI4 modes
     struct MsgSlot {

@@ -1258,18 +1258,36 @@ namespace radio
             }
 
             // Enforce the global minimum gap between any two writes to the radio.
+            //
+            // At CONFIG_FREERTOS_HZ=100 (10 ms tick) a single vTaskDelay() cannot be
+            // trusted to land on or after the deadline: it can wake anywhere from 0 to
+            // one tick early relative to a sub-tick remaining duration, and the finest
+            // sleep available is a full 10 ms tick. Loop, re-checking esp_timer_get_time()
+            // against the deadline each wake, so back-to-back radio writes are always
+            // spaced by at least RADIO_TX_MIN_GAP_US, with a worst case of +1 tick
+            // (i.e. at 100 Hz the effective gap is 10-20 ms, never under 10 ms).
             uint64_t pacingUs = 0;
-            const uint64_t nowUs = esp_timer_get_time();
             if (self->lastRadioTxUs_ != 0)
             {
-                const uint64_t elapsedUs = nowUs - self->lastRadioTxUs_;
-                if (elapsedUs < RADIO_TX_MIN_GAP_US)
+                const uint64_t deadlineUs = self->lastRadioTxUs_ + RADIO_TX_MIN_GAP_US;
+                if (esp_timer_get_time() < deadlineUs)
                 {
-                    // Round the remaining gap up to whole milliseconds for vTaskDelay.
-                    const uint32_t waitMs =
-                        static_cast<uint32_t>((RADIO_TX_MIN_GAP_US - elapsedUs + 999) / 1000);
                     const uint64_t pacingStartUs = esp_timer_get_time();
-                    vTaskDelay(pdMS_TO_TICKS(waitMs));
+                    while (true)
+                    {
+                        const uint64_t now = esp_timer_get_time();
+                        if (now >= deadlineUs)
+                        {
+                            break;
+                        }
+                        const uint64_t remainingUs = deadlineUs - now;
+                        TickType_t ticks = pdMS_TO_TICKS((remainingUs + 999) / 1000);
+                        if (ticks == 0)
+                        {
+                            ticks = 1; // never spin; a 1-tick block is the finest sleep available
+                        }
+                        vTaskDelay(ticks);
+                    }
                     pacingUs = esp_timer_get_time() - pacingStartUs;
                 }
             }
@@ -2381,13 +2399,43 @@ namespace radio
         if (prefix.size() < 2)
             return;
         const uint8_t id = originHash(prefix[0], prefix[1]);
-        lastOriginPrefix_[id].store(originPrefix(prefix[0], prefix[1]), std::memory_order_relaxed);
+        const uint16_t pfx = originPrefix(prefix[0], prefix[1]);
+        const uint64_t existingTime = lastOriginTime_[id].load(std::memory_order_relaxed);
+        const uint16_t existingPfx = lastOriginPrefix_[id].load(std::memory_order_relaxed);
+        const int existingSrcVal = lastOriginSrc_[id].load(std::memory_order_relaxed);
+        const bool sameSlotSameSource = existingTime != 0 && (nowUs - existingTime) <= ORIGIN_TTL_US &&
+                                         existingPfx == pfx && (existingSrcVal & 0xFF) == static_cast<int>(src);
+        if (sameSlotSameSource)
+        {
+            // Burst of same-prefix queries from the same source before any
+            // answer arrived (e.g. EX001;EX002;EX003; sent back to back):
+            // accumulate a pending count instead of clobbering the slot, so
+            // each queued query still gets its own answer delivered later
+            // (see routeMatchedAnswerWithSource). Deliberately leave the
+            // cache-served bit untouched here -- it is only (re)established
+            // on the overwrite path below, when the pending count resets to
+            // 1. A mixed burst of cache-served + real queries for the same
+            // prefix/source is a rare edge case and not specially handled
+            // beyond that: only the overwrite path's cacheServed value is
+            // ever applied.
+            const uint8_t prevPending = lastOriginPending_[id].load(std::memory_order_relaxed);
+            const uint8_t newPending = (prevPending < 255) ? static_cast<uint8_t>(prevPending + 1) : 255;
+            lastOriginPending_[id].store(newPending, std::memory_order_relaxed);
+            // Publish the timestamp last so a matcher never observes a
+            // refreshed timestamp before the incremented pending count.
+            lastOriginTime_[id].store(nowUs, std::memory_order_release);
+            ESP_LOGV(RadioManager::TAG, "Accumulated origin for %c%c -> %d, pending=%u at %llu us", prefix[0],
+                     prefix[1], static_cast<int>(src), newPending, static_cast<unsigned long long>(nowUs));
+            return;
+        }
+        lastOriginPrefix_[id].store(pfx, std::memory_order_relaxed);
         int srcVal = static_cast<int>(src);
         if (cacheServed)
             srcVal |= ORIGIN_CACHE_SERVED_BIT;
         lastOriginSrc_[id].store(srcVal, std::memory_order_relaxed);
+        lastOriginPending_[id].store(1, std::memory_order_relaxed);
         // Publish the timestamp last so a matcher never observes a new timestamp
-        // with the previous slot's source/prefix metadata.
+        // with the previous slot's source/prefix/pending metadata.
         lastOriginTime_[id].store(nowUs, std::memory_order_release);
         ESP_LOGV(RadioManager::TAG, "Recorded origin for %c%c -> %d%s at %llu us", prefix[0], prefix[1],
                  static_cast<int>(src), cacheServed ? " (cache-served)" : "",
@@ -2408,7 +2456,7 @@ namespace radio
         if (prefix.size() < 2)
             return std::nullopt;
         const uint8_t id = originHash(prefix[0], prefix[1]);
-        const uint64_t t = lastOriginTime_[id].load(std::memory_order_acquire);
+        uint64_t t = lastOriginTime_[id].load(std::memory_order_acquire);
         if (t == 0 || (nowUs - t) > ORIGIN_TTL_US)
         {
             return std::nullopt; // stale or no origin
@@ -2420,6 +2468,26 @@ namespace radio
         const int srcInt = lastOriginSrc_[id].load(std::memory_order_relaxed);
         const bool cacheServed = (srcInt & ORIGIN_CACHE_SERVED_BIT) != 0;
         const CommandSource src = static_cast<CommandSource>(srcInt & 0xFF);
+
+        // Counted consume: N outstanding same-prefix queries from one source
+        // (see noteQueryOrigin's burst-accumulation path) get N answers
+        // delivered here, one per match -- decrement the pending counter now,
+        // and only release the slot (CAS the timestamp we already read to 0)
+        // once it reaches zero. This lets a burst like EX001;EX002;EX003; get
+        // all three answers routed while still releasing the slot after the
+        // last one, so a later unrelated answer with this prefix within
+        // ORIGIN_TTL_US (e.g. the display polling shortly after) isn't also
+        // delivered here. CAS against the timestamp we already read so a
+        // noteQueryOrigin() that concurrently recorded a *newer* query for this
+        // prefix is not clobbered by this consume.
+        const uint8_t prevPending = lastOriginPending_[id].load(std::memory_order_relaxed);
+        const uint8_t newPending = (prevPending > 0) ? static_cast<uint8_t>(prevPending - 1) : 0;
+        lastOriginPending_[id].store(newPending, std::memory_order_relaxed);
+        if (newPending == 0)
+        {
+            lastOriginTime_[id].compare_exchange_strong(t, 0, std::memory_order_release, std::memory_order_relaxed);
+        }
+
         if (cacheServed)
         {
             // Client already received a cached response for this query.

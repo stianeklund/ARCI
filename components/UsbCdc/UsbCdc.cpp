@@ -25,8 +25,8 @@ namespace {
 // ACQUIRE the lock, never while held) and releases on scope exit.
 class TxLock {
 public:
-    explicit TxLock(SemaphoreHandle_t handle) : m_handle(handle) {
-        if (m_handle != nullptr && xSemaphoreTake(m_handle, portMAX_DELAY) == pdTRUE) {
+    explicit TxLock(SemaphoreHandle_t handle, TickType_t wait = portMAX_DELAY) : m_handle(handle) {
+        if (m_handle != nullptr && xSemaphoreTake(m_handle, wait) == pdTRUE) {
             m_held = true;
         }
     }
@@ -59,6 +59,13 @@ uint8_t UsbCdc::m_tx_buf[2][UsbCdc::TX_BUFFER_SIZE] = {};
 size_t UsbCdc::m_tx_head[2] = {0, 0};
 size_t UsbCdc::m_tx_tail[2] = {0, 0};
 SemaphoreHandle_t UsbCdc::m_tx_mutex[2] = {nullptr, nullptr};
+namespace {
+constexpr uint32_t kTxDrainRetryUs = 2000;     // initial/reset re-arm interval
+constexpr uint32_t kTxDrainRetryMaxUs = 64000; // backoff cap while no progress is made
+} // namespace
+
+esp_timer_handle_t UsbCdc::m_tx_drain_timer[2] = {nullptr, nullptr};
+uint32_t UsbCdc::m_tx_drain_interval_us[2] = {kTxDrainRetryUs, kTxDrainRetryUs};
 bool UsbCdc::m_require_dtr = false; // default: be lenient for TS-590SG apps
 
 // ESP-IDF CDC-ACM callback for RX events
@@ -246,6 +253,29 @@ esp_err_t UsbCdc::init() {
         }
     }
 
+    // Create the per-instance TX ring drain timers (see the ring-buffer comment
+    // in UsbCdc.h for the three drain triggers). Created once here and never
+    // deleted: there is no USB CDC deinit path today, so these live for the
+    // process lifetime like the driver itself.
+    static const char *kDrainTimerNames[2] = {"usb_cdc_drain0", "usb_cdc_drain1"};
+    for (uint8_t inst = 0; inst < 2; ++inst) {
+        m_tx_drain_interval_us[inst] = kTxDrainRetryUs;
+        if (m_tx_drain_timer[inst] == nullptr) {
+            const esp_timer_create_args_t timerArgs = {
+                .callback = &UsbCdc::txDrainTimerCallback,
+                .arg = reinterpret_cast<void *>(static_cast<uintptr_t>(inst)),
+                .dispatch_method = ESP_TIMER_TASK,
+                .name = kDrainTimerNames[inst],
+                .skip_unhandled_events = true,
+            };
+            err = esp_timer_create(&timerArgs, &m_tx_drain_timer[inst]);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to create CDC%d TX drain timer: %s", inst, esp_err_to_name(err));
+                return err;
+            }
+        }
+    }
+
     m_initialized = true;
     ESP_LOGI(TAG, "USB CDC initialized successfully");
     return ESP_OK;
@@ -390,11 +420,21 @@ esp_err_t UsbCdc::writeData(const uint8_t* data, size_t length, uint8_t instance
         const size_t remaining = length - written;
         if (remaining > 0) {
             txEnqueue(instance, data + written, remaining);
+            // Data was left in the ring: make sure the drain timer is armed so
+            // it gets pushed out even if no further write or DTR change
+            // follows (drain no longer depends on tud_cdc_n_connected() in
+            // lenient mode — see txDequeueToUsbLocked()). A fresh write is a
+            // sign of life from the producer side, so reset the backoff
+            // interval before arming rather than leaving a possibly-backed-off
+            // interval from an earlier idle period.
+            m_tx_drain_interval_us[instance] = kTxDrainRetryUs;
+            armDrainTimer(instance);
         }
-        // If not connected (DTR=0) but we don't require DTR, it's normal to queue
+        // Not connected (DTR=0) but we don't require DTR: normal to queue.
+        // The drain timer (armed above) will push this out on its own; we no
+        // longer rely solely on the host opening the port or a later write.
         if (!tud_cdc_n_connected(instance) && !m_require_dtr) {
-            ESP_LOGV(TAG, "CDC%d not connected; queued %zu bytes for later (lenient mode)", instance, remaining);
-            // Don't attempt flush; will be flushed when host opens
+            ESP_LOGV(TAG, "CDC%d not connected; queued %zu bytes (lenient mode, drain timer armed)", instance, remaining);
             return ESP_OK;
         }
         // Else: some data queued due to full USB queue
@@ -404,9 +444,10 @@ esp_err_t UsbCdc::writeData(const uint8_t* data, size_t length, uint8_t instance
     // Flush the data with no timeout (non-blocking)
     esp_err_t flush_result = tinyusb_cdcacm_write_flush(cdc_itf, 0);
     if (flush_result != ESP_OK && flush_result != ESP_ERR_TIMEOUT) {
-        // If not connected and we don't require DTR, we'll flush later
+        // Not connected and we don't require DTR: the drain timer (armed
+        // above when data was queued) will retry the flush on its own.
         if (!tud_cdc_n_connected(instance) && !m_require_dtr) {
-            ESP_LOGV(TAG, "CDC%d flush deferred (DTR=0, lenient mode)", instance);
+            ESP_LOGV(TAG, "CDC%d flush deferred (DTR=0, lenient mode, drain timer armed)", instance);
             return ESP_OK;
         }
         ESP_LOGV(TAG, "CDC%d flush warning: %s", instance, esp_err_to_name(flush_result));
@@ -429,6 +470,12 @@ esp_err_t UsbCdc::writeString(const char* str, uint8_t instance) {
 void UsbCdc::flush(uint8_t instance) {
     const tinyusb_cdcacm_itf_t cdc_itf = (instance == 0) ? TINYUSB_CDC_ACM_0 : TINYUSB_CDC_ACM_1;
     (void)tinyusb_cdcacm_write_flush(cdc_itf, 0);
+    // An explicit flush (a CAT frame boundary, or the host asserting DTR via
+    // cdc_line_state_callback) is a sign of life: reset the drain backoff
+    // interval so any residue that gets re-armed below drains promptly again,
+    // rather than waiting out a possibly-backed-off interval from an earlier
+    // idle period.
+    m_tx_drain_interval_us[instance] = kTxDrainRetryUs;
     // Attempt to push buffered data as well
     (void)txDequeueToUsb(instance);
 }
@@ -499,7 +546,10 @@ void UsbCdc::txEnqueue(uint8_t instance, const uint8_t* data, size_t len) {
 size_t UsbCdc::txDequeueToUsb(uint8_t instance) {
     if (!m_tx_mutex[instance]) return 0;
     if (!tud_mounted()) return 0;
-    if (!tud_cdc_n_connected(instance)) return 0;
+    // Gate on connection only when DTR is required; in lenient mode (the
+    // TS-590SG default) TinyUSB itself does not gate IN transfers on DTR, so
+    // hosts that never assert DTR must still get the ring drained.
+    if (!tud_cdc_n_connected(instance) && m_require_dtr) return 0;
     TxLock lock(m_tx_mutex[instance]);
     if (!lock.held()) return 0;
     return txDequeueToUsbLocked(instance);
@@ -509,7 +559,8 @@ size_t UsbCdc::txDequeueToUsb(uint8_t instance) {
 // write_queue/write_flush(0) only move bytes into the TinyUSB FIFO.
 size_t UsbCdc::txDequeueToUsbLocked(uint8_t instance) {
     if (!tud_mounted()) return 0;
-    if (!tud_cdc_n_connected(instance)) return 0;
+    // See txDequeueToUsb(): only gate on connection when DTR is required.
+    if (!tud_cdc_n_connected(instance) && m_require_dtr) return 0;
     size_t moved = 0;
     const tinyusb_cdcacm_itf_t cdc_itf = (instance == 0) ? TINYUSB_CDC_ACM_0 : TINYUSB_CDC_ACM_1;
     while (m_tx_tail[instance] != m_tx_head[instance]) {
@@ -526,7 +577,58 @@ size_t UsbCdc::txDequeueToUsbLocked(uint8_t instance) {
     }
     // Attempt non-blocking flush to move data downstream
     (void)tinyusb_cdcacm_write_flush(cdc_itf, 0);
+    if (m_tx_tail[instance] != m_tx_head[instance]) {
+        // Ring still holds residue (USB queue full or still disconnected in
+        // lenient mode): make sure the drain timer is armed so it gets pushed
+        // out even without another writeData() call or a DTR change. Arms at
+        // the current backoff interval; the timer callback owns growing or
+        // resetting that interval based on progress (see its comment).
+        armDrainTimer(instance);
+    }
     return moved;
+}
+
+void UsbCdc::armDrainTimer(uint8_t instance) {
+    if (m_tx_drain_timer[instance] == nullptr) {
+        return;
+    }
+    const esp_err_t err = esp_timer_start_once(m_tx_drain_timer[instance], m_tx_drain_interval_us[instance]);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGD(TAG, "CDC%d drain timer arm failed: %s", instance, esp_err_to_name(err));
+    }
+}
+
+void UsbCdc::txDrainTimerCallback(void* arg) {
+    // Runs on the shared esp_timer task: must never block. Try-lock only; if
+    // some writer/drainer currently holds m_tx_mutex[instance], just re-arm
+    // and retry shortly rather than stalling every other esp_timer callback
+    // in the firmware behind a portMAX_DELAY wait.
+    const uint8_t instance = static_cast<uint8_t>(reinterpret_cast<uintptr_t>(arg));
+    if (m_tx_mutex[instance] == nullptr) {
+        return;
+    }
+    TxLock lock(m_tx_mutex[instance], 0);
+    if (!lock.held()) {
+        // Lost the try-lock race: not a real drain attempt, so just re-arm at
+        // whatever interval is currently in effect (the holder's own
+        // drain/enqueue path doesn't know the timer fired).
+        armDrainTimer(instance);
+        return;
+    }
+    const size_t moved = txDequeueToUsbLocked(instance);
+    // txDequeueToUsbLocked() already re-armed (at the interval that was
+    // current before this update) if residue remains; the new interval
+    // computed here takes effect on that next fire. Any progress means the
+    // host is reading, so reset to the fast interval; zero progress (FIFO
+    // full, or still disconnected in lenient mode with nobody listening)
+    // backs off exponentially up to the cap so an unattended connection
+    // doesn't cost 500 esp_timer wakeups/sec per instance forever.
+    if (moved > 0) {
+        m_tx_drain_interval_us[instance] = kTxDrainRetryUs;
+    } else {
+        const uint32_t doubled = m_tx_drain_interval_us[instance] * 2;
+        m_tx_drain_interval_us[instance] = (doubled > kTxDrainRetryMaxUs) ? kTxDrainRetryMaxUs : doubled;
+    }
 }
 
 esp_err_t UsbCdc::initControlPins() {

@@ -464,6 +464,19 @@ void SerialHandler::processReceivedData(const uint8_t *data, const size_t len) {
     for (size_t i = 0; i < len; i++) {
         const char inChar = static_cast<char>(data[i]);
 
+        // A previous chunk overflowed the accumulator without finding a ';'.
+        // The remainder of that oversized frame is garbage until the next
+        // terminator - discard every byte (control chars included) up to and
+        // including it, rather than risk splicing a suffix like "junkTX1;"
+        // into a fresh, valid-looking command.
+        if (m_discardUntilTerminator) {
+            if (inChar == END_MARKER) {
+                m_discardUntilTerminator = false;
+                m_accum_len = 0;
+            }
+            continue;
+        }
+
         // Skip non-printable control characters except ';' which is our frame marker
         if (inChar != ';' && (inChar < 32 || inChar > 126)) {
             if (inChar == '\r' || inChar == '\n') {
@@ -632,11 +645,14 @@ void SerialHandler::processReceivedData(const uint8_t *data, const size_t len) {
     }
 
     if (m_accum_len >= MAX_MESSAGE_LENGTH) {
-        // Show first 32 bytes of buffer content for debugging
+        // Chunk ended with the buffer full and no terminator seen: the frame is
+        // over-length and its remainder (arriving in a later chunk) must not be
+        // parsed as a fresh command, so discard until the next ';' resyncs us.
         const size_t showLen = std::min(m_accum_len, size_t{32});
-        ESP_LOGW(TAG, "UART %d: Message accumulator overflow (%zu bytes), clearing. Data (first %zu): '%.*s'",
+        ESP_LOGW(TAG, "UART %d: Message accumulator overflow (%zu bytes), discarding until next ';'. Data (first %zu): '%.*s'",
                  m_uart_num, m_accum_len, showLen, static_cast<int>(showLen), m_accum);
         m_accum_len = 0;
+        m_discardUntilTerminator = true;
     }
 }
 

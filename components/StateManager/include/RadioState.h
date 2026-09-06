@@ -514,14 +514,19 @@ namespace radio
             // Lightweight per-interface query tracking for AI0 isolation.
             // Only queries from THIS interface are recorded here, so AI0 mode
             // can distinguish "I queried IF" from "the display queried IF".
-            // Uses a compact 16-slot hash table (~160 bytes) instead of the full
+            // Uses a compact 16-slot table (~160 bytes) instead of the full
             // CommandTimestampTracker (~18 KB) to stay within ESP32-S3 memory limits.
+            // Slots are found by a linear scan over all SLOTS entries rather than
+            // direct cmdHash(cmd) % SLOTS indexing: two prefixes can share the low
+            // 4 bits of that hash (e.g. "VD" and "MD" both land on the same slot),
+            // and direct indexing let one overwrite the other's pending query.
+            // SLOTS is small (16), so the scan cost is trivial.
             struct LightQueryTracker {
                 static constexpr size_t SLOTS = 16;
                 static constexpr uint64_t TTL_US = 5000000; // 5 seconds
                 struct Entry {
                     std::atomic<uint16_t> hash{0};
-                    std::atomic<uint64_t> timestamp{0};
+                    std::atomic<uint64_t> timestamp{0}; // 0 == empty/consumed
                 };
                 std::array<Entry, SLOTS> entries{};
 
@@ -530,22 +535,55 @@ namespace radio
                     return (static_cast<uint16_t>(static_cast<unsigned char>(cmd[0])) << 8)
                          | static_cast<uint16_t>(static_cast<unsigned char>(cmd[1]));
                 }
+
+                // Refreshes an existing entry for this hash if one exists; else
+                // claims the first empty or expired slot; else, if the table is
+                // fully saturated with live entries, overwrites the globally
+                // oldest one so a burst of distinct queries can't wedge the
+                // tracker (bounded, no allocation, no logging dependency).
                 void recordQuery(std::string_view cmd, uint64_t time) {
                     const uint16_t h = cmdHash(cmd);
-                    auto &e = entries[h % SLOTS];
-                    e.hash.store(h, std::memory_order_relaxed);
-                    e.timestamp.store(time, std::memory_order_relaxed);
+                    int freeIdx = -1;
+                    size_t oldestIdx = 0;
+                    uint64_t oldestTime = 0;
+                    for (size_t i = 0; i < SLOTS; ++i) {
+                        auto &e = entries[i];
+                        const uint16_t eh = e.hash.load(std::memory_order_relaxed);
+                        const uint64_t et = e.timestamp.load(std::memory_order_relaxed);
+                        if (eh == h && et > 0) {
+                            e.timestamp.store(time, std::memory_order_relaxed);
+                            return; // refreshed the existing entry for this prefix
+                        }
+                        if (freeIdx < 0 && (et == 0 || (time - et) >= TTL_US)) {
+                            freeIdx = static_cast<int>(i);
+                        }
+                        if (i == 0 || et < oldestTime) {
+                            oldestTime = et;
+                            oldestIdx = i;
+                        }
+                    }
+                    const size_t idx = freeIdx >= 0 ? static_cast<size_t>(freeIdx) : oldestIdx;
+                    entries[idx].hash.store(h, std::memory_order_relaxed);
+                    entries[idx].timestamp.store(time, std::memory_order_relaxed);
                 }
                 bool wasRecentlyQueried(std::string_view cmd, uint64_t now) const {
                     const uint16_t h = cmdHash(cmd);
-                    const auto &e = entries[h % SLOTS];
-                    return e.hash.load(std::memory_order_relaxed) == h
-                        && e.timestamp.load(std::memory_order_relaxed) > 0
-                        && (now - e.timestamp.load(std::memory_order_relaxed)) < TTL_US;
+                    for (const auto &e : entries) {
+                        const uint16_t eh = e.hash.load(std::memory_order_relaxed);
+                        const uint64_t et = e.timestamp.load(std::memory_order_relaxed);
+                        if (eh == h && et > 0 && (now - et) < TTL_US) {
+                            return true;
+                        }
+                    }
+                    return false;
                 }
                 void invalidate(std::string_view cmd) {
                     const uint16_t h = cmdHash(cmd);
-                    entries[h % SLOTS].timestamp.store(0, std::memory_order_relaxed);
+                    for (auto &e : entries) {
+                        if (e.hash.load(std::memory_order_relaxed) == h) {
+                            e.timestamp.store(0, std::memory_order_relaxed);
+                        }
+                    }
                 }
             };
             mutable LightQueryTracker localQueryTracker;

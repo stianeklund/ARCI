@@ -611,24 +611,27 @@ bool StatusInfoCommandHandler::handleIF(const RadioCommand& command,
                 const uint64_t currentTime = esp_timer_get_time();
 
                 // Check if this IF response was solicited (someone recently queried IF)
+                // NOTE: the txTimeoutTask watchdog polls "IF;" every 500ms while isTx is
+                // set, so a TX answer is *always* solicited while the watchdog is running.
+                // "Solicited" therefore cannot be used as a signal that ownership should be
+                // (re)assigned here - doing so caused the watchdog's own poll to steal
+                // ownership from the real owner every 500ms and reset txActivationTime,
+                // which meant TX_TIMEOUT_US never elapsed. Ownership is decided purely by
+                // whether anyone currently owns TX.
                 const bool ifWasQueried = state.queryTracker.wasRecentlyQueried("IF", currentTime);
                 const bool hasCurrentOwner = (state.getTxOwner() != -1);
 
                 if (radioTxState) {
-                    // Radio reports TX - only manage ownership if:
-                    // 1. IF was specifically queried, OR
-                    // 2. No one currently owns TX (orphaned state)
-                    if (ifWasQueried || !hasCurrentOwner) {
-                        if (!state.tryAcquireTx(CommandSource::Remote, currentTime)) {
-                            ESP_LOGW(TAG, "IF: Radio TX detected, forcing ownership for Remote source (queried=%s, hasOwner=%s)",
-                                     ifWasQueried ? "yes" : "no", hasCurrentOwner ? "yes" : "no");
-                            state.forceReleaseTx(currentTime);
-                            state.tryAcquireTx(CommandSource::Remote, currentTime);
-                        }
+                    if (!hasCurrentOwner) {
+                        // Nobody owns TX - the radio was keyed externally (e.g. MIC PTT or a
+                        // foot switch). Assign ownership to Remote so the timeout watchdog
+                        // covers it; there is no existing owner to steal from.
+                        state.tryAcquireTx(CommandSource::Remote, currentTime);
                     } else {
-                        // Unsolicited IF in AI mode - don't steal ownership, just update state
-                        // But DO update txActivationTime so the timeout watchdog can detect stuck TX
-                        ESP_LOGD(TAG, "IF: Radio TX detected but not stealing ownership (unsolicited AI response, owner=%d)",
+                        // Someone already owns TX - keep the existing owner. Just make sure
+                        // isTx/txActivationTime reflect the radio's report so the timeout
+                        // watchdog can detect stuck TX.
+                        ESP_LOGD(TAG, "IF: Radio TX detected, keeping existing owner=%d",
                                  state.getTxOwner());
                         state.isTx.store(true);
                         // Update activation time if not already set, so timeout watchdog works

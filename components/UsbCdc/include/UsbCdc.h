@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esp_err.h"
+#include "esp_timer.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -160,12 +161,36 @@ public:
     static void resetBackpressure(uint8_t instance);
     
 private:
-    // Lightweight TX ring buffer per CDC instance to absorb short writes
+    // Lightweight TX ring buffer per CDC instance to absorb short writes.
+    // Residue left in the ring is drained by three independent triggers so it
+    // never sits queued indefinitely:
+    //   1. The next writeData() call (drains before writing new data).
+    //   2. A DTR line-state assert (cdc_line_state_callback -> flush()).
+    //   3. A per-instance one-shot esp_timer (m_tx_drain_timer) that re-arms
+    //      itself while the ring is non-empty, so the tail of a burst gets
+    //      pushed out even with no further writes or DTR changes.
+    //   The re-arm interval backs off exponentially (2 ms, 4 ms, ... capped at
+    //   64 ms) each time a drain attempt moves zero bytes, e.g. a lenient-mode
+    //   connection left open with the host not reading: without backoff that
+    //   case would wake the esp_timer task 500 times/sec per instance forever.
+    //   Any attempt that does move bytes resets the interval to 2 ms so a
+    //   resumed host, or a fresh write/DTR assert, drains promptly again.
     static constexpr size_t TX_BUFFER_SIZE = 1024;
     static uint8_t m_tx_buf[2][TX_BUFFER_SIZE];
     static size_t m_tx_head[2];
     static size_t m_tx_tail[2];
     static SemaphoreHandle_t m_tx_mutex[2];
+    // One-shot drain timer per instance; re-arms itself while the ring still
+    // holds residue after a drain attempt (see backoff comment above).
+    // Created once in init() and lives for the process lifetime (there is no
+    // USB CDC deinit path today).
+    static esp_timer_handle_t m_tx_drain_timer[2];
+    // Current re-arm interval for m_tx_drain_timer[instance] (microseconds).
+    // uint32_t (not uint64_t): values stay within [kTxDrainRetryUs,
+    // kTxDrainRetryMaxUs] (2000..64000), and a single word is read/written
+    // atomically on 32-bit Xtensa, so flush()'s reset outside m_tx_mutex can't
+    // tear the way a 64-bit field could (see m_writeBlockUntilUs above).
+    static uint32_t m_tx_drain_interval_us[2];
 
     static size_t txFreeSpace(uint8_t instance);
     static size_t txBuffered(uint8_t instance);
@@ -174,7 +199,16 @@ private:
     // Public wrapper: acquires m_tx_mutex, drains, releases.
     static size_t txDequeueToUsb(uint8_t instance);
     // Core drain; caller MUST already hold m_tx_mutex[instance]. Non-blocking.
+    // Returns the number of bytes moved into the TinyUSB FIFO.
     static size_t txDequeueToUsbLocked(uint8_t instance);
+    // Arms (or re-arms) the per-instance drain timer using the current
+    // backoff interval (m_tx_drain_interval_us[instance]). Ignores
+    // ESP_ERR_INVALID_STATE (timer already armed).
+    static void armDrainTimer(uint8_t instance);
+    // esp_timer callback (arg = instance as uintptr_t): drains the ring,
+    // updates the backoff interval based on progress, and re-arms if residue
+    // remains.
+    static void txDrainTimerCallback(void* arg);
     static bool m_initialized;
     static bool m_control_pins_initialized;
     static bool m_dtr_state;
