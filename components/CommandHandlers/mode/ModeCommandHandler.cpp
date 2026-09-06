@@ -395,31 +395,40 @@ namespace radio
         }
 
         // P2: channel (00-31)
-        const int channel = std::stoi(getStringParam(command, 1));
-        if (channel < 0 || channel > 31)
+        const auto channelOpt = cat::ParserUtils::parseNumber<int>(getStringParam(command, 1));
+        if (!channelOpt || *channelOpt < 0 || *channelOpt > 31)
         {
-            ESP_LOGW(TAG, "AS command invalid channel: %d", channel);
+            ESP_LOGW(TAG, "AS command invalid channel: '%s'", getStringParam(command, 1).c_str());
             return false;
         }
+        const int channel = *channelOpt;
 
         // P3: frequency (11 digits in Hz)
-        const uint64_t frequency = std::stoull(getStringParam(command, 2));
+        const auto frequencyOpt = cat::ParserUtils::parseNumber<uint64_t>(getStringParam(command, 2));
+        if (!frequencyOpt)
+        {
+            ESP_LOGW(TAG, "AS command invalid frequency: '%s'", getStringParam(command, 2).c_str());
+            return false;
+        }
+        const uint64_t frequency = *frequencyOpt;
 
         // P4: mode (1-9)
-        const int mode = std::stoi(getStringParam(command, 3));
-        if (!isValidMode(mode))
+        const auto modeOpt = cat::ParserUtils::parseNumber<int>(getStringParam(command, 3));
+        if (!modeOpt || !isValidMode(*modeOpt))
         {
-            ESP_LOGW(TAG, "AS command invalid mode: %d", mode);
+            ESP_LOGW(TAG, "AS command invalid mode: '%s'", getStringParam(command, 3).c_str());
             return false;
         }
+        const int mode = *modeOpt;
 
         // P5: data mode flag (0-1)
-        const int dataMode = std::stoi(getStringParam(command, 4));
-        if (dataMode < 0 || dataMode > 1)
+        const auto dataModeOpt = cat::ParserUtils::parseNumber<int>(getStringParam(command, 4));
+        if (!dataModeOpt || *dataModeOpt < 0 || *dataModeOpt > 1)
         {
-            ESP_LOGW(TAG, "AS command invalid data mode: %d", dataMode);
+            ESP_LOGW(TAG, "AS command invalid data mode: '%s'", getStringParam(command, 4).c_str());
             return false;
         }
+        const int dataMode = *dataModeOpt;
 
         // Update state directly for auto mode channels
         auto &state = radioManager.getState();

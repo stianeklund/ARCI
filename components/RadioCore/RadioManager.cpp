@@ -1093,37 +1093,46 @@ namespace radio
     }
 
 
-    void RadioManager::sendRadioCommand(const std::string_view command) const
+    bool RadioManager::validateRadioCommand(const std::string_view command) const
     {
         if (command.empty())
         {
             ESP_LOGE(RadioManager::TAG, "❌ BLOCKED empty command to radio");
-            return;
+            return false;
         }
         if (!command.ends_with(';'))
         {
             ESP_LOGE(RadioManager::TAG, "❌ BLOCKED command missing semicolon: '%.*s'", (int)command.size(),
                      command.data());
-            return;
+            return false;
         }
         if (command.size() < 3)
         {
             ESP_LOGE(RadioManager::TAG, "❌ BLOCKED command too short: len=%zu", command.size());
-            return;
+            return false;
         }
         if (command.size() > RADIO_TX_CMD_MAX)
         {
             ESP_LOGE(RadioManager::TAG, "❌ BLOCKED command too long: len=%zu (max=%zu)", command.size(),
                      RADIO_TX_CMD_MAX);
-            return;
+            return false;
         }
         for (const char c : command)
         {
             if (c < 32 && c != ';')
             {
                 ESP_LOGE(RadioManager::TAG, "❌ BLOCKED command with invalid char (ASCII %d)", (int)c);
-                return;
+                return false;
             }
+        }
+        return true;
+    }
+
+    bool RadioManager::sendRadioCommand(const std::string_view command) const
+    {
+        if (!validateRadioCommand(command))
+        {
+            return false;
         }
         // Special tracking for ID commands
         if (command.find("ID;") != std::string_view::npos)
@@ -1137,8 +1146,12 @@ namespace radio
         // inline for deterministic mock-serial assertions. Mirrors the inline
         // boot / power-off paths that are guarded the same way. No pacing needed:
         // tests are single-threaded against a mock and must not stall on vTaskDelay.
+        // This is fire-and-forget by contract (matches the production enqueue
+        // path below, which also cannot report a downstream write failure), so
+        // the inline mock write's own result is not propagated here.
         commandDispatcher_->recordCommandSentToRadio(command);
         radioSerial_.sendMessage(command);
+        return true;
 #else
         // Enqueue only; the drainer paces and writes. Never blocks the caller (which may
         // hold dispatchMutex_): on a full queue we drop and account it, not park the lock.
@@ -1148,7 +1161,7 @@ namespace radio
             // are not silently lost. Rare; logged once at startup.
             commandDispatcher_->recordCommandSentToRadio(command);
             radioSerial_.sendMessage(command);
-            return;
+            return true;
         }
 
         RadioTxItem item{};
@@ -1169,18 +1182,62 @@ namespace radio
                 ESP_LOGW(RadioManager::TAG, "Radio-TX queue full, dropped command '%.*s' (len=%zu)",
                          (int)command.size(), command.data(), command.size());
             }
+            return false;
         }
+        return true;
 #endif
     }
 
-    void RadioManager::sendRadioCommand(const char *command) const
+    bool RadioManager::sendRadioCommand(const char *command) const
     {
         if (command == nullptr)
         {
             ESP_LOGE(RadioManager::TAG, "❌ BLOCKED null command pointer");
-            return;
+            return false;
         }
-        sendRadioCommand(std::string_view{command});
+        return sendRadioCommand(std::string_view{command});
+    }
+
+    bool RadioManager::sendUrgentRadioCommand(const std::string_view command) const
+    {
+        if (!validateRadioCommand(command))
+        {
+            return false;
+        }
+
+#ifdef CONFIG_RUN_UNIT_TESTS
+        // Same inline path as sendRadioCommand, but the actual serial result is
+        // propagated (rather than assumed true): callers of this urgent path
+        // (e.g. handleRX) must be able to observe a genuine delivery failure
+        // and keep TX ownership, which a hardcoded true would make untestable.
+        commandDispatcher_->recordCommandSentToRadio(command);
+        return radioSerial_.sendMessage(command) == ESP_OK;
+#else
+        if (radioTxQueue_ == nullptr)
+        {
+            commandDispatcher_->recordCommandSentToRadio(command);
+            return radioSerial_.sendMessage(command) == ESP_OK;
+        }
+
+        RadioTxItem item{};
+        std::memcpy(item.data, command.data(), command.size());
+        item.len = static_cast<uint8_t>(command.size());
+        item.enqueueUs = esp_timer_get_time();
+
+        // RX (and other safety commands routed through this helper) must not be
+        // silently dropped like a normal paced send: jump the queue via
+        // xQueueSendToFront, and if it is still saturated, bypass pacing
+        // entirely with a direct write rather than risk leaving the radio
+        // transmitting.
+        if (xQueueSendToFront(radioTxQueue_, &item, 0) != pdTRUE)
+        {
+            ESP_LOGE(RadioManager::TAG, "urgent radio command '%.*s' queue full, writing directly",
+                     (int)command.size(), command.data());
+            commandDispatcher_->recordCommandSentToRadio(command);
+            return radioSerial_.sendMessage(command) == ESP_OK;
+        }
+        return true;
+#endif
     }
 
     void RadioManager::radioTxDrainTask(void *pvParameters)
@@ -2408,6 +2465,11 @@ namespace radio
                 if (radioManager->getState().forceReleaseTx(currentTime))
                 {
                     ESP_LOGW(RadioManager::TAG, "🚨 TX timeout recovery: issuing emergency RX command");
+                    // dispatchMessage runs this through handleRX, which now sends "RX;" via
+                    // sendUrgentRadioCommand (front-of-queue, with a direct-write fallback if
+                    // the paced queue is saturated). A dropped enqueue can therefore no longer
+                    // swallow this emergency RX; the block below only covers dispatch itself
+                    // failing (e.g. no panelHandler_ or the handler rejecting the command).
                     bool mirrored = false;
                     if (radioManager->panelHandler_)
                     {
@@ -2853,23 +2915,17 @@ namespace radio
 // They live here because RadioCore has both CommandHandlers and NvsManager as deps.
 
 esp_err_t packAndSaveExMenu(NvsManager& nvs) {
+    static_assert(sizeof(NvsManager::ExNvsData::values) == sizeof(radio::ExtendedMenuState::SnapshotValues),
+                  "EX NVS blob layout must match the menu snapshot layout");
+
     auto& menuState = radio::ExtendedCommandHandler::getExtendedMenuState();
 
     NvsManager::ExNvsData data{};
     data.version = 1;
-    memset(data.values, 0, sizeof(data.values));
 
-    size_t populated = 0;
-    for (size_t i = 0; i < 100; i++) {
-        char key[4];
-        snprintf(key, sizeof(key), "%03u", static_cast<unsigned>(i));
-        std::string_view val = menuState.getValue(key);
-        if (!val.empty() && val.size() < 8) {
-            memcpy(data.values[i], val.data(), val.size());
-            data.values[i][val.size()] = '\0';
-            populated++;
-        }
-    }
+    // Snapshot copies the values under ExtendedMenuState's lock; the flash write below
+    // runs after the lock is released, so it never blocks the dispatch task.
+    const size_t populated = menuState.snapshot(data.values);
 
     esp_err_t err = nvs.saveExMenuBlob(data);
     if (err == ESP_OK) {

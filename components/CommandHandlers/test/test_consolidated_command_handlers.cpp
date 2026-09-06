@@ -1,5 +1,6 @@
 #include "unity.h"
 #include "test_hooks.h"
+#include "ExtendedCommandHandler.h"
 #include "FrequencyVfoCommandHandler.h"
 #include "RadioManager.h"
 #include "StatusInfoCommandHandler.h"
@@ -328,6 +329,83 @@ void test_gain_level_handler_ag_command() {
     TEST_ASSERT_TRUE(true);
 }
 
+
+// =============================================================================
+// Non-throwing numeric parsing regression tests
+//
+// CONFIG_COMPILER_CXX_EXCEPTIONS is not enabled on this target, so any
+// std::stoi/std::stoull on a non-numeric CAT parameter would call abort()
+// and reboot the firmware. These tests exercise malformed input through the
+// real dispatch path (CATHandler -> CommandDispatcher -> handler) to prove
+// the handlers reject bad input gracefully instead of crashing.
+// =============================================================================
+
+void test_pl_set_rejects_non_numeric() {
+    initializeTestObjects();
+
+    // Seed non-default state so a "still zero" pass can't hide a bug.
+    testRadioManager->getState().speechProcessorInLevel.store(42);
+    testRadioManager->getState().speechProcessorOutLevel.store(37);
+
+    // PLABC050; - CatParser splits this into P1="ABC", P2="050". "ABC" is not
+    // numeric; the handler must reject it instead of calling std::stoi/abort.
+    testRadioManager->getLocalCATHandler().parseMessage("PLABC050;");
+
+    // Rejected SET must never be forwarded to the radio
+    TEST_ASSERT_TRUE(mockRadioSerial->sentMessages.empty());
+
+    // Dispatcher replies "?;" to the originating (USB) source
+    const auto usbIt = std::find(mockUsbSerial->sentMessages.begin(), mockUsbSerial->sentMessages.end(),
+                                  std::string{"?;"});
+    TEST_ASSERT_TRUE(usbIt != mockUsbSerial->sentMessages.end());
+
+    // State must remain untouched (proves rejection, not merely default values)
+    TEST_ASSERT_EQUAL_INT(42, testRadioManager->getState().speechProcessorInLevel.load());
+    TEST_ASSERT_EQUAL_INT(37, testRadioManager->getState().speechProcessorOutLevel.load());
+}
+
+void test_pl_set_rejects_out_of_range() {
+    initializeTestObjects();
+
+    testRadioManager->getState().speechProcessorInLevel.store(42);
+    testRadioManager->getState().speechProcessorOutLevel.store(37);
+
+    // PL200050; - both fields are numeric but "200" is outside the 0-100 range.
+    testRadioManager->getLocalCATHandler().parseMessage("PL200050;");
+
+    TEST_ASSERT_TRUE(mockRadioSerial->sentMessages.empty());
+    const auto usbIt = std::find(mockUsbSerial->sentMessages.begin(), mockUsbSerial->sentMessages.end(),
+                                  std::string{"?;"});
+    TEST_ASSERT_TRUE(usbIt != mockUsbSerial->sentMessages.end());
+    TEST_ASSERT_EQUAL_INT(42, testRadioManager->getState().speechProcessorInLevel.load());
+    TEST_ASSERT_EQUAL_INT(37, testRadioManager->getState().speechProcessorOutLevel.load());
+}
+
+void test_as_set_rejects_non_numeric_channel() {
+    initializeTestObjects();
+
+    // AS0XX0001407000030; - P2 (channel) is "XX", non-numeric. Must be
+    // rejected before any autoModeChannels[] indexing or std::stoi is attempted.
+    testRadioManager->getLocalCATHandler().parseMessage("AS0XX0001407000030;");
+
+    TEST_ASSERT_TRUE(mockRadioSerial->sentMessages.empty());
+    const auto usbIt = std::find(mockUsbSerial->sentMessages.begin(), mockUsbSerial->sentMessages.end(),
+                                  std::string{"?;"});
+    TEST_ASSERT_TRUE(usbIt != mockUsbSerial->sentMessages.end());
+}
+
+void test_sm_answer_rejects_non_numeric_value() {
+    initializeTestObjects();
+
+    // Seed a non-default value so "unchanged" can't be confused with "left at 0".
+    testRadioManager->getState().meterSmRaw.store(1234);
+
+    // SMXXXX; - a malformed answer from the radio side. Must not crash and
+    // must leave the cached meter value unchanged.
+    testRadioManager->getRemoteCATHandler().parseMessage("SMXXXX;");
+
+    TEST_ASSERT_EQUAL_INT(1234, testRadioManager->getState().meterSmRaw.load());
+}
 
 // =============================================================================
 // StatusInfoCommandHandler Tests
@@ -699,6 +777,38 @@ void test_menu_config_handler_ex_command() {
     TEST_ASSERT_TRUE(true);
 }
 
+void test_ex_menu_snapshot_matches_state() {
+    // Exercises ExtendedMenuState::snapshot() in isolation - this is the API the
+    // NVS deferred-save worker uses off the dispatch task, so it must not touch
+    // getValue()/the map directly. Deliberately does NOT clearMenuCache(): this
+    // binary shares the ExtendedMenuState singleton with every other test here,
+    // so wiping the map would drop its 10 default entries for the rest of the run.
+    auto &menuState = ExtendedCommandHandler::getExtendedMenuState();
+
+    menuState.setValue("056", "1");
+    menuState.setValue("012", "1234567");  // 7 chars - fits (capacity is 8 incl. NUL)
+    menuState.setValue("013", "12345678"); // 8 chars - too long, must be skipped as ""
+    menuState.setValue("014", "");         // stored-but-empty value, must be skipped as ""
+
+    ExtendedMenuState::SnapshotValues out{};
+    const size_t populated = menuState.snapshot(out);
+
+    TEST_ASSERT_EQUAL_STRING("1", out[56]);
+    TEST_ASSERT_EQUAL_STRING("1234567", out[12]);
+    TEST_ASSERT_EQUAL_STRING("", out[13]);
+    TEST_ASSERT_EQUAL_STRING("", out[14]);
+
+    size_t nonEmptyCount = 0;
+    for (size_t i = 0; i < ExtendedMenuState::kSnapshotCount; i++) {
+        if (out[i][0] != '\0') nonEmptyCount++;
+    }
+    TEST_ASSERT_EQUAL(nonEmptyCount, populated);
+
+    // Restore the transverter default (056="0") so later tests in this binary
+    // that rely on it see the expected state; 012/013/014 carry no such meaning.
+    menuState.setValue("056", "0");
+}
+
 // =============================================================================
 // Integration Tests
 // =============================================================================
@@ -808,6 +918,44 @@ void test_tx_ownership_owner_can_release() {
     // Check that TX is released
     TEST_ASSERT_FALSE(testRadioManager->getState().isTx.load());
     TEST_ASSERT_EQUAL(-1, testRadioManager->getState().getTxOwner());
+}
+
+void test_tx_ownership_rx_kept_when_radio_send_fails() {
+    initializeTestObjects();
+
+    // Swap the radio-facing mock for one whose sendMessage() always fails. In
+    // CONFIG_RUN_UNIT_TESTS builds, RadioManager::sendUrgentRadioCommand sends
+    // inline and propagates the serial channel's real result, so this makes it
+    // report failure -- TransmitterCommandHandler::handleRX must then keep TX
+    // ownership rather than releasing it and reporting RX handled.
+    delete mockRadioSerial;
+    mockRadioSerial = new ErrorMockSerialHandler();
+    testRadioManager.reset();
+    testRadioManager = std::make_unique<RadioManager>(
+        static_cast<ISerialChannel&>(*mockRadioSerial),
+        static_cast<ISerialChannel&>(*mockUsbSerial));
+    TEST_ASSERT_EQUAL(ESP_OK, testRadioManager->startTasks());
+    mockUsbSerial->sentMessages.clear();
+
+    // USB CDC0 acquires TX (acquisition does not depend on the radio write succeeding)
+    testRadioManager->getLocalCATHandler().parseMessage("TX0;");
+    TEST_ASSERT_TRUE(testRadioManager->getState().isTx.load());
+    TEST_ASSERT_EQUAL(static_cast<int>(CommandSource::UsbCdc0), testRadioManager->getState().getTxOwner());
+
+    mockUsbSerial->sentMessages.clear();
+
+    // Same source tries to release TX, but delivering "RX;" to the radio fails
+    testRadioManager->getLocalCATHandler().parseMessage("RX;");
+
+    TEST_ASSERT_TRUE_MESSAGE(testRadioManager->getState().isTx.load(),
+                             "isTx must remain true when RX could not be delivered to the radio");
+    TEST_ASSERT_EQUAL_MESSAGE(static_cast<int>(CommandSource::UsbCdc0), testRadioManager->getState().getTxOwner(),
+                              "TX ownership must be retained when RX delivery to the radio fails");
+
+    // The dispatcher replies "?;" to a local source when its handler returns false
+    const auto& messages = mockUsbSerial->sentMessages;
+    const auto it = std::find(messages.begin(), messages.end(), std::string{"?;"});
+    TEST_ASSERT_TRUE_MESSAGE(it != messages.end(), "Expected ?; reply when RX could not reach the radio");
 }
 
 void test_tx_ownership_non_owner_cannot_release() {
@@ -1312,6 +1460,12 @@ extern "C" void run_consolidated_command_handlers_tests() {
     // GainLevelCommandHandler tests
     RUN_TEST(test_gain_level_handler_ag_command);
 
+    // Non-throwing numeric parsing regression tests (no CXX exceptions on target)
+    RUN_TEST(test_pl_set_rejects_non_numeric);
+    RUN_TEST(test_pl_set_rejects_out_of_range);
+    RUN_TEST(test_as_set_rejects_non_numeric_channel);
+    RUN_TEST(test_sm_answer_rejects_non_numeric_value);
+
     // StatusInfoCommandHandler tests
     RUN_TEST(test_status_info_if_response_tracks_active_vfo);
     RUN_TEST(test_status_info_remote_if_rx_broadcasts_release);
@@ -1341,6 +1495,7 @@ extern "C" void run_consolidated_command_handlers_tests() {
     
     // MenuConfigCommandHandler tests
     RUN_TEST(test_menu_config_handler_ex_command);
+    RUN_TEST(test_ex_menu_snapshot_matches_state);
     
     // Integration tests
     RUN_TEST(test_command_routing_priorities);
@@ -1350,6 +1505,7 @@ extern "C" void run_consolidated_command_handlers_tests() {
     RUN_TEST(test_tx_ownership_single_source_acquire);
     RUN_TEST(test_tx_ownership_second_source_blocked);
     RUN_TEST(test_tx_ownership_owner_can_release);
+    RUN_TEST(test_tx_ownership_rx_kept_when_radio_send_fails);
     RUN_TEST(test_tx_ownership_non_owner_cannot_release);
     RUN_TEST(test_tx_ownership_timeout_releases);
     RUN_TEST(test_tx_ownership_radio_authority);

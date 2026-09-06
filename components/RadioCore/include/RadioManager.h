@@ -962,9 +962,17 @@ namespace radio
         // command handlers writing through it are paced like every other radio TX.
         friend class PacedRadioChannel;
 
-        // Allocation-free radio send helpers
-        void sendRadioCommand(std::string_view command) const;
-        void sendRadioCommand(const char *command) const;
+        // Allocation-free radio send helpers. Return true when the command was
+        // handed off (enqueued in production, or sent inline in unit-test
+        // builds), false when validation rejected it or the paced queue was
+        // full. Existing callers use these in void context and are unaffected.
+        bool sendRadioCommand(std::string_view command) const;
+        bool sendRadioCommand(const char *command) const;
+
+        // Shared validation for sendRadioCommand/sendUrgentRadioCommand: rejects
+        // empty commands, commands too long for RadioTxItem, and embedded
+        // control characters.
+        bool validateRadioCommand(std::string_view command) const;
 
         // State validation and updates
         bool updateFrequency(uint64_t newFreq);
@@ -990,6 +998,17 @@ namespace radio
 
         // === Minimal origin-memory routing for query→answer pairing ===
     public:
+        // Urgent radio send for safety-critical commands (e.g. "RX;" forced by
+        // TransmitterCommandHandler::handleRX or the TX watchdog). Jumps the
+        // paced TX queue via xQueueSendToFront instead of the back, and if the
+        // queue is saturated, falls back to writing directly to the radio
+        // rather than silently dropping like sendRadioCommand does. Returns
+        // true only if the command was actually handed to the queue or
+        // written directly and accepted by the serial channel -- callers that
+        // must not proceed on failure (e.g. handleRX keeping TX ownership)
+        // rely on this being a true delivery signal, not a fire-and-forget one.
+        bool sendUrgentRadioCommand(std::string_view command) const;
+
         // Record the origin of a just-sent READ for a given 2-char prefix (e.g., "FA")
         // When cacheServed=true, the origin is recorded but routeMatchedAnswerWithSource
         // will return the source WITHOUT sending (to suppress AI forwarding duplicates

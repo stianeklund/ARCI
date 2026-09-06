@@ -674,13 +674,21 @@ namespace radio
         if (isSet(cmd))
         {
             // Parse signed value from parameter (format: +0000 or -0000)
+            // std::from_chars rejects a leading '+', so strip it before parsing.
             const std::string param = getStringParam(cmd, 0, "0");
-            int value = 0;
-
-            if (!param.empty())
+            std::string_view digits = param;
+            if (!digits.empty() && digits[0] == '+')
             {
-                value = std::stoi(param);
+                digits.remove_prefix(1);
             }
+
+            const auto valueOpt = cat::ParserUtils::parseNumber<int>(digits);
+            if (!valueOpt)
+            {
+                ESP_LOGW(TAG, "UIRI set command: invalid parameter '%s'", param.c_str());
+                return false;
+            }
+            const int value = *valueOpt;
 
             if (!isValidRitXitValue(value))
             {
@@ -700,17 +708,21 @@ namespace radio
         if (cmd.type == CommandType::Answer)
         {
             const std::string param = getStringParam(cmd, 0, "0");
-            int value = 0;
-
-            if (!param.empty())
+            std::string_view digits = param;
+            if (!digits.empty() && digits[0] == '+')
             {
-                value = std::stoi(param);
+                digits.remove_prefix(1);
             }
 
-            if (isValidRitXitValue(value))
+            const auto valueOpt = cat::ParserUtils::parseNumber<int>(digits);
+            if (valueOpt && isValidRitXitValue(*valueOpt))
             {
-                state.uiState.currentValue.store(static_cast<int16_t>(value));
-                ESP_LOGD(TAG, "UIRI answer from display: %d", value);
+                state.uiState.currentValue.store(static_cast<int16_t>(*valueOpt));
+                ESP_LOGD(TAG, "UIRI answer from display: %d", *valueOpt);
+            }
+            else if (!valueOpt)
+            {
+                ESP_LOGW(TAG, "UIRI answer: invalid parameter '%s'", param.c_str());
             }
             return true;
         }

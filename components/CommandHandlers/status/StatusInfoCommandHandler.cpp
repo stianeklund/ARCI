@@ -300,9 +300,12 @@ bool StatusInfoCommandHandler::handleSM(const RadioCommand& command,
         if (command.paramSize() >= 2) {
             std::string valueStr = getStringParam(command, 1, "");
             if (!valueStr.empty() && valueStr.length() <= 4) {
-                int smValue = std::stoi(valueStr);
-                radioManager.getState().meterSmRaw = smValue;
-                ESP_LOGV(TAG, "SM value stored: %d", smValue);
+                if (const auto smValue = cat::ParserUtils::parseNumber<int>(valueStr)) {
+                    radioManager.getState().meterSmRaw = *smValue;
+                    ESP_LOGV(TAG, "SM value stored: %d", *smValue);
+                } else {
+                    ESP_LOGW(TAG, "SM answer: invalid meter value '%s'", valueStr.c_str());
+                }
             }
         }
 
@@ -396,22 +399,27 @@ bool StatusInfoCommandHandler::handleRM(const RadioCommand& command,
 
                 // Store meter value in appropriate field based on function
                 if (!valueStr.empty() && valueStr.length() <= 4) {
-                    int meterValue = std::stoi(valueStr);
-                    switch (func) {
-                        case 1:
-                            state.meterSwr = meterValue;
-                            ESP_LOGV(TAG, "RM SWR value stored: %d", meterValue);
-                            break;
-                        case 2:
-                            state.meterComp = meterValue;
-                            ESP_LOGV(TAG, "RM COMP value stored: %d", meterValue);
-                            break;
-                        case 3:
-                            state.meterAlc = meterValue;
-                            ESP_LOGV(TAG, "RM ALC value stored: %d", meterValue);
-                            break;
-                        default:
-                            break;
+                    const auto meterValueOpt = cat::ParserUtils::parseNumber<int>(valueStr);
+                    if (!meterValueOpt) {
+                        ESP_LOGW(TAG, "RM answer: invalid meter value '%s'", valueStr.c_str());
+                    } else {
+                        const int meterValue = *meterValueOpt;
+                        switch (func) {
+                            case 1:
+                                state.meterSwr = meterValue;
+                                ESP_LOGV(TAG, "RM SWR value stored: %d", meterValue);
+                                break;
+                            case 2:
+                                state.meterComp = meterValue;
+                                ESP_LOGV(TAG, "RM COMP value stored: %d", meterValue);
+                                break;
+                            case 3:
+                                state.meterAlc = meterValue;
+                                ESP_LOGV(TAG, "RM ALC value stored: %d", meterValue);
+                                break;
+                            default:
+                                break;
+                        }
                     }
                 }
             }
@@ -560,13 +568,14 @@ bool StatusInfoCommandHandler::handleIF(const RadioCommand& command,
 
             // P3: RIT/XIT offset (5 chars, signed)
             if (std::string offsetStr = ifStr(2); offsetStr.length() == 5) {
-                int offset = 0;
-                if (offsetStr[0] == ' ') {
-                    offset = std::stoi(offsetStr.substr(1));
+                const auto magnitude = cat::ParserUtils::parseNumber<int>(std::string_view(offsetStr).substr(1));
+                if (!magnitude) {
+                    ESP_LOGW(TAG, "IF answer: invalid RIT/XIT offset field '%s'", offsetStr.c_str());
+                } else if (offsetStr[0] == ' ') {
+                    radioManager.updateRitOffset(*magnitude);
                 } else if (offsetStr[0] == '-') {
-                    offset = -std::stoi(offsetStr.substr(1));
+                    radioManager.updateRitOffset(-*magnitude);
                 }
-                radioManager.updateRitOffset(offset);
             }
             
             // P4: RIT status
@@ -589,8 +598,11 @@ bool StatusInfoCommandHandler::handleIF(const RadioCommand& command,
             // P6+P7: Memory channel (P6=hundreds, P7=tens+ones)
             std::string hundredsStr = ifStr(5);
             if (std::string tensOnesStr = ifStr(6); !hundredsStr.empty() && !tensOnesStr.empty()) {
-                int channel = std::stoi(hundredsStr + tensOnesStr);
-                state.memoryChannel.store(channel);
+                if (const auto channel = cat::ParserUtils::parseNumber<int>(hundredsStr + tensOnesStr)) {
+                    state.memoryChannel.store(*channel);
+                } else {
+                    ESP_LOGW(TAG, "IF answer: invalid memory channel '%s%s'", hundredsStr.c_str(), tensOnesStr.c_str());
+                }
             }
             
             // P8: TX/RX status
@@ -689,36 +701,48 @@ bool StatusInfoCommandHandler::handleIF(const RadioCommand& command,
             
             // P9: Operating mode
             if (std::string modeStr = ifStr(8); !modeStr.empty()) {
-                int mode = std::stoi(modeStr);
-                radioManager.updateMode(mode);
+                if (const auto mode = cat::ParserUtils::parseNumber<int>(modeStr)) {
+                    radioManager.updateMode(*mode);
+                } else {
+                    ESP_LOGW(TAG, "IF answer: invalid mode field '%s'", modeStr.c_str());
+                }
             }
-            
+
             // P10: VFO/Memory selection (0=VFO, 1=Memory)
             // No additional action required here; VFO selection is handled earlier.
 
             // P11: Scan status
             if (std::string scanStr = ifStr(10); !scanStr.empty()) {
-                int scanStatus = std::stoi(scanStr);
-                state.scanStatus.store(scanStatus);
+                if (const auto scanStatus = cat::ParserUtils::parseNumber<int>(scanStr)) {
+                    state.scanStatus.store(*scanStatus);
+                } else {
+                    ESP_LOGW(TAG, "IF answer: invalid scan status field '%s'", scanStr.c_str());
+                }
             }
-            
+
             // P12: Split status
             if (std::string splitStr = ifStr(11); !splitStr.empty()) {
                 bool split = splitStr == "1";
                 radioManager.updateSplitEnabled(split);
             }
-            
+
             // P13: Tone status
             if (std::string toneStr = ifStr(12); !toneStr.empty()) {
-                int toneStatus = std::stoi(toneStr);
-                state.toneState = toneStatus;
-                state.toneStatus = toneStatus;
+                if (const auto toneStatus = cat::ParserUtils::parseNumber<int>(toneStr)) {
+                    state.toneState = *toneStatus;
+                    state.toneStatus = *toneStatus;
+                } else {
+                    ESP_LOGW(TAG, "IF answer: invalid tone status field '%s'", toneStr.c_str());
+                }
             }
-            
+
             // P14: Tone frequency index
             if (std::string toneFreqStr = ifStr(13); !toneFreqStr.empty()) {
-                int toneFreq = std::stoi(toneFreqStr);
-                state.toneFrequency = toneFreq;
+                if (const auto toneFreq = cat::ParserUtils::parseNumber<int>(toneFreqStr)) {
+                    state.toneFrequency = *toneFreq;
+                } else {
+                    ESP_LOGW(TAG, "IF answer: invalid tone frequency field '%s'", toneFreqStr.c_str());
+                }
             }
             
             // P15: Reserved/constant - no action needed
@@ -1004,18 +1028,24 @@ bool StatusInfoCommandHandler::handleRI(const RadioCommand &command,
         // Update state from RI answer
         if (!command.paramsEmpty()) {
             if (const std::string paramStr = getStringParam(command, 0, ""); paramStr.length() >= 11) {
-                if (const uint64_t frequency = std::stoull(paramStr.substr(0, 11)); frequency > 0) {
+                if (const auto frequency = cat::ParserUtils::parseNumber<uint64_t>(std::string_view(paramStr).substr(0, 11));
+                    frequency && *frequency > 0) {
                     // Update RX frequency (which VFO depends on split state)
                     if (const auto &state = radioManager.getState(); state.split.load()) {
-                        radioManager.updateVfoBFrequency(frequency);
+                        radioManager.updateVfoBFrequency(*frequency);
                     } else {
-                        radioManager.updateVfoAFrequency(frequency);
+                        radioManager.updateVfoAFrequency(*frequency);
                     }
+                } else if (!frequency) {
+                    ESP_LOGW(TAG, "RI answer: invalid frequency field '%s'", paramStr.substr(0, 11).c_str());
                 }
 
                 if (paramStr.length() >= 12) {
-                    const int mode = std::stoi(paramStr.substr(11, 1));
-                    radioManager.updateMode(mode);
+                    if (const auto mode = cat::ParserUtils::parseNumber<int>(std::string_view(paramStr).substr(11, 1))) {
+                        radioManager.updateMode(*mode);
+                    } else {
+                        ESP_LOGW(TAG, "RI answer: invalid mode field '%s'", paramStr.substr(11, 1).c_str());
+                    }
                 }
             }
         }

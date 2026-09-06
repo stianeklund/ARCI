@@ -301,25 +301,29 @@ namespace radio
 
         if (isSet(command) || (command.isLocal() && command.paramsEmpty()))
         {
-            // Try to release TX ownership
             const uint64_t currentTime = esp_timer_get_time();
 
+            // Decide permission first, without mutating TX ownership yet: the
+            // radio send below must happen before ownership is released, so a
+            // failed send can leave ownership intact (txTimeoutTask still
+            // guards a transmitter that never actually got the RX command).
             const int previousOwner = state.getTxOwner();
 
-            // Panel (physical buttons) can always force RX regardless of ownership
-            // Other sources must respect ownership unless they are local (USB/display/panel) panic overrides
+            // Panel (physical buttons) can always force RX regardless of ownership.
+            bool forceRelease = false;
             if (command.source == CommandSource::Panel)
             {
                 ESP_LOGD(TAG, "Panel RX forces TX release");
-                state.forceReleaseTx(currentTime);
+                forceRelease = true;
             }
-            else if (!state.releaseTx(command.source, currentTime))
+            else if (previousOwner != static_cast<int>(command.source) && previousOwner != -1)
             {
+                // Not the current owner and TX is actually owned by someone else.
                 if (command.isLocal())
                 {
                     ESP_LOGW(TAG, "⚠️ RX override: %s requested RX while owned by source %d — forcing release",
                              sourceToString(command.source), previousOwner);
-                    state.forceReleaseTx(currentTime);
+                    forceRelease = true;
                 }
                 else
                 {
@@ -328,24 +332,50 @@ namespace radio
                     return false;
                 }
             }
+            // else: previousOwner == command.source, or TX is already unowned
+            // (previousOwner == -1) -- normal release via releaseTx below.
 
-            // Set to receive mode (TX ownership released successfully or forced)
-            state.isTuning.store(false);
-            radioManager.forceReleasePrimaryControl();
-            ESP_LOGI(TAG, "✅ RX STATE: Set to RX mode by %s", sourceToString(command.source));
-
-            const bool willSendToRadio = shouldSendToRadio(command);
-            ESP_LOGV(TAG, "RX routing: sendToRadio=%s", willSendToRadio ? "true" : "false");
-
-            if (willSendToRadio)
+            if (shouldSendToRadio(command))
             {
                 ESP_LOGV(TAG, "RX send to radio: RX;");
-                sendToRadio(radioSerial, buildCommand("RX"));
+                // Safety command: bypass normal pacing (front-of-queue, direct-write
+                // fallback) rather than risk a silently dropped enqueue leaving the
+                // radio transmitting while we report RX handled.
+                if (!radioManager.sendUrgentRadioCommand(buildCommand("RX")))
+                {
+                    ESP_LOGE(TAG,
+                             "RX not delivered to radio (queue full and direct write failed); "
+                             "keeping TX ownership for source %d",
+                             previousOwner);
+                    return false;
+                }
             }
             else
             {
                 ESP_LOGW(TAG, "❌ RX BLOCKED: Command not sent to radio (check cache/source policy)");
             }
+
+            // Radio send succeeded (or was not required) -- now release ownership.
+            if (forceRelease)
+            {
+                state.forceReleaseTx(currentTime);
+            }
+            else if (!state.releaseTx(command.source, currentTime))
+            {
+                // Only unexpected when TX was actually owned; previousOwner == -1 means
+                // releaseTx/forceReleaseTx are both no-ops here (idempotent RX), not a bug.
+                if (previousOwner != -1)
+                {
+                    ESP_LOGW(TAG, "releaseTx unexpectedly failed for source %d (owner was %d); forcing release",
+                             static_cast<int>(command.source), previousOwner);
+                }
+                state.forceReleaseTx(currentTime);
+            }
+
+            state.isTuning.store(false);
+            radioManager.forceReleasePrimaryControl();
+            ESP_LOGI(TAG, "✅ RX STATE: Set to RX mode by %s", sourceToString(command.source));
+
             // Route RX state to AI-enabled interfaces (mimicking radio Answer behavior)
             const std::string rxMsg = buildCommand("RX");
             routeSetCommandToAIInterfaces(command, rxMsg, usbSerial, radioManager);
@@ -586,8 +616,15 @@ namespace radio
                 return false;
             }
 
-            int inLevel = std::stoi(getStringParam(command, 0));
-            int outLevel = std::stoi(getStringParam(command, 1));
+            const auto inLevelOpt = cat::ParserUtils::parseNumber<int>(getStringParam(command, 0));
+            const auto outLevelOpt = cat::ParserUtils::parseNumber<int>(getStringParam(command, 1));
+            if (!inLevelOpt || !outLevelOpt)
+            {
+                ESP_LOGW(TAG, "PL set command: invalid parameter '%s'", command.originalMessage.c_str());
+                return false;
+            }
+            const int inLevel = *inLevelOpt;
+            const int outLevel = *outLevelOpt;
 
             if (inLevel < 0 || inLevel > 100 || outLevel < 0 || outLevel > 100)
             {
@@ -615,10 +652,17 @@ namespace radio
             std::string paramStr = getStringParam(command, 0);
             if (paramStr.length() == 6)
             {
-                int inLevel = std::stoi(paramStr.substr(0, 3));
-                int outLevel = std::stoi(paramStr.substr(3, 3));
-                state.speechProcessorInLevel = inLevel;
-                state.speechProcessorOutLevel = outLevel;
+                const auto inLevel = cat::ParserUtils::parseNumber<int>(std::string_view(paramStr).substr(0, 3));
+                const auto outLevel = cat::ParserUtils::parseNumber<int>(std::string_view(paramStr).substr(3, 3));
+                if (inLevel && outLevel)
+                {
+                    state.speechProcessorInLevel = *inLevel;
+                    state.speechProcessorOutLevel = *outLevel;
+                }
+                else
+                {
+                    ESP_LOGW(TAG, "PL answer: invalid levels '%s'", paramStr.c_str());
+                }
             }
 
             // Use unified routing for PL answers
