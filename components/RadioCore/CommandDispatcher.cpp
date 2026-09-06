@@ -266,6 +266,14 @@ namespace radio {
                 radioManager.getState().accessForwardState(command.source)
                     .localQueryTracker.recordQuery(command.command, esp_timer_get_time());
             }
+
+            // Remember every local Set/Read that is about to reach the radio (see
+            // recordPendingLocalRequest) so a later error reply ('?;'/'E;'/'O;')
+            // can be routed back to the interface that actually sent it, instead
+            // of always assuming CDC0. Must happen before the handler runs.
+            if (command.shouldSendToRadio()) {
+                recordPendingLocalRequest(command.command, command.source, esp_timer_get_time());
+            }
         }
 
         ESP_LOGV(CommandDispatcher::TAG, "Dispatching command: '%s' (type: %s, source: %s, depth: %lu)",
@@ -393,17 +401,41 @@ namespace radio {
                      "Processing error response '%s;' from radio",
                      command.command.c_str());
             
-            // Forward 'E;' and 'O;' errors unconditionally
-            // Forward '?;' only when a CDC/TCP client has a pending query — this is
-            // the radio's legitimate error response to their command (e.g., MR for an
-            // empty channel).  Suppress unsolicited '?;' to avoid flooding clients.
+            // Route 'E;'/'O;'/'?;' back to the CAT client whose request the radio is
+            // actually replying to, using the pendingRequests_ ring recorded above
+            // (see the isUsb()/isTcp() block earlier in this function) instead of
+            // always assuming CDC0. A ring miss -- nothing recorded for this prefix
+            // within PENDING_REQUEST_TTL_US, e.g. an unsolicited or stale frame, or
+            // the ring's 8 slots having wrapped under heavy traffic -- falls back to
+            // today's behaviour: 'E;'/'O;' still go to CDC0 via sendDirectResponse;
+            // '?;' falls back to the global queryTracker check (pre-existing
+            // behaviour) and is forwarded to CDC0 only if that also has a recent
+            // matching query, otherwise it is suppressed to avoid flooding clients.
             if (command.command != "?") {
-                ESP_LOGV(CommandDispatcher::TAG, "Forwarding error response '%s;' to USB", command.command.c_str());
-                radioManager.sendDirectResponse(command.originalMessage);
+                std::optional<CommandSource> pendingSource;
+                if (std::strlen(lastCmdCopy) >= 2) {
+                    const std::string_view lastPrefix{lastCmdCopy, 2};
+                    pendingSource = findAndConsumePendingRequest(lastPrefix, currentTime);
+                }
+                if (pendingSource) {
+                    ESP_LOGV(CommandDispatcher::TAG, "Routing error response '%s;' to originating interface (source=%d)",
+                             command.command.c_str(), static_cast<int>(*pendingSource));
+                    radioManager.sendToSource(*pendingSource, command.originalMessage);
+                } else {
+                    ESP_LOGV(CommandDispatcher::TAG, "Forwarding error response '%s;' to USB", command.command.c_str());
+                    radioManager.sendDirectResponse(command.originalMessage);
+                }
             } else if (std::strlen(lastCmdCopy) >= 2) {
                 const std::string_view prefix{lastCmdCopy, 2};
-                if (radioManager.getState().queryTracker.wasRecentlyQueried(prefix, currentTime)) {
-                    ESP_LOGV(CommandDispatcher::TAG, "Forwarding '?;' to CDC0 — response to pending query '%.*s'", 2, lastCmdCopy);
+                if (auto pendingSource = findAndConsumePendingRequest(prefix, currentTime)) {
+                    ESP_LOGV(CommandDispatcher::TAG, "Forwarding '?;' to originating interface — response to pending query '%.*s'", 2, lastCmdCopy);
+                    radioManager.sendToSource(*pendingSource, "?;");
+                } else if (radioManager.getState().queryTracker.wasRecentlyQueried(prefix, currentTime)) {
+                    // Ring miss (evicted by later traffic, or sent before this
+                    // dispatcher instance's ring existed): fall back to the
+                    // pre-existing global-tracker gate rather than newly
+                    // suppressing a response a client may still be waiting on.
+                    ESP_LOGV(CommandDispatcher::TAG, "Forwarding '?;' to CDC0 (ring miss, queryTracker hit) — response to pending query '%.*s'", 2, lastCmdCopy);
                     radioManager.sendDirectResponse("?;");
                 } else {
                     ESP_LOGV(CommandDispatcher::TAG, "Suppressing '?;' — no pending query for '%.*s'", 2, lastCmdCopy);
@@ -564,5 +596,41 @@ namespace radio {
     void CommandDispatcher::resetStatistics() {
         RtosLockGuard<RtosMutex> lock(statsMutex_);
         stats_.reset();
+    }
+
+    void CommandDispatcher::recordPendingLocalRequest(const std::string_view prefix, const CommandSource source,
+                                                       const uint64_t nowUs) {
+        if (prefix.size() < 2)
+            return;
+        RtosLockGuard<RtosMutex> lock(statsMutex_);
+        auto &e = pendingRequests_[pendingRequestWriteIdx_];
+        e.prefix[0] = prefix[0];
+        e.prefix[1] = prefix[1];
+        e.source = source;
+        e.timeUs = nowUs;
+        pendingRequestWriteIdx_ = (pendingRequestWriteIdx_ + 1) % PENDING_REQUEST_RING_SIZE;
+    }
+
+    std::optional<CommandSource> CommandDispatcher::findAndConsumePendingRequest(const std::string_view prefix,
+                                                                                  const uint64_t nowUs) {
+        if (prefix.size() < 2)
+            return std::nullopt;
+        RtosLockGuard<RtosMutex> lock(statsMutex_);
+        for (size_t i = 0; i < PENDING_REQUEST_RING_SIZE; ++i) {
+            // Scan newest-first: pendingRequestWriteIdx_ is the next slot to be
+            // written, so the most recently recorded entry is one behind it.
+            const size_t idx = (pendingRequestWriteIdx_ + PENDING_REQUEST_RING_SIZE - 1 - i) % PENDING_REQUEST_RING_SIZE;
+            auto &e = pendingRequests_[idx];
+            if (e.timeUs == 0)
+                continue; // empty/already-consumed slot
+            if (nowUs - e.timeUs > PENDING_REQUEST_TTL_US)
+                continue; // stale; a newer entry for the same prefix may still exist
+            if (e.prefix[0] == prefix[0] && e.prefix[1] == prefix[1]) {
+                const CommandSource src = e.source;
+                e.timeUs = 0; // consume
+                return src;
+            }
+        }
+        return std::nullopt;
     }
 } // namespace radio

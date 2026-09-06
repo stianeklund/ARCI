@@ -40,6 +40,11 @@ using radio::TestRadioManager;
 namespace {
     MockSerialHandler mockRadioSerial;
     MockSerialHandler mockUsbSerial;
+    // Only used by test_error_reply_routes_to_requesting_interface (Fix 9) to
+    // prove an error reply reaches the CDC1 client that sent the offending
+    // command rather than always landing on CDC0. Registered with
+    // testRadioManager->setUsbCdc1Serial() only for the duration of that test.
+    MockSerialHandler mockCdc1Serial;
     TestRadioManager *testRadioManager = nullptr;
     bool isInitialized = false;
 
@@ -2102,6 +2107,192 @@ namespace {
         tearDownTestRadioManager();
     }
 
+    // ============== FIX 7: ORIGIN TABLE ONE-SHOT CONSUMPTION ==============
+
+    // Test: routeMatchedAnswerWithSource() must consume the origin slot on its
+    // first match. Before this fix, an AI0 client's cold-cache query stayed
+    // "matched" for the full ORIGIN_TTL_US window, so every further answer with
+    // the same prefix (e.g. the display re-polling) was also delivered to that
+    // client even though it never asked again.
+    void test_origin_consumed_after_first_matched_answer() {
+        setUpTestRadioManager();
+        testRadioManager->clearCommandCache();
+        mockUsbSerial.sentMessages.clear();
+
+        // Manually record the origin (mirrors test_query_origin_rejects_hash_collision
+        // above) using a real "now" so the subsequent full dispatch round-trips
+        // (which stamp their own esp_timer_get_time()) fall inside ORIGIN_TTL_US.
+        const uint64_t now = esp_timer_get_time();
+        testRadioManager->noteQueryOrigin("SC", radio::CommandSource::UsbCdc0, now);
+
+        // First remote answer: strict pairing must route it to CDC0. CDC0's AI
+        // mode defaults to 0 and no real SC; query was issued from CDC0, so the
+        // ordinary AI-forwarding policy (localQueryTracker) would NOT deliver
+        // this on its own -- only the manually-recorded origin can.
+        testRadioManager->getRemoteCATHandler().parseMessage("SC0;");
+        const int firstCount = static_cast<int>(std::count(mockUsbSerial.sentMessages.begin(),
+                                                             mockUsbSerial.sentMessages.end(),
+                                                             std::string("SC0;")));
+        TEST_ASSERT_EQUAL_MESSAGE(1, firstCount, "First matched answer must reach CDC0 via strict pairing");
+
+        // Assert the mechanism directly, not just the end-to-end symptom:
+        // ForwardingPolicy has its own dedup (identical repeated SC0; values)
+        // that could independently swallow the second dispatch below and make
+        // this test pass even without the Fix 7 CAS. Calling
+        // routeMatchedAnswerWithSource() again proves the origin slot itself
+        // is gone.
+        const auto reMatch = testRadioManager->routeMatchedAnswerWithSource("SC", "SC0;", esp_timer_get_time());
+        TEST_ASSERT_FALSE_MESSAGE(reMatch.has_value(), "Origin slot must be consumed by the first match");
+
+        // Second identical remote answer, still within ORIGIN_TTL_US: the origin
+        // slot must already be consumed, so this must NOT reach CDC0 again.
+        mockUsbSerial.sentMessages.clear();
+        testRadioManager->getRemoteCATHandler().parseMessage("SC0;");
+        const bool foundSecond = std::find(mockUsbSerial.sentMessages.begin(), mockUsbSerial.sentMessages.end(),
+                                            std::string("SC0;")) != mockUsbSerial.sentMessages.end();
+        TEST_ASSERT_FALSE_MESSAGE(foundSecond,
+            "Origin slot must be consumed after first match; a second answer must not be re-routed to CDC0");
+        tearDownTestRadioManager();
+    }
+
+    // Test: a burst of same-prefix queries from the same source before any
+    // answer arrives (e.g. an AI0 client sending EX001;EX002;EX003; back to
+    // back) must each get their own answer delivered -- noteQueryOrigin's
+    // burst-accumulation path is what lets this differ from the single-query
+    // one-shot case above.
+    void test_origin_pending_count_delivers_each_answer_in_burst() {
+        setUpTestRadioManager();
+        testRadioManager->clearCommandCache();
+        mockUsbSerial.sentMessages.clear();
+
+        const uint64_t now = esp_timer_get_time();
+        // Three queued queries for the same prefix from the same source,
+        // mirroring three EX; reads sent back to back before any answer came in.
+        testRadioManager->noteQueryOrigin("EX", radio::CommandSource::UsbCdc0, now);
+        testRadioManager->noteQueryOrigin("EX", radio::CommandSource::UsbCdc0, now);
+        testRadioManager->noteQueryOrigin("EX", radio::CommandSource::UsbCdc0, now);
+
+        // Three matching answers arrive (same EX answer format used by
+        // test_forward_EX_query_response above); each must be routed to CDC0.
+        testRadioManager->getRemoteCATHandler().parseMessage("EX006000005;");
+        testRadioManager->getRemoteCATHandler().parseMessage("EX006000005;");
+        testRadioManager->getRemoteCATHandler().parseMessage("EX006000005;");
+
+        const int deliveredCount = static_cast<int>(std::count(mockUsbSerial.sentMessages.begin(),
+                                                                 mockUsbSerial.sentMessages.end(),
+                                                                 std::string("EX006000005;")));
+        TEST_ASSERT_EQUAL_MESSAGE(3, deliveredCount,
+            "All three queued queries from the same source must each get an answer delivered");
+
+        // The pending count must have reached 0 and released the slot: a
+        // fourth match (no corresponding fourth query) must miss.
+        const auto reMatch =
+            testRadioManager->routeMatchedAnswerWithSource("EX", "EX006000005;", esp_timer_get_time());
+        TEST_ASSERT_FALSE_MESSAGE(reMatch.has_value(),
+            "Origin slot must be released once the pending count reaches 0 after the third match");
+        tearDownTestRadioManager();
+    }
+
+    // ============== FIX 8: LIGHTQUERYTRACKER SLOT COLLISIONS ==============
+
+    // Test: "VD" and "MD" collide on cmdHash(cmd) % 16 (both land on the same
+    // slot under direct indexing), so recording one used to silently overwrite
+    // the other's pending query. The linear-scan tracker must keep both.
+    void test_light_query_tracker_no_collision_between_vd_and_md() {
+        radio::RadioState::InterfaceForwardState::LightQueryTracker tracker;
+        const uint64_t t = 1000;
+
+        tracker.recordQuery("VD", t);
+        tracker.recordQuery("MD", t);
+        TEST_ASSERT_TRUE_MESSAGE(tracker.wasRecentlyQueried("VD", t),
+            "VD entry must survive recording MD (no slot collision)");
+        TEST_ASSERT_TRUE_MESSAGE(tracker.wasRecentlyQueried("MD", t),
+            "MD entry must be recorded");
+
+        tracker.invalidate("MD");
+        TEST_ASSERT_TRUE_MESSAGE(tracker.wasRecentlyQueried("VD", t),
+            "Invalidating MD must not affect VD's slot");
+        TEST_ASSERT_FALSE_MESSAGE(tracker.wasRecentlyQueried("MD", t),
+            "MD must be invalidated");
+    }
+
+    // Test: once all 16 slots hold live (unexpired) entries, recording a 17th
+    // distinct prefix must evict the globally oldest entry and keep the other 16.
+    void test_light_query_tracker_saturation_overwrites_oldest() {
+        radio::RadioState::InterfaceForwardState::LightQueryTracker tracker;
+        static const char* const prefixes[] = {
+            "AA", "AB", "AC", "AD", "AE", "AF", "AG", "AH",
+            "AI", "AJ", "AK", "AL", "AM", "AN", "AO", "AP", "AQ"
+        };
+        const uint64_t base = 1000;
+        for (int i = 0; i < 17; ++i) {
+            tracker.recordQuery(prefixes[i], base + static_cast<uint64_t>(i));
+        }
+
+        TEST_ASSERT_FALSE_MESSAGE(tracker.wasRecentlyQueried("AA", base + 16),
+            "Oldest entry must be evicted once the tracker saturates with 17 distinct prefixes");
+        for (int i = 1; i < 17; ++i) {
+            TEST_ASSERT_TRUE_MESSAGE(tracker.wasRecentlyQueried(prefixes[i], base + 16),
+                "The 16 most recently recorded entries must all still be present after saturation");
+        }
+    }
+
+    // ============== FIX 9: ERROR REPLIES ROUTE TO THE REQUESTING INTERFACE ==============
+
+    // Test: a Set/Read from CDC1 that elicits a radio '?;' must have that '?;'
+    // routed back to CDC1, not CDC0. Drives the flow through a second CATHandler
+    // wired to CommandSource::UsbCdc1 (the shared test harness otherwise only
+    // exposes a CDC0 local handler), with a dedicated mock serial registered via
+    // RadioManager::setUsbCdc1Serial so the destination is observable and
+    // distinguishable from CDC0's mock.
+    void test_error_reply_routes_to_requesting_interface() {
+        setUpTestRadioManager();
+        testRadioManager->clearCommandCache();
+        mockRadioSerial.sentMessages.clear();
+        mockUsbSerial.sentMessages.clear();
+        mockCdc1Serial.clearSentMessages();
+        testRadioManager->setUsbCdc1Serial(&mockCdc1Serial);
+
+        radio::CATHandler cdc1Handler(testRadioManager->getCommandDispatcher(), *testRadioManager,
+                                      mockRadioSerial, mockCdc1Serial, radio::CommandSource::UsbCdc1);
+
+        // CDC1 sends SC; (scan query) -- forwarded to the radio like any local read.
+        cdc1Handler.parseMessage("SC;");
+        bool sentToRadio = false;
+        for (const auto& msg : mockRadioSerial.sentMessages) {
+            if (msg.find("SC") != std::string::npos) {
+                sentToRadio = true;
+                break;
+            }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(sentToRadio, "SC; from CDC1 should be forwarded to radio");
+
+        // Radio rejects with ?; -- must be routed back to CDC1, not CDC0.
+        mockUsbSerial.sentMessages.clear();
+        mockCdc1Serial.clearSentMessages();
+        testRadioManager->getRemoteCATHandler().parseMessage("?;");
+
+        bool foundOnCdc1 = false;
+        for (const auto& msg : mockCdc1Serial.sentMessages) {
+            if (msg == "?;") {
+                foundOnCdc1 = true;
+                break;
+            }
+        }
+        bool foundOnCdc0 = false;
+        for (const auto& msg : mockUsbSerial.sentMessages) {
+            if (msg == "?;") {
+                foundOnCdc0 = true;
+                break;
+            }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(foundOnCdc1, "?; response to CDC1's SC query must reach CDC1");
+        TEST_ASSERT_FALSE_MESSAGE(foundOnCdc0, "?; response to CDC1's SC query must NOT leak to CDC0");
+
+        testRadioManager->setUsbCdc1Serial(nullptr);
+        tearDownTestRadioManager();
+    }
+
     // Test runner function
     extern "C" void run_radiomanager_cat_tests(void) {
         // Original basic tests
@@ -2231,6 +2422,13 @@ namespace {
         // Radio ?; forwarding tests
         RUN_TEST(test_MR_error_response_forwarded_to_CDC0);
         RUN_TEST(test_unsolicited_error_suppressed);
+
+        // Fix 7/8/9 regression tests
+        RUN_TEST(test_origin_consumed_after_first_matched_answer);
+        RUN_TEST(test_origin_pending_count_delivers_each_answer_in_burst);
+        RUN_TEST(test_light_query_tracker_no_collision_between_vd_and_md);
+        RUN_TEST(test_light_query_tracker_saturation_overwrites_oldest);
+        RUN_TEST(test_error_reply_routes_to_requesting_interface);
 
         cleanupSharedRadioManager();
     }

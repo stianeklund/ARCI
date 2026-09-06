@@ -256,6 +256,43 @@ void test_high_traffic_queue_behavior(void) {
              commands.size(), remainingCount);
 }
 
+// Fix 12 regression: a frame that overflows the 64-byte accumulator without a
+// terminator in one chunk sets m_discardUntilTerminator, so every byte of the
+// next chunk (the garbage remainder of that oversized frame) is skipped until
+// the next ';' resyncs - it must never be parsed as a fresh, valid command.
+void test_oversized_frame_suffix_not_parsed_as_command(void) {
+    TEST_ASSERT_NOT_NULL(testHandler);
+
+    // Overflow the accumulator: 64 bytes, no terminator in this chunk.
+    const std::string overflow(SerialHandler::MAX_MESSAGE_LENGTH, 'A');
+    testHandler->processReceivedData(
+        reinterpret_cast<const uint8_t*>(overflow.c_str()),
+        overflow.length()
+    );
+    TEST_ASSERT_FALSE(testHandler->hasMessage());
+
+    // The garbage suffix of the discarded frame must not be parsed as TX1.
+    const std::string suffix = "TX1;";
+    testHandler->processReceivedData(
+        reinterpret_cast<const uint8_t*>(suffix.c_str()),
+        suffix.length()
+    );
+    TEST_ASSERT_FALSE(testHandler->hasMessage());
+
+    // A real frame arriving after the discarding ';' must parse normally.
+    const std::string realFrame = "FA00014074000;";
+    testHandler->processReceivedData(
+        reinterpret_cast<const uint8_t*>(realFrame.c_str()),
+        realFrame.length()
+    );
+    TEST_ASSERT_TRUE(testHandler->hasMessage());
+    auto [status, message] = testHandler->getMessage();
+    TEST_ASSERT_EQUAL(ESP_OK, status);
+    TEST_ASSERT_EQUAL_STRING(realFrame.c_str(), message.c_str());
+    TEST_ASSERT_FALSE(testHandler->hasMessage());
+    ESP_LOGI(TAG, "Oversized frame suffix correctly discarded, real frame preserved: %s", message.c_str());
+}
+
 // Unity's global setUp()/tearDown() are no-ops here, so each test explicitly
 // brackets itself with the queue fixture to get a fresh handler + empty queue.
 #define RUN_QUEUE_TEST(fn) \
@@ -269,6 +306,7 @@ void run_serial_handler_queue_tests(void) {
     RUN_QUEUE_TEST(test_fresh_messages_not_cleared);
     RUN_QUEUE_TEST(test_mixed_age_message_clearing);
     RUN_QUEUE_TEST(test_high_traffic_queue_behavior);
+    RUN_QUEUE_TEST(test_oversized_frame_suffix_not_parsed_as_command);
 }
 
 } // extern "C"

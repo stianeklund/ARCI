@@ -9,6 +9,7 @@
 #include <atomic>
 #include <array>
 #include <cstring>
+#include <optional>
 #include "rtos_mutex.h"
 
 class ISerialChannel;
@@ -318,6 +319,32 @@ private:
     std::array<ICommandHandler*, HASH_TABLE_SIZE> commandMap_{};  // Zero-initialized
     DispatcherStatistics stats_;
     mutable RtosMutex statsMutex_;  // Protects only the non-atomic error/timing/string fields of stats_ (counters are atomic)
+
+    // Small ring of recently-sent local (CAT-client) requests, used to route the
+    // radio's '?;' / 'E;' / 'O;' error replies back to the interface that actually
+    // sent the offending command instead of always assuming CDC0. Populated in
+    // dispatchCommand for every local Set/Read that reaches the radio
+    // (command.shouldSendToRadio()); Display/Panel/Macro sources are never
+    // recorded, since they are not USB/TCP CAT-client destinations. Protected by
+    // statsMutex_ (already the small-scope mutex guarding the adjacent
+    // error/timing fields, so no dedicated mutex is introduced).
+    struct PendingLocalRequest {
+        char prefix[2]{0, 0};
+        CommandSource source{CommandSource::UsbCdc0};
+        uint64_t timeUs{0}; // 0 == empty/consumed slot
+    };
+    static constexpr size_t PENDING_REQUEST_RING_SIZE = 8;
+    static constexpr uint64_t PENDING_REQUEST_TTL_US = 2'000'000; // 2s association window
+    std::array<PendingLocalRequest, PENDING_REQUEST_RING_SIZE> pendingRequests_{}; // guarded by statsMutex_
+    size_t pendingRequestWriteIdx_ = 0; // next slot to write; guarded by statsMutex_
+
+    // Records that a 2-char command `prefix` was just sent to the radio on
+    // behalf of `source`, so a later error reply can be routed back to it.
+    void recordPendingLocalRequest(std::string_view prefix, CommandSource source, uint64_t nowUs);
+
+    // Scans the ring newest-first for an unconsumed, unexpired entry matching
+    // `prefix`. On a hit, consumes (removes) that entry and returns its source.
+    std::optional<CommandSource> findAndConsumePendingRequest(std::string_view prefix, uint64_t nowUs);
 
     static constexpr const char* TAG = "CommandDispatcher";
 };

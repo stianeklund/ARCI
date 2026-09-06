@@ -517,15 +517,13 @@ namespace radio
         {
             if (command.isCatClient())
             {
-                // Return default speech processor state (off)
-                respondToSource(command, buildCommand("PR", "0"), usbSerial, radioManager);
+                // Respond from cached speech processor state (PRP1; P1: 0=OFF, 1=ON)
+                const bool processorOn = radioManager.getState().processor.load() != 0;
+                respondToSource(command, buildCommand("PR", processorOn ? "1" : "0"), usbSerial, radioManager);
             }
             else if (shouldSendToRadio(command))
             {
-                if (command.isCatClient())
-                {
-                    radioManager.getState().queryTracker.recordQuery("PR", esp_timer_get_time());
-                }
+                radioManager.getState().queryTracker.recordQuery("PR", esp_timer_get_time());
                 sendToRadio(radioSerial, buildCommand("PR"));
             }
             return true;
@@ -648,26 +646,32 @@ namespace radio
 
         if (command.type == CommandType::Answer)
         {
-            // Parse response and update state
-            std::string paramStr = getStringParam(command, 0);
-            if (paramStr.length() == 6)
+            // CatParser splits "PL050060;" into two 3-digit params ("050", "060"), not a
+            // single 6-digit param, so parse them individually rather than expecting a
+            // length-6 combined string.
+            if (command.paramSize() >= 2)
             {
-                const auto inLevel = cat::ParserUtils::parseNumber<int>(std::string_view(paramStr).substr(0, 3));
-                const auto outLevel = cat::ParserUtils::parseNumber<int>(std::string_view(paramStr).substr(3, 3));
-                if (inLevel && outLevel)
+                const auto inLevel = cat::ParserUtils::parseNumber<int>(getStringParam(command, 0));
+                const auto outLevel = cat::ParserUtils::parseNumber<int>(getStringParam(command, 1));
+                if (inLevel && outLevel && *inLevel >= 0 && *inLevel <= 100 && *outLevel >= 0 && *outLevel <= 100)
                 {
                     state.speechProcessorInLevel = *inLevel;
                     state.speechProcessorOutLevel = *outLevel;
                 }
                 else
                 {
-                    ESP_LOGW(TAG, "PL answer: invalid levels '%s'", paramStr.c_str());
+                    ESP_LOGW(TAG, "PL answer: invalid levels '%s'", command.originalMessage.c_str());
                 }
             }
+            else
+            {
+                ESP_LOGW(TAG, "PL answer: expected 2 parameters, got %zu in '%s'", command.paramSize(),
+                         command.originalMessage.c_str());
+            }
 
-            // Use unified routing for PL answers
-            auto response = buildCommand("PL", paramStr);
-            routeAnswerResponse(command, response, usbSerial, radioManager);
+            // Forward the full original frame (e.g. "PL050060;") rather than reconstructing
+            // it from a single param, since the params are split in two.
+            routeAnswerResponse(command, command.originalMessage, usbSerial, radioManager);
             return true;
         }
 

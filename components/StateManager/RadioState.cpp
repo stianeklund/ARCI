@@ -34,7 +34,15 @@ namespace radio
 
         // Acquire TX ownership
         txOwner.store(static_cast<int>(source));
-        txActivationTime.store(currentTime);
+        // Only (re)stamp the activation time when ownership is actually changing or TX is
+        // newly going active. A same-owner re-acquire while TX is already active (e.g. the
+        // txTimeoutTask's periodic "IF;" poll confirming the existing owner is still
+        // transmitting) must preserve the original activation time, otherwise the 30s
+        // TX_TIMEOUT_US watchdog never elapses because it keeps getting reset.
+        if (ownershipChanged || txWasInactive)
+        {
+            txActivationTime.store(currentTime);
+        }
         isTx.store(true);
 
         // Only log INFO when ownership changes or TX goes from inactive to active
