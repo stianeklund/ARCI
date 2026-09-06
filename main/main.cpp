@@ -340,6 +340,8 @@ void initializeUsbCdc()
 
 // --- TASKS ---
 
+constexpr uint32_t INGRESS_DRAIN_BATCH = 32; // frames per pass before yielding so idle (and its watchdog) gets CPU under a flood
+
 [[noreturn]] static void usb_task(void *pvParameters)
 {
     ESP_LOGD(TAG, "USB task started");
@@ -360,35 +362,47 @@ void initializeUsbCdc()
         if (xSemaphoreTake(g_usbMessageReadySem, WDT_TIMEOUT_TICKS) == pdTRUE)
         {
             // Event-driven: callback fired, drain all available data
-            while (true)
+            bool moreData = true;
+            while (moreData)
             {
-                // Feed the WDT inside the drain loop so a sustained flood can't
-                // starve the top-of-loop reset and trip the watchdog spuriously.
+                // Feeding the WDT here covers this task; the batch cap plus
+                // one-tick yield below is what keeps the idle task (also
+                // monitored by the TWDT) scheduled under sustained ingress.
                 esp_task_wdt_reset();
-                const auto messageResult = usbSerial.getMessageView();
-                if (messageResult.first != ESP_OK || messageResult.second.empty())
+                uint32_t processed = 0;
+                while (processed < INGRESS_DRAIN_BATCH)
                 {
-                    break; // no more data in CDC ring
-                }
-                ESP_LOGV(TAG, "USB message received: %.*s", static_cast<int>(messageResult.second.length()),
-                         messageResult.second.data());
-                // dispatchMessage internally uses dispatchMutex_ for serialization - no global mutex needed.
-                // On lock timeout, reply "?;" so the host sees a defined CAT error instead of silence.
-                if (radioManager.dispatchMessageEx(radioManager.getLocalCATHandler(), messageResult.second) ==
-                    radio::DispatchOutcome::LockTimeout)
-                {
-                    usbSerial.sendMessage("?;");
-                }
-
-                // Periodic stack watermark monitoring
-                if (++messageCount % STACK_CHECK_INTERVAL == 0)
-                {
-                    const UBaseType_t watermark = uxTaskGetStackHighWaterMark(NULL);
-                    if (watermark < STACK_LOW_THRESHOLD)
+                    const auto messageResult = usbSerial.getMessageView();
+                    if (messageResult.first != ESP_OK || messageResult.second.empty())
                     {
-                        ESP_LOGW(TAG, "⚠️ usb_task stack low: %u bytes free (consider increasing stack size)", watermark);
+                        moreData = false; // no more data in CDC ring
+                        break;
                     }
-                    ESP_LOGD(TAG, "usb_task stack watermark: %u bytes free", watermark);
+                    ++processed;
+                    ESP_LOGV(TAG, "USB message received: %.*s", static_cast<int>(messageResult.second.length()),
+                             messageResult.second.data());
+                    // dispatchMessage internally uses dispatchMutex_ for serialization - no global mutex needed.
+                    // On lock timeout, reply "?;" so the host sees a defined CAT error instead of silence.
+                    if (radioManager.dispatchMessageEx(radioManager.getLocalCATHandler(), messageResult.second) ==
+                        radio::DispatchOutcome::LockTimeout)
+                    {
+                        usbSerial.sendMessage("?;");
+                    }
+
+                    // Periodic stack watermark monitoring
+                    if (++messageCount % STACK_CHECK_INTERVAL == 0)
+                    {
+                        const UBaseType_t watermark = uxTaskGetStackHighWaterMark(NULL);
+                        if (watermark < STACK_LOW_THRESHOLD)
+                        {
+                            ESP_LOGW(TAG, "⚠️ usb_task stack low: %u bytes free (consider increasing stack size)", watermark);
+                        }
+                        ESP_LOGD(TAG, "usb_task stack watermark: %u bytes free", watermark);
+                    }
+                }
+                if (moreData)
+                {
+                    vTaskDelay(1); // give idle/lower-priority tasks a tick before the next batch
                 }
             }
         }
@@ -415,38 +429,50 @@ void initializeUsbCdc()
         if (xSemaphoreTake(g_usb2MessageReadySem, WDT_TIMEOUT_TICKS) == pdTRUE)
         {
             // Event-driven: callback fired, drain all available data (quiet logs)
-            while (true)
+            bool moreData = true;
+            while (moreData)
             {
-                // Feed the WDT inside the drain loop so a sustained flood can't
-                // starve the top-of-loop reset and trip the watchdog spuriously.
+                // Feeding the WDT here covers this task; the batch cap plus
+                // one-tick yield below is what keeps the idle task (also
+                // monitored by the TWDT) scheduled under sustained ingress.
                 esp_task_wdt_reset();
-                const auto messageResult = usb2Serial.getMessageView();
-                if (messageResult.first != ESP_OK || messageResult.second.empty())
+                uint32_t processed = 0;
+                while (processed < INGRESS_DRAIN_BATCH)
                 {
-                    break; // no more data in CDC ring
-                }
-                ESP_LOGV(TAG, "USB2 message received: %.*s", static_cast<int>(messageResult.second.length()),
-                         messageResult.second.data());
-                // dispatchMessage internally uses dispatchMutex_ for serialization - no global mutex needed.
-                // On lock timeout, reply "?;" so the host sees a defined CAT error instead of silence.
-                if (usb2CatHandler)
-                {
-                    if (radioManager.dispatchMessageEx(*usb2CatHandler, messageResult.second) ==
-                        radio::DispatchOutcome::LockTimeout)
+                    const auto messageResult = usb2Serial.getMessageView();
+                    if (messageResult.first != ESP_OK || messageResult.second.empty())
                     {
-                        usb2Serial.sendMessage("?;");
+                        moreData = false; // no more data in CDC ring
+                        break;
                     }
-                }
+                    ++processed;
+                    ESP_LOGV(TAG, "USB2 message received: %.*s", static_cast<int>(messageResult.second.length()),
+                             messageResult.second.data());
+                    // dispatchMessage internally uses dispatchMutex_ for serialization - no global mutex needed.
+                    // On lock timeout, reply "?;" so the host sees a defined CAT error instead of silence.
+                    if (usb2CatHandler)
+                    {
+                        if (radioManager.dispatchMessageEx(*usb2CatHandler, messageResult.second) ==
+                            radio::DispatchOutcome::LockTimeout)
+                        {
+                            usb2Serial.sendMessage("?;");
+                        }
+                    }
 
-                // Periodic stack watermark monitoring
-                if (++messageCount % STACK_CHECK_INTERVAL == 0)
-                {
-                    const UBaseType_t watermark = uxTaskGetStackHighWaterMark(NULL);
-                    if (watermark < STACK_LOW_THRESHOLD)
+                    // Periodic stack watermark monitoring
+                    if (++messageCount % STACK_CHECK_INTERVAL == 0)
                     {
-                        ESP_LOGW(TAG, "⚠️ usb2_task stack low: %u bytes free (consider increasing stack size)", watermark);
+                        const UBaseType_t watermark = uxTaskGetStackHighWaterMark(NULL);
+                        if (watermark < STACK_LOW_THRESHOLD)
+                        {
+                            ESP_LOGW(TAG, "⚠️ usb2_task stack low: %u bytes free (consider increasing stack size)", watermark);
+                        }
+                        ESP_LOGD(TAG, "usb2_task stack watermark: %u bytes free", watermark);
                     }
-                    ESP_LOGD(TAG, "usb2_task stack watermark: %u bytes free", watermark);
+                }
+                if (moreData)
+                {
+                    vTaskDelay(1); // give idle/lower-priority tasks a tick before the next batch
                 }
             }
         }
@@ -468,73 +494,89 @@ void initializeUsbCdc()
 
         if (xSemaphoreTake(g_radioMessageReadySem, WDT_TIMEOUT_TICKS) == pdTRUE)
         {
-            while (radioSerial.hasMessage())
+            bool moreData = true;
+            while (moreData)
             {
-                // Feed the WDT inside the drain loop so a sustained flood can't
-                // starve the top-of-loop reset and trip the watchdog spuriously.
+                // Feeding the WDT here covers this task; the batch cap plus
+                // one-tick yield below is what keeps the idle task (also
+                // monitored by the TWDT) scheduled under sustained ingress.
                 esp_task_wdt_reset();
-                const auto messageResult = radioSerial.getMessageView();
-                if (messageResult.first != ESP_OK || messageResult.second.empty())
+                uint32_t processed = 0;
+                while (processed < INGRESS_DRAIN_BATCH)
                 {
-                    continue;
-                }
+                    if (!radioSerial.hasMessage())
+                    {
+                        moreData = false;
+                        break;
+                    }
+                    const auto messageResult = radioSerial.getMessageView();
+                    if (messageResult.first != ESP_OK || messageResult.second.empty())
+                    {
+                        continue;
+                    }
+                    ++processed;
 
-                ESP_LOGV(TAG, "📻 Radio: '%.*s'", static_cast<int>(messageResult.second.length()),
-                         messageResult.second.data());
+                    ESP_LOGV(TAG, "📻 Radio: '%.*s'", static_cast<int>(messageResult.second.length()),
+                             messageResult.second.data());
 
-                // Dispatch to command handlers. Unlike client interfaces, a dropped radio
-                // answer means our cached state silently misses an update, so retry once
-                // on lock timeout before falling back to raw forwarding.
-                // (messageResult.second stays valid across the delay: getMessageView copies
-                // into a consumer-owned buffer that is only overwritten on the next call.)
-                auto outcome =
-                    radioManager.dispatchMessageEx(radioManager.getRemoteCATHandler(), messageResult.second);
-                if (outcome == radio::DispatchOutcome::LockTimeout)
-                {
-                    vTaskDelay(pdMS_TO_TICKS(15));
-                    outcome =
+                    // Dispatch to command handlers. Unlike client interfaces, a dropped radio
+                    // answer means our cached state silently misses an update, so retry once
+                    // on lock timeout before falling back to raw forwarding.
+                    // (messageResult.second stays valid across the delay: getMessageView copies
+                    // into a consumer-owned buffer that is only overwritten on the next call.)
+                    auto outcome =
                         radioManager.dispatchMessageEx(radioManager.getRemoteCATHandler(), messageResult.second);
                     if (outcome == radio::DispatchOutcome::LockTimeout)
                     {
-                        ESP_LOGW(TAG, "⚠️ Radio answer not state-processed (dispatch lock timeout), forwarding raw: "
-                                      "%.*s",
-                                 static_cast<int>(messageResult.second.length()), messageResult.second.data());
-                    }
-                }
-                const bool wasHandled = (outcome == radio::DispatchOutcome::Handled);
-
-                // Forward to USB if not handled by a command handler
-                if (!wasHandled && radioManager.shouldForwardToUSB(messageResult.second))
-                {
-                    usbSerial.sendMessage(messageResult.second);
-                }
-
-                // Forward to Display (tuning suppression handled by ForwardingPolicy)
-                if (!wasHandled && radioManager.shouldForwardToDisplay(messageResult.second))
-                {
-                    // Block bare query commands (3 chars like "FA;") except RX/TX status notifications
-                    const bool isStatusNotification =
-                        messageResult.second.size() >= 2 &&
-                        ((messageResult.second[0] == 'R' && messageResult.second[1] == 'X') ||
-                         (messageResult.second[0] == 'T' && messageResult.second[1] == 'X'));
-                    const bool isBareQuery = messageResult.second.length() == 3 &&
-                                              messageResult.second[2] == ';' &&
-                                              !isStatusNotification;
-
-                    if (!isBareQuery)
-                    {
-                        const esp_err_t sendResult = displaySerial.sendMessage(messageResult.second);
-                        if (sendResult != ESP_OK)
+                        vTaskDelay(pdMS_TO_TICKS(15));
+                        outcome =
+                            radioManager.dispatchMessageEx(radioManager.getRemoteCATHandler(), messageResult.second);
+                        if (outcome == radio::DispatchOutcome::LockTimeout)
                         {
-                            ESP_LOGW(TAG, "Display forward failed (%s)", esp_err_to_name(sendResult));
-                            // This path writes displaySerial directly (bypassing
-                            // RadioManager::sendToDisplay), so the dedup commit made by
-                            // shouldForwardToDisplay() above must be undone here too --
-                            // otherwise a delivery failure permanently suppresses the
-                            // next identical value (see ForwardingPolicy::invalidateDedup).
-                            radioManager.onDisplayForwardFailed(messageResult.second);
+                            ESP_LOGW(TAG, "⚠️ Radio answer not state-processed (dispatch lock timeout), forwarding raw: "
+                                          "%.*s",
+                                     static_cast<int>(messageResult.second.length()), messageResult.second.data());
                         }
                     }
+                    const bool wasHandled = (outcome == radio::DispatchOutcome::Handled);
+
+                    // Forward to USB if not handled by a command handler
+                    if (!wasHandled && radioManager.shouldForwardToUSB(messageResult.second))
+                    {
+                        usbSerial.sendMessage(messageResult.second);
+                    }
+
+                    // Forward to Display (tuning suppression handled by ForwardingPolicy)
+                    if (!wasHandled && radioManager.shouldForwardToDisplay(messageResult.second))
+                    {
+                        // Block bare query commands (3 chars like "FA;") except RX/TX status notifications
+                        const bool isStatusNotification =
+                            messageResult.second.size() >= 2 &&
+                            ((messageResult.second[0] == 'R' && messageResult.second[1] == 'X') ||
+                             (messageResult.second[0] == 'T' && messageResult.second[1] == 'X'));
+                        const bool isBareQuery = messageResult.second.length() == 3 &&
+                                                  messageResult.second[2] == ';' &&
+                                                  !isStatusNotification;
+
+                        if (!isBareQuery)
+                        {
+                            const esp_err_t sendResult = displaySerial.sendMessage(messageResult.second);
+                            if (sendResult != ESP_OK)
+                            {
+                                ESP_LOGW(TAG, "Display forward failed (%s)", esp_err_to_name(sendResult));
+                                // This path writes displaySerial directly (bypassing
+                                // RadioManager::sendToDisplay), so the dedup commit made by
+                                // shouldForwardToDisplay() above must be undone here too --
+                                // otherwise a delivery failure permanently suppresses the
+                                // next identical value (see ForwardingPolicy::invalidateDedup).
+                                radioManager.onDisplayForwardFailed(messageResult.second);
+                            }
+                        }
+                    }
+                }
+                if (moreData)
+                {
+                    vTaskDelay(1); // give idle/lower-priority tasks a tick before the next batch
                 }
             }
         }
@@ -557,63 +599,79 @@ void initializeUsbCdc()
         // Wait for a message from the display with timeout for WDT
         if (xSemaphoreTake(g_displayMessageReadySem, WDT_TIMEOUT_TICKS) == pdTRUE)
         {
-            while (displaySerial.hasMessage())
+            bool moreData = true;
+            while (moreData)
             {
-                // Feed the WDT inside the drain loop so a sustained flood can't
-                // starve the top-of-loop reset and trip the watchdog spuriously.
+                // Feeding the WDT here covers this task; the batch cap plus
+                // one-tick yield below is what keeps the idle task (also
+                // monitored by the TWDT) scheduled under sustained ingress.
                 esp_task_wdt_reset();
-                const auto [fst, snd] = displaySerial.getMessageView();
-                if (fst != ESP_OK || snd.empty())
+                uint32_t processed = 0;
+                while (processed < INGRESS_DRAIN_BATCH)
                 {
-                    continue;
-                }
-
-                ESP_LOGD(TAG, "📺 Display message received: '%.*s'", static_cast<int>(snd.length()),
-                         snd.data());
-
-                // Handle display status responses (UIPS/UIPT) before standard CAT dispatch
-                if (snd.length() >= 5 && snd[0] == 'U' && snd[1] == 'I')
-                {
-                    if (snd[2] == 'P' && snd[3] == 'S' && snd.length() >= 6)
+                    if (!displaySerial.hasMessage())
                     {
-                        // UIPS<n>; - Display awake state (0=asleep, 1=awake)
-                        const bool awake = (snd[4] == '1');
-                        radioManager.setDisplayAwake(awake);
-                        continue; // Don't forward to CAT dispatcher
+                        moreData = false;
+                        break;
                     }
-                    else if (snd[2] == 'P' && snd[3] == 'T' && snd.length() >= 6)
+                    const auto [fst, snd] = displaySerial.getMessageView();
+                    if (fst != ESP_OK || snd.empty())
                     {
-                        // UIPT<n>; - Display screensaver timeout in minutes
-                        // Parse number (could be 0, 5, 10, 15, 30)
-                        int timeout = 0;
-                        for (size_t i = 4; i < snd.length() && snd[i] != ';'; ++i)
+                        continue;
+                    }
+                    ++processed;
+
+                    ESP_LOGD(TAG, "📺 Display message received: '%.*s'", static_cast<int>(snd.length()),
+                             snd.data());
+
+                    // Handle display status responses (UIPS/UIPT) before standard CAT dispatch
+                    if (snd.length() >= 5 && snd[0] == 'U' && snd[1] == 'I')
+                    {
+                        if (snd[2] == 'P' && snd[3] == 'S' && snd.length() >= 6)
                         {
-                            if (snd[i] >= '0' && snd[i] <= '9')
-                                timeout = timeout * 10 + (snd[i] - '0');
+                            // UIPS<n>; - Display awake state (0=asleep, 1=awake)
+                            const bool awake = (snd[4] == '1');
+                            radioManager.setDisplayAwake(awake);
+                            continue; // Don't forward to CAT dispatcher
                         }
-                        radioManager.setDisplayScreensaverTimeout(static_cast<uint8_t>(timeout));
-                        continue; // Don't forward to CAT dispatcher
+                        else if (snd[2] == 'P' && snd[3] == 'T' && snd.length() >= 6)
+                        {
+                            // UIPT<n>; - Display screensaver timeout in minutes
+                            // Parse number (could be 0, 5, 10, 15, 30)
+                            int timeout = 0;
+                            for (size_t i = 4; i < snd.length() && snd[i] != ';'; ++i)
+                            {
+                                if (snd[i] >= '0' && snd[i] <= '9')
+                                    timeout = timeout * 10 + (snd[i] - '0');
+                            }
+                            radioManager.setDisplayScreensaverTimeout(static_cast<uint8_t>(timeout));
+                            continue; // Don't forward to CAT dispatcher
+                        }
                     }
-                }
 
-                // dispatchMessage internally uses dispatchMutex_ for serialization - no global mutex needed.
-                // Display messages have no raw-forward fallback; retry once on lock timeout,
-                // then log a WARNING so the drop is visible instead of silent.
-                // (snd stays valid across the delay: getMessageView copies into a
-                // consumer-owned buffer only overwritten on the next call.)
-                if (displayCatHandler)
-                {
-                    auto outcome = radioManager.dispatchMessageEx(*displayCatHandler, snd);
-                    if (outcome == radio::DispatchOutcome::LockTimeout)
+                    // dispatchMessage internally uses dispatchMutex_ for serialization - no global mutex needed.
+                    // Display messages have no raw-forward fallback; retry once on lock timeout,
+                    // then log a WARNING so the drop is visible instead of silent.
+                    // (snd stays valid across the delay: getMessageView copies into a
+                    // consumer-owned buffer only overwritten on the next call.)
+                    if (displayCatHandler)
                     {
-                        vTaskDelay(pdMS_TO_TICKS(15));
-                        outcome = radioManager.dispatchMessageEx(*displayCatHandler, snd);
+                        auto outcome = radioManager.dispatchMessageEx(*displayCatHandler, snd);
                         if (outcome == radio::DispatchOutcome::LockTimeout)
                         {
-                            ESP_LOGW(TAG, "⚠️ Display message not processed (dispatch lock timeout): %.*s",
-                                     static_cast<int>(snd.length()), snd.data());
+                            vTaskDelay(pdMS_TO_TICKS(15));
+                            outcome = radioManager.dispatchMessageEx(*displayCatHandler, snd);
+                            if (outcome == radio::DispatchOutcome::LockTimeout)
+                            {
+                                ESP_LOGW(TAG, "⚠️ Display message not processed (dispatch lock timeout): %.*s",
+                                         static_cast<int>(snd.length()), snd.data());
+                            }
                         }
                     }
+                }
+                if (moreData)
+                {
+                    vTaskDelay(1); // give idle/lower-priority tasks a tick before the next batch
                 }
             }
         }
