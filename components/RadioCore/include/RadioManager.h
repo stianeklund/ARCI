@@ -182,7 +182,8 @@ namespace radio
         /**
          * @brief Synchronize transverter-related menu settings with the radio on startup
          *
-         * Runs inline (contains paced vTaskDelay); safe only when NOT called under the
+         * Runs inline (may block waiting for radio-TX queue headroom via
+         * sendBackgroundRadioCommand); safe only when NOT called under the
          * dispatch lock (e.g. startup load-and-sync path).
          */
         void syncTransverterMenuSettings() const;
@@ -191,8 +192,8 @@ namespace radio
          * @brief Deferred variant of syncTransverterMenuSettings()
          *
          * Spawns a one-shot task to run the paced sync off the dispatch lock. Use this
-         * from CAT dispatch context (e.g. PS1 answer handling) so the inter-command
-         * delays never hold dispatchMutex_.
+         * from CAT dispatch context (e.g. PS1 answer handling) so the TX-queue
+         * headroom waits never hold dispatchMutex_.
          */
         void syncTransverterMenuSettingsAsync() const;
 
@@ -865,6 +866,39 @@ namespace radio
         // pacing and the UART write, off every lock. That keeps the aggregate rate bound
         // while restoring the no-sleep-under-lock invariant (commit 0ac2d8d).
         //
+        // Queue sizing and the background-producer backpressure helpers are protected
+        // (not private) so unit tests can reach them via TestRadioManager.
+    protected:
+        // Depth 64: the drainer's 10 ms min gap rounds up to 10-20 ms at a 100 Hz tick, so
+        // it drains ~50-100 cmds/s and a full queue is roughly 0.6-1.3 s of backlog. Sized
+        // for concurrent interactive producers (panel + USB/TCP clients via
+        // PacedRadioChannel); bulk background producers do not rely on depth, they wait for
+        // headroom via sendBackgroundRadioCommand.
+        static constexpr size_t RADIO_TX_QUEUE_DEPTH = 64;
+        // Slots bulk background producers (boot sequence, transverter menu sync) must
+        // leave free so interactive traffic (CAT clients, panel) is never dropped while
+        // a long background burst is in flight.
+        static constexpr size_t RADIO_TX_INTERACTIVE_RESERVE = 16;
+        static_assert(RADIO_TX_INTERACTIVE_RESERVE < RADIO_TX_QUEUE_DEPTH,
+                      "interactive reserve must leave room for background traffic");
+
+        // Pure headroom decision for background producers: true when enqueueing one
+        // more background command still leaves the interactive reserve free.
+        static constexpr bool hasBackgroundTxHeadroom(const size_t spacesAvailable)
+        {
+            return spacesAvailable > RADIO_TX_INTERACTIVE_RESERVE;
+        }
+
+        // sendRadioCommand for bulk background producers running in their own task.
+        // Blocks (1-tick vTaskDelay polls) until the queue has more than
+        // RADIO_TX_INTERACTIVE_RESERVE free slots, so the drainer sets the pace and the
+        // background burst never starves interactive traffic. Returns false without
+        // sending once the interface is powered off (traffic to the RRC-1258 after a
+        // user power-off wakes it back up), or when sendRadioCommand rejects/drops.
+        // Never call under dispatchMutex_.
+        bool sendBackgroundRadioCommand(std::string_view command) const;
+
+    private:
         // CAT frames are short; 64 matches SerialHandler::MAX_MESSAGE_LENGTH (the wire cap).
         static constexpr size_t RADIO_TX_CMD_MAX = 64;
         struct RadioTxItem
@@ -873,13 +907,6 @@ namespace radio
             uint8_t len;
             uint64_t enqueueUs; // esp_timer at enqueue; drainer reports enqueue->wire latency
         };
-        // Depth 64: at the 10 ms min gap (~100 cmds/s drain) this absorbs ~640 ms of burst
-        // backlog (e.g. the boot / EX-menu sync) before it must shed load. Doubled from the
-        // original 32 once PacedRadioChannel (see above) started routing every CAT handler's
-        // radio TX -- not just RadioManager's own internal sends -- through this one queue,
-        // widening the set of producers that can burst concurrently (panel + USB/TCP clients
-        // + boot sequence all landing here now instead of writing the UART inline).
-        static constexpr size_t RADIO_TX_QUEUE_DEPTH = 64;
         QueueHandle_t radioTxQueue_ = nullptr;
         StaticQueue_t radioTxQueueControl_{};                                   // static queue control block
         uint8_t radioTxQueueStorage_[RADIO_TX_QUEUE_DEPTH * sizeof(RadioTxItem)]{}; // static item storage

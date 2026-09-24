@@ -1198,6 +1198,22 @@ namespace radio
         return sendRadioCommand(std::string_view{command});
     }
 
+    bool RadioManager::sendBackgroundRadioCommand(const std::string_view command) const
+    {
+        // radioTxQueue_ is null in unit-test builds and after a failed queue creation;
+        // sendRadioCommand then writes inline, so there is no headroom to wait for.
+        while (radioTxQueue_ != nullptr && state_.powerOn.load() &&
+               !hasBackgroundTxHeadroom(uxQueueSpacesAvailable(radioTxQueue_)))
+        {
+            vTaskDelay(1); // the drainer frees a slot every 1-2 ticks
+        }
+        if (!state_.powerOn.load())
+        {
+            return false;
+        }
+        return sendRadioCommand(command);
+    }
+
     bool RadioManager::sendUrgentRadioCommand(const std::string_view command) const
     {
         if (!validateRadioCommand(command))
@@ -1366,56 +1382,72 @@ namespace radio
     {
         auto *self = static_cast<RadioManager *>(pvParameters);
 
-        // Send commands individually with delay to prevent radio buffer overflow.
-        // The TS-590SG can't process commands as fast as we can send them at 57600 baud,
-        // resulting in ?; errors when batched. Individual pacing ensures reliable sync.
-        // NOTE: this self-pacing is also required to stay within the radio-TX queue depth:
-        // this task enqueues ~135 commands, far more than RADIO_TX_QUEUE_DEPTH (32). The
-        // per-command delay keeps the enqueue rate at/below the drainer's drain rate so the
-        // queue never fills and no boot command is dropped. Do not remove it.
-        constexpr TickType_t INTER_COMMAND_DELAY_MS = 10;
+        // Pacing: the radio-TX drainer is the rate limiter. It spaces wire writes by
+        // RADIO_TX_MIN_GAP_US so the TS-590SG never sees commands faster than it can
+        // process them (otherwise it answers ?;). This task enqueues ~137 commands, far
+        // more than RADIO_TX_QUEUE_DEPTH, so every send goes through
+        // sendBackgroundRadioCommand: it waits for queue headroom and always leaves
+        // RADIO_TX_INTERACTIVE_RESERVE slots free, so the burst follows the drain rate
+        // instead of filling the queue, and CAT client / panel traffic is not dropped
+        // while the sync is in flight.
+        //
+        // Returns false once the interface has powered off mid-sequence. A drop while
+        // still powered (validation, or a queue filled by a racing producer) does not
+        // abort the sequence.
+        const auto sendWhilePowered = [self](const std::string_view command) {
+            return self->sendBackgroundRadioCommand(command) || self->state_.powerOn.load();
+        };
+        bool poweredOn = true;
 
         // Phase 1: core state queries
         ESP_LOGI(TAG, "Boot sequence phase 1: %zu core commands", BOOT_SEQUENCE_SIZE);
 
-        for (const auto &command : bootSequence_)
+        for (size_t i = 0; poweredOn && i < BOOT_SEQUENCE_SIZE; i++)
         {
-            if (*command == '\0')
+            if (*bootSequence_[i] == '\0')
                 break;
-            self->sendRadioCommand(command);
-            vTaskDelay(pdMS_TO_TICKS(INTER_COMMAND_DELAY_MS));
+            poweredOn = sendWhilePowered(bootSequence_[i]);
         }
 
-        ESP_LOGI(TAG, "Boot sequence phase 1 completed");
-
         // Phase 2: common programmer commands + all 100 EX menu queries
-        ESP_LOGI(TAG, "Boot sequence phase 2: %zu common + %zu EX queries",
-                 BOOT_PHASE2_CMD_COUNT, EX_MENU_COUNT);
-
-        for (const auto &command : bootPhase2Commands_)
+        if (poweredOn)
         {
-            self->sendRadioCommand(command);
-            vTaskDelay(pdMS_TO_TICKS(INTER_COMMAND_DELAY_MS));
+            ESP_LOGI(TAG, "Boot sequence phase 1 completed");
+            ESP_LOGI(TAG, "Boot sequence phase 2: %zu common + %zu EX queries",
+                     BOOT_PHASE2_CMD_COUNT, EX_MENU_COUNT);
+        }
+
+        for (size_t i = 0; poweredOn && i < BOOT_PHASE2_CMD_COUNT; i++)
+        {
+            poweredOn = sendWhilePowered(bootPhase2Commands_[i]);
         }
 
         char exCmd[12]; // "EXnnn0000;" + null
-        for (size_t i = 0; i < EX_MENU_COUNT; i++)
+        for (size_t i = 0; poweredOn && i < EX_MENU_COUNT; i++)
         {
             snprintf(exCmd, sizeof(exCmd), "EX%03u0000;", static_cast<unsigned>(i));
-            self->sendRadioCommand(exCmd);
-            vTaskDelay(pdMS_TO_TICKS(INTER_COMMAND_DELAY_MS));
+            poweredOn = sendWhilePowered(exCmd);
         }
 
-        // Wait for final responses to be processed before saving
-        vTaskDelay(pdMS_TO_TICKS(500));
-
-        ESP_LOGI(TAG, "Boot sequence phase 2 completed - saving EX menu to NVS");
-
-        // Save verified EX menu state to NVS
-        if (self->nvsManager_)
+        if (poweredOn)
         {
-            auto *nvs = static_cast<NvsManager *>(self->nvsManager_);
-            nvs->saveExtendedMenu();
+            // Wait for final responses to be processed before saving
+            vTaskDelay(pdMS_TO_TICKS(500));
+
+            ESP_LOGI(TAG, "Boot sequence phase 2 completed - saving EX menu to NVS");
+
+            // Save verified EX menu state to NVS
+            if (self->nvsManager_)
+            {
+                auto *nvs = static_cast<NvsManager *>(self->nvsManager_);
+                nvs->saveExtendedMenu();
+            }
+        }
+        else
+        {
+            // Stop feeding the RRC-1258 (traffic after a user power-off wakes it back up)
+            // and skip the save: the EX menu was not fully re-read from the radio.
+            ESP_LOGI(TAG, "Boot sequence aborted: interface powered off, skipping EX menu NVS save");
         }
 
         self->bootSequenceRunning_.store(false, std::memory_order_relaxed);
@@ -1469,20 +1501,15 @@ namespace radio
         }
         ESP_LOGI(RadioManager::TAG, "Synchronizing transverter-related menu settings with radio");
 
-        // Query critical transverter-related menu settings with pacing to prevent ?; errors
-        constexpr TickType_t INTER_COMMAND_DELAY_MS = 10;
-
-        sendRadioCommand("EX0560000;"); // EX056: Transverter function enable/disable
-        vTaskDelay(pdMS_TO_TICKS(INTER_COMMAND_DELAY_MS));
-        sendRadioCommand("EX0590000;"); // EX059: HF linear amplifier control
-        vTaskDelay(pdMS_TO_TICKS(INTER_COMMAND_DELAY_MS));
-        sendRadioCommand("EX0600000;"); // EX060: VHF linear amplifier control
-        vTaskDelay(pdMS_TO_TICKS(INTER_COMMAND_DELAY_MS));
-        sendRadioCommand("EX0850000;"); // EX085: DRV connector output function
-        vTaskDelay(pdMS_TO_TICKS(INTER_COMMAND_DELAY_MS));
-        sendRadioCommand("XO;"); // XO: Transverter offset frequency and direction
-        vTaskDelay(pdMS_TO_TICKS(INTER_COMMAND_DELAY_MS));
-        sendRadioCommand("AN;"); // AN: Antenna configuration
+        // Query critical transverter-related menu settings. The radio-TX drainer paces the
+        // wire rate; sendBackgroundRadioCommand keeps this burst out of the interactive
+        // reserve and stops sending if the interface powers off.
+        sendBackgroundRadioCommand("EX0560000;"); // EX056: Transverter function enable/disable
+        sendBackgroundRadioCommand("EX0590000;"); // EX059: HF linear amplifier control
+        sendBackgroundRadioCommand("EX0600000;"); // EX060: VHF linear amplifier control
+        sendBackgroundRadioCommand("EX0850000;"); // EX085: DRV connector output function
+        sendBackgroundRadioCommand("XO;");        // XO: Transverter offset frequency and direction
+        sendBackgroundRadioCommand("AN;");        // AN: Antenna configuration
 
         ESP_LOGD(RadioManager::TAG, "Transverter menu synchronization commands sent");
     }

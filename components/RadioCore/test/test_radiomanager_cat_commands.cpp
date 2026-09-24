@@ -30,6 +30,11 @@ namespace radio {
             m_mockUsbSerial.clearReceivedMessages();
         }
 
+        using RadioManager::RADIO_TX_QUEUE_DEPTH;
+        using RadioManager::RADIO_TX_INTERACTIVE_RESERVE;
+        using RadioManager::hasBackgroundTxHeadroom;
+        using RadioManager::sendBackgroundRadioCommand;
+
         MockSerialHandler &m_mockRadioSerial;
         MockSerialHandler &m_mockUsbSerial;
     };
@@ -2341,6 +2346,37 @@ namespace {
         tearDownTestRadioManager();
     }
 
+    // Background producers (boot sequence, transverter sync) may only enqueue while
+    // more than RADIO_TX_INTERACTIVE_RESERVE slots are free.
+    void test_background_tx_headroom_leaves_interactive_reserve() {
+        constexpr size_t reserve = TestRadioManager::RADIO_TX_INTERACTIVE_RESERVE;
+        TEST_ASSERT_FALSE(TestRadioManager::hasBackgroundTxHeadroom(0));
+        TEST_ASSERT_FALSE(TestRadioManager::hasBackgroundTxHeadroom(reserve));
+        TEST_ASSERT_TRUE(TestRadioManager::hasBackgroundTxHeadroom(reserve + 1));
+        TEST_ASSERT_TRUE(TestRadioManager::hasBackgroundTxHeadroom(TestRadioManager::RADIO_TX_QUEUE_DEPTH));
+    }
+
+    // Regression: a boot sequence started just before a user power-off must stop
+    // sending, otherwise its traffic wakes the RRC-1258 back up.
+    void test_background_send_stops_when_powered_off() {
+        setUpTestRadioManager();
+        auto &powerOn = testRadioManager->getState().powerOn;
+        const bool previousPowerOn = powerOn.load();
+
+        powerOn.store(false);
+        TEST_ASSERT_FALSE(testRadioManager->sendBackgroundRadioCommand("EX0560000;"));
+        TEST_ASSERT_TRUE_MESSAGE(mockRadioSerial.sentMessages.empty(),
+                                 "Background send must not reach the radio while powered off");
+
+        powerOn.store(true);
+        TEST_ASSERT_TRUE(testRadioManager->sendBackgroundRadioCommand("EX0560000;"));
+        TEST_ASSERT_EQUAL(1, mockRadioSerial.sentMessages.size());
+        TEST_ASSERT_EQUAL_STRING("EX0560000;", mockRadioSerial.sentMessages.front().c_str());
+
+        powerOn.store(previousPowerOn);
+        tearDownTestRadioManager();
+    }
+
     // Test runner function
     extern "C" void run_radiomanager_cat_tests(void) {
         // Original basic tests
@@ -2478,6 +2514,10 @@ namespace {
         RUN_TEST(test_light_query_tracker_no_collision_between_vd_and_md);
         RUN_TEST(test_light_query_tracker_saturation_overwrites_oldest);
         RUN_TEST(test_error_reply_routes_to_requesting_interface);
+
+        // Radio-TX background backpressure
+        RUN_TEST(test_background_tx_headroom_leaves_interactive_reserve);
+        RUN_TEST(test_background_send_stops_when_powered_off);
 
         cleanupSharedRadioManager();
     }
