@@ -13,7 +13,8 @@ namespace radio
         // (drop accounting is handled inside sendRadioCommand either way); we
         // surface that as ESP_ERR_NO_MEM so callers going through this channel
         // (e.g. BaseCommandHandler::sendToRadio) can tell delivery apart from
-        // success instead of always seeing ESP_OK.
+        // success instead of always seeing ESP_OK. Frames suppressed by the
+        // user power-off gate are intentional and return ESP_OK.
         return radioManager_.sendRadioCommand(message) ? ESP_OK : ESP_ERR_NO_MEM;
     }
 

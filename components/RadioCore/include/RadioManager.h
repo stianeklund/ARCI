@@ -866,8 +866,9 @@ namespace radio
         // pacing and the UART write, off every lock. That keeps the aggregate rate bound
         // while restoring the no-sleep-under-lock invariant (commit 0ac2d8d).
         //
-        // Queue sizing and the background-producer backpressure helpers are protected
-        // (not private) so unit tests can reach them via TestRadioManager.
+        // Queue sizing, the background-producer backpressure helpers and the power-off
+        // TX gate predicate are protected (not private) so unit tests can reach them via
+        // TestRadioManager.
     protected:
         // Depth 64: the drainer's 10 ms min gap rounds up to 10-20 ms at a 100 Hz tick, so
         // it drains ~50-100 cmds/s and a full queue is roughly 0.6-1.3 s of backlog. Sized
@@ -887,6 +888,17 @@ namespace radio
         static constexpr bool hasBackgroundTxHeadroom(const size_t spacesAvailable)
         {
             return spacesAvailable > RADIO_TX_INTERACTIVE_RESERVE;
+        }
+
+        // Frames sendRadioCommand still lets through after a user power-off
+        // (powerOffRequestTime > 0). Any other traffic to the RRC-1258 wakes it back
+        // up, so only PS0; (power-off repeats and replies to the RRC's PS; poll) and RX
+        // (never block returning the radio to receive) pass. PS1; is blocked on purpose:
+        // a user PS1 clears powerOffRequestTime before it is sent, so a PS1; reaching
+        // the gate is the radio-answer echo during the power-off debounce.
+        static constexpr bool isAllowedWhilePoweredOff(const std::string_view frame)
+        {
+            return frame == "PS0;" || frame.starts_with("RX");
         }
 
         // sendRadioCommand for bulk background producers running in their own task.
@@ -992,7 +1004,10 @@ namespace radio
         // Allocation-free radio send helpers. Return true when the command was
         // handed off (enqueued in production, or sent inline in unit-test
         // builds), false when validation rejected it or the paced queue was
-        // full. Existing callers use these in void context and are unaffected.
+        // full. After a user power-off, frames not allowed by
+        // isAllowedWhilePoweredOff are suppressed and still return true: that is
+        // policy, not a delivery failure. Existing callers use these in void
+        // context and are unaffected.
         bool sendRadioCommand(std::string_view command) const;
         bool sendRadioCommand(const char *command) const;
 

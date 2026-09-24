@@ -424,6 +424,7 @@ namespace radio {
 
             // When user has requested power off, don't forward queries to radio
             // This prevents keeping the radio "awake" with ongoing communication
+            // (RadioManager::sendRadioCommand gates all other radio traffic as a backstop)
             if (state.powerOffRequestTime.load() > 0) {
                 // Return cached value if available, otherwise return empty/error
                 const uint64_t lastUpdateUs = state.commandCache.get(key);

@@ -34,6 +34,7 @@ namespace radio {
         using RadioManager::RADIO_TX_INTERACTIVE_RESERVE;
         using RadioManager::hasBackgroundTxHeadroom;
         using RadioManager::sendBackgroundRadioCommand;
+        using RadioManager::isAllowedWhilePoweredOff;
 
         MockSerialHandler &m_mockRadioSerial;
         MockSerialHandler &m_mockUsbSerial;
@@ -2377,11 +2378,81 @@ namespace {
         tearDownTestRadioManager();
     }
 
+    // After a user power-off only power control and RX; may reach the radio.
+    void test_power_off_gate_allow_list() {
+        TEST_ASSERT_TRUE(TestRadioManager::isAllowedWhilePoweredOff("PS0;"));
+        TEST_ASSERT_TRUE(TestRadioManager::isAllowedWhilePoweredOff("RX;"));
+        TEST_ASSERT_FALSE(TestRadioManager::isAllowedWhilePoweredOff("PS1;"));
+        TEST_ASSERT_FALSE(TestRadioManager::isAllowedWhilePoweredOff("PS;"));
+        TEST_ASSERT_FALSE(TestRadioManager::isAllowedWhilePoweredOff("FA;"));
+        TEST_ASSERT_FALSE(TestRadioManager::isAllowedWhilePoweredOff("IF;"));
+        TEST_ASSERT_FALSE(TestRadioManager::isAllowedWhilePoweredOff("FR;"));
+        TEST_ASSERT_FALSE(TestRadioManager::isAllowedWhilePoweredOff("FA00014070000;"));
+        TEST_ASSERT_FALSE(TestRadioManager::isAllowedWhilePoweredOff("EX0560000;"));
+        TEST_ASSERT_FALSE(TestRadioManager::isAllowedWhilePoweredOff("AI2;"));
+    }
+
+    // Regression: a PC CAT client polling/setting after a user power-off must not
+    // reach the radio, otherwise the traffic wakes the RRC-1258 back up.
+    void test_radio_traffic_suppressed_after_user_power_off() {
+        setUpTestRadioManager();
+        const auto sentToRadio = [](const char *frame) {
+            return std::find(mockRadioSerial.sentMessages.begin(), mockRadioSerial.sentMessages.end(), frame) !=
+                   mockRadioSerial.sentMessages.end();
+        };
+
+        testRadioManager->getRemoteCATHandler().parseMessage("PS1;");
+        TEST_ASSERT_EQUAL(1, testRadioManager->getPowerState());
+
+        testRadioManager->getLocalCATHandler().parseMessage("PS0;");
+        TEST_ASSERT_TRUE(testRadioManager->getState().powerOffRequestTime.load() > 0);
+
+        testRadioManager->clearCommandCache();
+        mockRadioSerial.sentMessages.clear();
+
+        testRadioManager->getLocalCATHandler().parseMessage("FA;");
+        testRadioManager->getLocalCATHandler().parseMessage("IF;");
+        testRadioManager->getLocalCATHandler().parseMessage("FR;");
+        testRadioManager->getLocalCATHandler().parseMessage("FA00014070000;");
+        testRadioManager->sendRawRadioCommand("AI2;");
+        TEST_ASSERT_FALSE_MESSAGE(sentToRadio("FA;"), "FA; must not reach the radio after user power-off");
+        TEST_ASSERT_FALSE_MESSAGE(sentToRadio("IF;"), "IF; must not reach the radio after user power-off");
+        TEST_ASSERT_FALSE_MESSAGE(sentToRadio("FR;"), "FR; must not reach the radio after user power-off");
+        TEST_ASSERT_FALSE_MESSAGE(sentToRadio("FA00014070000;"), "FA set must not reach the radio after user power-off");
+        TEST_ASSERT_FALSE_MESSAGE(sentToRadio("AI2;"), "Raw sends must not reach the radio after user power-off");
+
+        // The RRC's own PS; poll must still be answered so it learns we are off
+        testRadioManager->getRemoteCATHandler().parseMessage("PS;");
+        TEST_ASSERT_TRUE_MESSAGE(sentToRadio("PS0;"), "RRC PS; poll must still be answered with PS0;");
+
+        // A stale radio PS1; inside the debounce window must not be echoed back to the RRC
+        testRadioManager->getRemoteCATHandler().parseMessage("PS1;");
+        TEST_ASSERT_FALSE_MESSAGE(sentToRadio("PS1;"), "Debounced PS1; echo must not reach the RRC");
+        TEST_ASSERT_FALSE(testRadioManager->getState().keepAlive.load());
+
+        // User powers on again: forwarding resumes
+        testRadioManager->getLocalCATHandler().parseMessage("PS1;");
+        TEST_ASSERT_TRUE(testRadioManager->getState().powerOffRequestTime.load() == 0);
+
+        testRadioManager->clearCommandCache();
+        mockRadioSerial.sentMessages.clear();
+
+        testRadioManager->getLocalCATHandler().parseMessage("FA;");
+        TEST_ASSERT_TRUE_MESSAGE(sentToRadio("FA;"), "FA; should be forwarded to the radio after local PS1");
+
+        // Leave the shared RadioManager powered off like test_parseLocalRequest_PS does
+        testRadioManager->getRemoteCATHandler().parseMessage("PS0;");
+        TEST_ASSERT_EQUAL(0, testRadioManager->getPowerState());
+        tearDownTestRadioManager();
+    }
+
     // Test runner function
     extern "C" void run_radiomanager_cat_tests(void) {
         // Original basic tests
         RUN_TEST(test_parseLocalRequest_PS);
         RUN_TEST(test_localPSQuery_notForwardedAfterUserPowerOff);
+        RUN_TEST(test_power_off_gate_allow_list);
+        RUN_TEST(test_radio_traffic_suppressed_after_user_power_off);
         RUN_TEST(test_parseRemoteResponse_RX);
         RUN_TEST(test_parseRemoteResponse_TX);
         RUN_TEST(test_parseLocalRequest_FA);

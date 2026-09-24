@@ -1140,6 +1140,23 @@ namespace radio
             ESP_LOGW(RadioManager::TAG, "WARNING: ID command being sent to radio! This should be handled locally!");
             ESP_LOGW(RadioManager::TAG, "Stack trace needed to find source of ID; command");
         }
+        // Central power-off gate: after a user PS0 any other traffic (PC CAT polls
+        // and sets, panel actions, background queries) wakes the RRC-1258 back up.
+        // Applies in both build modes; a suppressed frame is policy, not a drop.
+        if (state_.powerOffRequestTime.load() > 0 && !isAllowedWhilePoweredOff(command))
+        {
+            ESP_LOGD(RadioManager::TAG, "Power off: suppressed radio frame '%.*s'", (int)command.size(),
+                     command.data());
+            static uint64_t lastSuppressLogUs = 0;
+            const uint64_t nowUs = esp_timer_get_time();
+            if (nowUs - lastSuppressLogUs > 1'000'000) // at most once per second
+            {
+                lastSuppressLogUs = nowUs;
+                ESP_LOGI(RadioManager::TAG, "⚡ User power-off: suppressing radio traffic (e.g. '%.*s')",
+                         (int)command.size(), command.data());
+            }
+            return true;
+        }
 
 #ifdef CONFIG_RUN_UNIT_TESTS
         // Unit-test builds do not start the async drainer (see startTasks), so send
