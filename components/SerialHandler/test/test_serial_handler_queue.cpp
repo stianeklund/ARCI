@@ -1,11 +1,13 @@
 #include "unity.h"
 #include "test_hooks.h"
 #include "../include/SerialHandler.h"
+#include "../include/CatErrorScan.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <vector>
 #include <string>
+#include <cstring>
 
 static const char* TAG = "test_serial_handler_queue";
 
@@ -293,6 +295,42 @@ void test_oversized_frame_suffix_not_parsed_as_command(void) {
     ESP_LOGI(TAG, "Oversized frame suffix correctly discarded, real frame preserved: %s", message.c_str());
 }
 
+static CatErrorScan scanCat(const char* s, uint8_t prevByte = ';') {
+    return scanCatErrorFrames(reinterpret_cast<const uint8_t*>(s), strlen(s), prevByte);
+}
+
+static void assertCatScan(const char* s, bool eo, bool question, uint8_t prevByte = ';') {
+    const CatErrorScan r = scanCat(s, prevByte);
+    TEST_ASSERT_EQUAL_MESSAGE(eo, r.eoError, s);
+    TEST_ASSERT_EQUAL_MESSAGE(question, r.questionError, s);
+}
+
+// Bare Kenwood error replies are detected.
+void test_cat_error_scan_bare_error_frames(void) {
+    assertCatScan("E;", true, false);
+    assertCatScan("O;", true, false);
+    assertCatScan("?;", false, true);
+    assertCatScan("FA00014070000;E;", true, false);
+    assertCatScan("\nO;", true, false);
+}
+
+// Legitimate frames ending in E/O before ';' (e.g. TO;) are not errors.
+void test_cat_error_scan_ignores_frames_ending_in_e_or_o(void) {
+    assertCatScan("TO;", false, false);
+    assertCatScan("FA00014070000;TO;", false, false);
+    assertCatScan("TO;\r\n", false, false);
+    assertCatScan("", false, false);
+    assertCatScan("E", false, false);
+    assertCatScan(";", false, false);
+}
+
+// The previous chunk's last byte decides whether index 0 starts a frame.
+void test_cat_error_scan_uses_previous_chunk_byte(void) {
+    assertCatScan("O;", false, false, 'T');
+    assertCatScan("O;", true, false, '\n');
+    assertCatScan("E;", true, false, ';');
+}
+
 // Unity's global setUp()/tearDown() are no-ops here, so each test explicitly
 // brackets itself with the queue fixture to get a fresh handler + empty queue.
 #define RUN_QUEUE_TEST(fn) \
@@ -307,6 +345,9 @@ void run_serial_handler_queue_tests(void) {
     RUN_QUEUE_TEST(test_mixed_age_message_clearing);
     RUN_QUEUE_TEST(test_high_traffic_queue_behavior);
     RUN_QUEUE_TEST(test_oversized_frame_suffix_not_parsed_as_command);
+    RUN_TEST(test_cat_error_scan_bare_error_frames);
+    RUN_TEST(test_cat_error_scan_ignores_frames_ending_in_e_or_o);
+    RUN_TEST(test_cat_error_scan_uses_previous_chunk_byte);
 }
 
 } // extern "C"

@@ -1,4 +1,5 @@
 #include "SerialHandler.h"
+#include "CatErrorScan.h"
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -370,16 +371,11 @@ esp_err_t SerialHandler::sendMessage(const std::string_view message) {
 void SerialHandler::processReceivedData(const uint8_t *data, const size_t len) {
     // Enhanced RX logging for error tracking
     if (len > 0) {
-        // First pass: scan for error patterns WITHOUT building string (cheap)
-        bool hasEOError = false;       // 'E;' or 'O;' in this chunk
-        bool hasQuestionError = false; // '?;' in this chunk
-
-        for (size_t i = 1; i < len; i++) {
-            if (data[i] == ';') {
-                if (data[i-1] == 'E' || data[i-1] == 'O') hasEOError = true;
-                if (data[i-1] == '?') hasQuestionError = true;
-            }
-        }
+        // First pass: scan for bare error frames WITHOUT building string (cheap)
+        const CatErrorScan errors = scanCatErrorFrames(data, len, m_lastRxByte);
+        m_lastRxByte = data[len - 1];
+        const bool hasEOError = errors.eoError;             // bare 'E;' or 'O;' frame
+        const bool hasQuestionError = errors.questionError; // bare '?;' frame
 
         // Bare '?;' responses are counted by CommandDispatcher and summarized by
         // Diagnostics. They can arrive in bursts, so only build/log their raw UART

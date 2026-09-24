@@ -46,6 +46,9 @@ private:
     // suffix of the oversized frame can never be mistaken for the start of a
     // fresh, valid command.
     bool m_discardUntilTerminator{false};
+    // Last byte of the previous RX chunk, so error-frame detection can tell a
+    // bare "O;" from the tail of "TO;" split across chunks. ';' = stream start.
+    uint8_t m_lastRxByte{';'};
 
     static constexpr size_t QUEUE_CAPACITY = 64;  // Increased to handle high traffic in AI2/AI4 modes
     struct MsgSlot {
