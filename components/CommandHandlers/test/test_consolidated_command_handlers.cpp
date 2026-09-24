@@ -1509,7 +1509,6 @@ void test_stale_cache_no_duplicate_response() {
     }
 
     auto& state = testRadioManager->getState();
-    const uint64_t startTime = esp_timer_get_time();
 
     // Step 1: Prime the IF cache with an initial radio response
     const std::string initialIfResponse = "IF00014150000      000000002020000000;";
@@ -1526,8 +1525,6 @@ void test_stale_cache_no_duplicate_response() {
     // Step 2: Wait for cache to become stale (but still exist)
     // StatusInfoCommandHandler uses 1.5s TTL for IF
     vTaskDelay(pdMS_TO_TICKS(1600)); // Wait 1.6 seconds
-
-    const uint64_t beforeQuery = esp_timer_get_time();
 
     // Step 3: Send IF query from UsbCdc0 (simulating TCP client)
     // This should:
