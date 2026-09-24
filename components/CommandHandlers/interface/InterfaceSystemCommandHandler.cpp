@@ -314,8 +314,18 @@ namespace radio
         {
             if (shouldSendToRadio(cmd))
             {
+                // After a user power-off, answer from local state: forwarding PS; to the
+                // RRC-1258 (e.g. a PC CAT client polling) wakes it and reconnects the radio.
+                // Forwarding resumes once a local PS1 clears powerOffRequestTime.
+                if (state.powerOffRequestTime.load() > 0)
+                {
+                    const int powerValue = (rm.getPowerState() == On) ? PS_ON : PS_OFF;
+                    const std::string response = formatPSResponse(powerValue);
+                    ESP_LOGD(TAG, "⚡ Power off: Serving local PS state (not forwarding to radio)");
+                    respondToSource(cmd, response, usbSerial, rm);
+                }
                 // Check if we have fresh cached power state
-                if (isCacheFresh(rm, "PS", TTL_STATUS))
+                else if (isCacheFresh(rm, "PS", TTL_STATUS))
                 {
                     // Use cached power state
                     const PowerState cachedState = rm.getPowerState();

@@ -146,6 +146,54 @@ namespace {
         tearDownTestRadioManager();
     }
 
+    // Regression: a PC CAT client polling PS; after a user power-off must not be
+    // forwarded to the radio, otherwise the traffic wakes the RRC-1258 back up.
+    void test_localPSQuery_notForwardedAfterUserPowerOff() {
+        setUpTestRadioManager();
+
+        testRadioManager->getRemoteCATHandler().parseMessage("PS1;");
+        TEST_ASSERT_EQUAL(1, testRadioManager->getPowerState());
+
+        // User powers off locally (sends PS0; x3 to the radio inline in unit tests)
+        testRadioManager->getLocalCATHandler().parseMessage("PS0;");
+        TEST_ASSERT_TRUE(testRadioManager->getState().powerOffRequestTime.load() > 0);
+
+        // Expire the PS cache so the query would otherwise be forwarded
+        testRadioManager->clearCommandCache();
+        mockRadioSerial.sentMessages.clear();
+        mockUsbSerial.sentMessages.clear();
+
+        testRadioManager->getLocalCATHandler().parseMessage("PS;");
+
+        const bool forwardedWhileOff = std::find(mockRadioSerial.sentMessages.begin(),
+                                                 mockRadioSerial.sentMessages.end(),
+                                                 "PS;") != mockRadioSerial.sentMessages.end();
+        TEST_ASSERT_FALSE_MESSAGE(forwardedWhileOff, "PS; must not reach the radio after user power-off");
+        const bool answeredOff = std::find(mockUsbSerial.sentMessages.begin(),
+                                           mockUsbSerial.sentMessages.end(),
+                                           "PS0;") != mockUsbSerial.sentMessages.end();
+        TEST_ASSERT_TRUE_MESSAGE(answeredOff, "Requester should be answered PS0; from local state");
+
+        // User powers on again: forwarding resumes
+        testRadioManager->getLocalCATHandler().parseMessage("PS1;");
+        TEST_ASSERT_TRUE(testRadioManager->getState().powerOffRequestTime.load() == 0);
+
+        testRadioManager->clearCommandCache();
+        mockRadioSerial.sentMessages.clear();
+
+        testRadioManager->getLocalCATHandler().parseMessage("PS;");
+
+        const bool forwardedAfterOn = std::find(mockRadioSerial.sentMessages.begin(),
+                                                mockRadioSerial.sentMessages.end(),
+                                                "PS;") != mockRadioSerial.sentMessages.end();
+        TEST_ASSERT_TRUE_MESSAGE(forwardedAfterOn, "PS; should be forwarded to the radio after local PS1");
+
+        // Leave the shared RadioManager powered off like test_parseLocalRequest_PS does
+        testRadioManager->getRemoteCATHandler().parseMessage("PS0;");
+        TEST_ASSERT_EQUAL(0, testRadioManager->getPowerState());
+        tearDownTestRadioManager();
+    }
+
     void test_parseRemoteResponse_RX() {
         setUpTestRadioManager();
         testRadioManager->getRemoteCATHandler().parseMessage("RX;");
@@ -2297,6 +2345,7 @@ namespace {
     extern "C" void run_radiomanager_cat_tests(void) {
         // Original basic tests
         RUN_TEST(test_parseLocalRequest_PS);
+        RUN_TEST(test_localPSQuery_notForwardedAfterUserPowerOff);
         RUN_TEST(test_parseRemoteResponse_RX);
         RUN_TEST(test_parseRemoteResponse_TX);
         RUN_TEST(test_parseLocalRequest_FA);
